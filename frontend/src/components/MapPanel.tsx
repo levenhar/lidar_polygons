@@ -13,6 +13,7 @@ interface MapPanelProps {
   onPathPointHover: (point: Coordinate | null) => void;
   onPathChange: (path: Coordinate[]) => void;
   onAddPoint: (point: Coordinate) => void;
+  onAddPoints: (points: Coordinate[]) => void;
   onUpdatePoint: (index: number, point: Coordinate) => void;
   onDeletePoint: (index: number) => void;
   onDtmLoad: (source: string, info?: any) => void;
@@ -25,6 +26,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onPathPointHover,
   onPathChange,
   onAddPoint,
+  onAddPoints,
   onUpdatePoint,
   onDeletePoint,
   onDtmLoad,
@@ -176,11 +178,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
                   isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
                 ) {
-                  // Add parallel line points at the end of the flight path
+                  // Add parallel line points at the end of the flight path as a single operation
                   // Point 3 should be closer to point 2, so we add parallelEnd first (which corresponds to point 2)
                   // Then add parallelStart (which corresponds to point 1)
-                  onAddPoint(parallelEnd);  // Point 3 - parallel of point 2 (closer to point 2)
-                  onAddPoint(parallelStart); // Point 4 - parallel of point 1
+                  onAddPoints([parallelEnd, parallelStart]); // Add both points in a single undoable action
                   setIsParallelLineMode(false);
                   alert(`Parallel line created with offset of ${offsetDistance}m. Added 2 new points at the end of the path.`);
                 } else {

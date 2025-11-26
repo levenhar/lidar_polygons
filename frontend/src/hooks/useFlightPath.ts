@@ -1,5 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import { Coordinate } from '../App';
+import { useUndoRedo } from './useUndoRedo';
 
 export interface GeoJSONFeature {
   type: 'Feature';
@@ -16,35 +17,35 @@ export interface GeoJSON {
 }
 
 export function useFlightPath() {
-  const [flightPath, setFlightPathState] = useState<Coordinate[]>([]);
+  const { state: flightPath, setState: setFlightPathState, undo, redo, canUndo, canRedo, resetHistory } = useUndoRedo<Coordinate[]>([]);
 
   const addPoint = useCallback((point: Coordinate) => {
-    setFlightPathState(prev => [...prev, point]);
-  }, []);
+    setFlightPathState([...flightPath, point], true);
+  }, [flightPath, setFlightPathState]);
+
+  const addPoints = useCallback((points: Coordinate[]) => {
+    setFlightPathState([...flightPath, ...points], true);
+  }, [flightPath, setFlightPathState]);
 
   const updatePoint = useCallback((index: number, point: Coordinate) => {
-    setFlightPathState(prev => {
-      const newPath = [...prev];
-      newPath[index] = point;
-      return newPath;
-    });
-  }, []);
+    const newPath = [...flightPath];
+    newPath[index] = point;
+    setFlightPathState(newPath, true);
+  }, [flightPath, setFlightPathState]);
 
   const deletePoint = useCallback((index: number) => {
-    setFlightPathState(prev => prev.filter((_, i) => i !== index));
-  }, []);
+    setFlightPathState(flightPath.filter((_, i) => i !== index), true);
+  }, [flightPath, setFlightPathState]);
 
   const insertPoints = useCallback((index: number, points: Coordinate[]) => {
-    setFlightPathState(prev => {
-      const newPath = [...prev];
-      newPath.splice(index, 0, ...points);
-      return newPath;
-    });
-  }, []);
+    const newPath = [...flightPath];
+    newPath.splice(index, 0, ...points);
+    setFlightPathState(newPath, true);
+  }, [flightPath, setFlightPathState]);
 
   const setFlightPath = useCallback((path: Coordinate[]) => {
-    setFlightPathState(path);
-  }, []);
+    setFlightPathState(path, true);
+  }, [setFlightPathState]);
 
   const exportGeoJSON = useCallback(() => {
     if (flightPath.length < 2) {
@@ -110,22 +111,27 @@ export function useFlightPath() {
         ...(heights && heights[index] !== undefined && { height: heights[index] })
       }));
 
-      setFlightPathState(coordinates);
+      resetHistory(coordinates);
     } catch (error) {
       console.error('Error importing GeoJSON:', error);
       alert('Failed to import GeoJSON file');
     }
-  }, []);
+  }, [resetHistory]);
 
   return {
     flightPath,
     addPoint,
+    addPoints,
     updatePoint,
     deletePoint,
     insertPoints,
     setFlightPath,
     exportGeoJSON,
-    importGeoJSON
+    importGeoJSON,
+    undo,
+    redo,
+    canUndo,
+    canRedo
   };
 }
 

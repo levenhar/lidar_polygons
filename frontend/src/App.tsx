@@ -38,12 +38,17 @@ function App() {
   const {
     flightPath,
     addPoint,
+    addPoints,
     updatePoint,
     deletePoint,
     insertPoints,
     setFlightPath,
     exportGeoJSON,
-    importGeoJSON
+    importGeoJSON,
+    undo,
+    redo,
+    canUndo,
+    canRedo
   } = useFlightPath();
 
   const { elevationProfile, loading, calculateProfile } = useElevationProfile();
@@ -71,6 +76,33 @@ function App() {
       });
     }
   }, []);
+
+  // Handle keyboard shortcuts for undo/redo
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check for Ctrl+Z (undo) or Ctrl+Y (redo)
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'z' || e.key === 'Z') {
+          // Prevent default browser undo behavior
+          e.preventDefault();
+          if (canUndo) {
+            undo();
+          }
+        } else if (e.key === 'y' || e.key === 'Y') {
+          // Prevent default browser redo behavior
+          e.preventDefault();
+          if (canRedo) {
+            redo();
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [undo, redo, canUndo, canRedo]);
 
   return (
     <div className="app-container">
@@ -112,6 +144,7 @@ function App() {
           onPathPointHover={handlePathPointHover}
           onPathChange={setFlightPath}
           onAddPoint={addPoint}
+          onAddPoints={addPoints}
           onUpdatePoint={updatePoint}
           onDeletePoint={deletePoint}
           onDtmLoad={handleDtmLoad}

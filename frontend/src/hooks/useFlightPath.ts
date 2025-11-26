@@ -34,6 +34,14 @@ export function useFlightPath() {
     setFlightPathState(prev => prev.filter((_, i) => i !== index));
   }, []);
 
+  const insertPoints = useCallback((index: number, points: Coordinate[]) => {
+    setFlightPathState(prev => {
+      const newPath = [...prev];
+      newPath.splice(index, 0, ...points);
+      return newPath;
+    });
+  }, []);
+
   const setFlightPath = useCallback((path: Coordinate[]) => {
     setFlightPathState(path);
   }, []);
@@ -114,6 +122,7 @@ export function useFlightPath() {
     addPoint,
     updatePoint,
     deletePoint,
+    insertPoints,
     setFlightPath,
     exportGeoJSON,
     importGeoJSON

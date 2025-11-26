@@ -40,6 +40,7 @@ function App() {
     addPoint,
     updatePoint,
     deletePoint,
+    insertPoints,
     setFlightPath,
     exportGeoJSON,
     importGeoJSON

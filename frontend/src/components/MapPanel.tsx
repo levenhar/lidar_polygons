@@ -4,6 +4,7 @@ import maplibregl from 'maplibre-gl';
 import proj4 from 'proj4';
 import { Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
+import { calculateParallelLine, findClosestPointOnLine } from '../utils/geometry';
 import './MapPanel.css';
 
 interface MapPanelProps {
@@ -32,6 +33,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+  const [isParallelLineMode, setIsParallelLineMode] = useState(false);
   const [dtmLoaded, setDtmLoaded] = useState(false);
   const [dtmBounds, setDtmBounds] = useState<number[] | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
@@ -98,7 +100,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, []);
 
-  // Set up click handler for adding points and editing points (separate effect to use latest bounds)
+  // Set up click handler for adding points, editing points, and parallel line creation
   useEffect(() => {
     if (!map.current) return;
 
@@ -121,6 +123,79 @@ const MapPanel: React.FC<MapPanelProps> = ({
           height: currentPoint.height // Preserve height
         });
         setEditingPointIndex(null);
+        return;
+      }
+
+      // If in parallel line mode, handle line segment selection
+      if (isParallelLineMode && dtmLoaded && flightPath.length >= 2 && map.current) {
+        // Use MapLibre's queryRenderedFeatures to detect clicks on the line
+        const features = map.current.queryRenderedFeatures(e.point, {
+          layers: ['flight-path-clickable']
+        });
+        
+        if (features.length > 0) {
+          // Find which segment was clicked by calculating distance to each segment
+          const clickPoint = { lng: e.lngLat.lng, lat: e.lngLat.lat };
+          let closestSegmentIndex = -1;
+          let closestDistance = Infinity;
+          
+          for (let i = 0; i < flightPath.length - 1; i++) {
+            const result = findClosestPointOnLine(clickPoint, flightPath[i], flightPath[i + 1]);
+            
+            // Check if click is close enough to the segment (100 meters threshold)
+            if (result.distance < 100) {
+              if (result.distance < closestDistance) {
+                closestDistance = result.distance;
+                closestSegmentIndex = i;
+              }
+            }
+          }
+          
+          if (closestSegmentIndex >= 0) {
+            // Prompt for offset distance
+            const distanceInput = prompt(
+              `Enter offset distance in meters for parallel line:\n(Positive = right side, Negative = left side)`,
+              '50'
+            );
+            
+            if (distanceInput !== null) {
+              const offsetDistance = parseFloat(distanceInput);
+              if (!isNaN(offsetDistance)) {
+                const segmentStart = flightPath[closestSegmentIndex];
+                const segmentEnd = flightPath[closestSegmentIndex + 1];
+                
+                // Calculate parallel line
+                const [parallelStart, parallelEnd] = calculateParallelLine(
+                  segmentStart,
+                  segmentEnd,
+                  offsetDistance
+                );
+                
+                // Check if parallel points are within bounds
+                if (
+                  isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
+                  isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
+                ) {
+                  // Add parallel line points at the end of the flight path
+                  // Point 3 should be closer to point 2, so we add parallelEnd first (which corresponds to point 2)
+                  // Then add parallelStart (which corresponds to point 1)
+                  onAddPoint(parallelEnd);  // Point 3 - parallel of point 2 (closer to point 2)
+                  onAddPoint(parallelStart); // Point 4 - parallel of point 1
+                  setIsParallelLineMode(false);
+                  alert(`Parallel line created with offset of ${offsetDistance}m. Added 2 new points at the end of the path.`);
+                } else {
+                  alert('Parallel line points would be outside DTM bounds. Please use a smaller offset.');
+                }
+              } else {
+                alert('Invalid distance. Please enter a number.');
+              }
+            }
+          } else {
+            alert('Could not determine which line segment was clicked. Please click closer to a line segment.');
+          }
+        } else {
+          alert('Please click on a line segment to create a parallel line.');
+        }
         return;
       }
 
@@ -150,7 +225,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current.off('click', handleClick);
       }
     };
-  }, [isDrawing, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath]);
+  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath]);
 
   // Update flight path on map
   useEffect(() => {
@@ -160,7 +235,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
 
-    // Remove existing flight path source and layer
+    // Remove existing flight path source and layers
+    if (map.current.getLayer('flight-path-clickable')) {
+      map.current.removeLayer('flight-path-clickable');
+    }
     if (map.current.getSource('flight-path')) {
       map.current.removeLayer('flight-path');
       map.current.removeSource('flight-path');
@@ -177,6 +255,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
           type: 'LineString',
           coordinates: flightPath.map(p => [p.lng, p.lat])
         }
+      }
+    });
+
+    // Add invisible clickable layer for line segment selection (wide stroke)
+    map.current.addLayer({
+      id: 'flight-path-clickable',
+      type: 'line',
+      source: 'flight-path',
+      layout: {
+        'line-join': 'round',
+        'line-cap': 'round'
+      },
+      paint: {
+        'line-color': 'transparent',
+        'line-width': 20, // Wide invisible line for easier clicking
+        'line-opacity': 0
       }
     });
 
@@ -200,6 +294,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (map.current.getLayer('dtm-layer')) {
       // Move flight path to the top to ensure it's above DTM (DTM remains visible)
       map.current.moveLayer('flight-path');
+    }
+
+    // Update cursor style for clickable line layer when in parallel line mode
+    if (isParallelLineMode) {
+      map.current.getCanvas().style.cursor = 'crosshair';
     }
 
     // Add markers for each point
@@ -283,14 +382,27 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     // Don't auto-fit bounds while drawing - let user control the view
     // Map view will remain fixed during drawing
-  }, [flightPath, onUpdatePoint, onDeletePoint, onPathPointHover, isPointWithinBounds]);
+  }, [flightPath, onUpdatePoint, onDeletePoint, onPathPointHover, isPointWithinBounds, isParallelLineMode]);
 
   // Exit drawing mode if DTM is unloaded
   useEffect(() => {
     if (!dtmLoaded && isDrawing) {
       setIsDrawing(false);
     }
-  }, [dtmLoaded, isDrawing]);
+    if (!dtmLoaded && isParallelLineMode) {
+      setIsParallelLineMode(false);
+    }
+  }, [dtmLoaded, isDrawing, isParallelLineMode]);
+
+  // Update cursor when parallel line mode changes
+  useEffect(() => {
+    if (!map.current) return;
+    if (isParallelLineMode) {
+      map.current.getCanvas().style.cursor = 'crosshair';
+    } else if (!isDrawing && editingPointIndex === null) {
+      map.current.getCanvas().style.cursor = '';
+    }
+  }, [isParallelLineMode, isDrawing, editingPointIndex]);
 
   // Handle DTM source changes - load and display DTM
   useEffect(() => {
@@ -798,17 +910,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
           Edit mode: Click on the map to move point {editingPointIndex + 1}
         </div>
       )}
+      {isParallelLineMode && (
+        <div className="edit-mode-indicator">
+          Parallel Line mode: Click on a line segment to create a parallel line
+        </div>
+      )}
       <div className="map-controls">
         <button
           onClick={() => {
             setIsDrawing(!isDrawing);
             setEditingPointIndex(null); // Cancel edit mode when toggling drawing
+            setIsParallelLineMode(false); // Cancel parallel line mode
           }}
           className={isDrawing ? 'active' : ''}
           disabled={!dtmLoaded}
           title={!dtmLoaded ? 'Please load a DTM first' : ''}
         >
           {isDrawing ? 'Stop Drawing' : 'Draw Path'}
+        </button>
+        <button
+          onClick={() => {
+            setIsParallelLineMode(!isParallelLineMode);
+            setIsDrawing(false); // Cancel drawing mode
+            setEditingPointIndex(null); // Cancel edit mode
+          }}
+          className={isParallelLineMode ? 'active' : ''}
+          disabled={!dtmLoaded || flightPath.length < 2}
+          title={!dtmLoaded ? 'Please load a DTM first' : flightPath.length < 2 ? 'Flight path must have at least 2 points' : 'Create a parallel line to an existing segment'}
+        >
+          {isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}
         </button>
         <input
           type="file"

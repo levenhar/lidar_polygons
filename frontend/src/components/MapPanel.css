@@ -1,0 +1,85 @@
+.map-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-right: 2px solid #ddd;
+  position: relative;
+}
+
+.map-controls {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: #f5f5f5;
+  border-bottom: 1px solid #ddd;
+  align-items: center;
+}
+
+.map-controls button {
+  padding: 0.5rem 1rem;
+  background: #3498db;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.2s;
+}
+
+.map-controls button:hover {
+  background: #2980b9;
+}
+
+.map-controls button.active {
+  background: #e74c3c;
+}
+
+.map-controls button.active:hover {
+  background: #c0392b;
+}
+
+.map-controls .button-label {
+  padding: 0.5rem 1rem;
+  background: #27ae60;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.2s;
+  display: inline-block;
+}
+
+.map-controls .button-label:hover {
+  background: #229954;
+}
+
+.dtm-status {
+  padding: 0.5rem 1rem;
+  background: #27ae60;
+  color: white;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+.map-container {
+  flex: 1;
+  width: 100%;
+}
+
+.flight-point-marker {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #ff0000;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+  font-size: 0.8rem;
+  border: 2px solid white;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+

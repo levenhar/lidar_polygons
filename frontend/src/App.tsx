@@ -8,6 +8,7 @@ import './App.css';
 export interface Coordinate {
   lng: number;
   lat: number;
+  height?: number; // Optional flight height in meters (AGL - Above Ground Level)
 }
 
 export interface ElevationPoint {
@@ -15,6 +16,7 @@ export interface ElevationPoint {
   elevation: number;
   longitude: number;
   latitude: number;
+  flightHeight?: number; // Interpolated flight height (AGL) at this point
 }
 
 interface DTMInfo {
@@ -49,11 +51,11 @@ function App() {
   React.useEffect(() => {
     if (flightPath.length === 0) {
       // Clear profile when flight path is empty
-      calculateProfile([], dtmSource || '');
+      calculateProfile([], dtmSource || '', nominalFlightHeight);
     } else if (flightPath.length >= 2 && dtmSource) {
-      calculateProfile(flightPath, dtmSource);
+      calculateProfile(flightPath, dtmSource, nominalFlightHeight);
     }
-  }, [flightPath, dtmSource, calculateProfile]);
+  }, [flightPath, dtmSource, nominalFlightHeight, calculateProfile]);
 
   const handlePathPointHover = useCallback((point: Coordinate | null) => {
     setSelectedPoint(point);
@@ -112,6 +114,7 @@ function App() {
           onUpdatePoint={updatePoint}
           onDeletePoint={deletePoint}
           onDtmLoad={handleDtmLoad}
+          nominalFlightHeight={nominalFlightHeight}
         />
         <ElevationProfile
           elevationProfile={elevationProfile}

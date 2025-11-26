@@ -47,7 +47,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     const maxElevation = Math.max(
       ...elevationProfile.map(d => d.elevation),
-      ...elevationProfile.map(d => d.elevation + nominalFlightHeight)
+      ...elevationProfile.map(d => d.elevation + (d.flightHeight ?? nominalFlightHeight))
     );
     const minElevation = Math.min(...elevationProfile.map(d => d.elevation));
 
@@ -55,16 +55,32 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .domain([minElevation - 20, maxElevation + 20])
       .range([height, 0]);
 
-    // Create line generators
+    // Draw ground elevation line
     const groundLine = d3.line<ElevationPoint>()
       .x(d => xScale(d.distance))
       .y(d => yScale(d.elevation))
       .curve(d3.curveMonotoneX);
 
+    g.append('path')
+      .datum(elevationProfile)
+      .attr('fill', 'none')
+      .attr('stroke', '#8B4513')
+      .attr('stroke-width', 2)
+      .attr('d', groundLine);
+
+    // Draw flight altitude line
     const flightLine = d3.line<ElevationPoint>()
       .x(d => xScale(d.distance))
-      .y(d => yScale(d.elevation + nominalFlightHeight))
+      .y(d => yScale(d.elevation + (d.flightHeight ?? nominalFlightHeight)))
       .curve(d3.curveMonotoneX);
+
+    g.append('path')
+      .datum(elevationProfile)
+      .attr('fill', 'none')
+      .attr('stroke', '#1E90FF')
+      .attr('stroke-width', 2)
+      .attr('stroke-dasharray', '5,5')
+      .attr('d', flightLine);
 
     // Add grid lines
     const xAxisGrid = d3.axisBottom(xScale)
@@ -111,7 +127,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('d', d3.area<ElevationPoint>()
         .x(d => xScale(d.distance))
         .y0(d => yScale(d.elevation))
-        .y1(d => yScale(d.elevation + nominalFlightHeight))
+        .y1(d => yScale(d.elevation + (d.flightHeight ?? nominalFlightHeight)))
         .curve(d3.curveMonotoneX)
       );
 
@@ -154,7 +170,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .append('circle')
       .attr('class', 'flight-point')
       .attr('cx', d => xScale(d.point.distance))
-      .attr('cy', d => yScale(d.point.elevation + nominalFlightHeight))
+      .attr('cy', d => yScale(d.point.elevation + (d.point.flightHeight ?? nominalFlightHeight)))
       .attr('r', 3)
       .attr('fill', '#1E90FF');
 
@@ -306,14 +322,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (elevationProfile.length === 0) return;
 
     const headers = ['Distance (m)', 'Ground Elevation (m)', 'Flight Altitude (m)', 'AGL (m)', 'Longitude', 'Latitude'];
-    const rows = elevationProfile.map(point => [
-      point.distance.toFixed(2),
-      point.elevation.toFixed(2),
-      (point.elevation + nominalFlightHeight).toFixed(2),
-      nominalFlightHeight.toFixed(2),
-      point.longitude.toFixed(6),
-      point.latitude.toFixed(6)
-    ]);
+    const rows = elevationProfile.map(point => {
+      const flightHeight = point.flightHeight ?? nominalFlightHeight;
+      return [
+        point.distance.toFixed(2),
+        point.elevation.toFixed(2),
+        (point.elevation + flightHeight).toFixed(2),
+        flightHeight.toFixed(2),
+        point.longitude.toFixed(6),
+        point.latitude.toFixed(6)
+      ];
+    });
 
     const csvContent = [
       headers.join(','),

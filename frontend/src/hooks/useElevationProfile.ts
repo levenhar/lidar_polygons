@@ -9,7 +9,8 @@ export function useElevationProfile() {
 
   const calculateProfile = useCallback(async (
     flightPath: Coordinate[],
-    dtmSource: string
+    dtmSource: string,
+    nominalFlightHeight: number
   ) => {
     if (flightPath.length < 2) {
       setElevationProfile([]);
@@ -36,9 +37,12 @@ export function useElevationProfile() {
 
       let cumulativeDistance = 0;
       const distances = [0];
+      const segmentDistances: number[] = [0]; // Distance from start of each segment
       for (let i = 1; i < flightPath.length; i++) {
-        cumulativeDistance += calculateDistance(flightPath[i - 1], flightPath[i]);
+        const segmentDist = calculateDistance(flightPath[i - 1], flightPath[i]);
+        cumulativeDistance += segmentDist;
         distances.push(cumulativeDistance);
+        segmentDistances.push(segmentDist);
       }
       
       const response = await axios.post('http://localhost:5000/api/elevation-profile', {
@@ -46,13 +50,54 @@ export function useElevationProfile() {
         dtmPath: dtmSource
       });
 
-      // Merge API response with calculated distances
-      const profile: ElevationPoint[] = response.data.profile.map((point: any, index: number) => ({
-        distance: distances[index] || point.distance,
-        elevation: point.elevation,
-        longitude: point.longitude,
-        latitude: point.latitude
-      }));
+      // Helper function to interpolate flight height for any point along the path
+      const interpolateFlightHeight = (distance: number): number => {
+        // Find which segment this point belongs to
+        if (distance <= 0) {
+          return flightPath[0].height ?? nominalFlightHeight;
+        }
+        
+        if (distance >= distances[distances.length - 1]) {
+          return flightPath[flightPath.length - 1].height ?? nominalFlightHeight;
+        }
+        
+        // Find the segment containing this distance
+        for (let i = 0; i < distances.length - 1; i++) {
+          if (distance >= distances[i] && distance <= distances[i + 1]) {
+            const startHeight = flightPath[i].height ?? nominalFlightHeight;
+            const endHeight = flightPath[i + 1].height ?? nominalFlightHeight;
+            
+            // If heights are the same, no interpolation needed
+            if (startHeight === endHeight) {
+              return startHeight;
+            }
+            
+            // Linear interpolation
+            const segmentStartDist = distances[i];
+            const segmentLength = distances[i + 1] - segmentStartDist;
+            const distanceInSegment = distance - segmentStartDist;
+            const t = segmentLength > 0 ? distanceInSegment / segmentLength : 0;
+            return startHeight + (endHeight - startHeight) * t;
+          }
+        }
+        
+        // Fallback to nominal height
+        return nominalFlightHeight;
+      };
+
+      // Merge API response with calculated distances and interpolated flight heights
+      // Use the API's distance for interpolation, but ensure vertex distances match
+      const profile: ElevationPoint[] = response.data.profile.map((point: any, index: number) => {
+        // Use API distance if available, otherwise calculate from vertex distances
+        const distance = point.distance !== undefined ? point.distance : (distances[index] || 0);
+        return {
+          distance,
+          elevation: point.elevation,
+          longitude: point.longitude,
+          latitude: point.latitude,
+          flightHeight: interpolateFlightHeight(distance)
+        };
+      });
 
       setElevationProfile(profile);
     } catch (error) {
@@ -71,17 +116,60 @@ export function useElevationProfile() {
       };
 
       let cumulativeDistance = 0;
-      const mockProfile: ElevationPoint[] = flightPath.map((coord, index) => {
-        if (index > 0) {
-          cumulativeDistance += calculateDistance(flightPath[index - 1], coord);
+      const distances = [0];
+      const segmentDistances: number[] = [0];
+      for (let i = 1; i < flightPath.length; i++) {
+        const segmentDist = calculateDistance(flightPath[i - 1], flightPath[i]);
+        cumulativeDistance += segmentDist;
+        distances.push(cumulativeDistance);
+        segmentDistances.push(segmentDist);
+      }
+
+      // Helper function to interpolate flight height for any point along the path
+      const interpolateFlightHeight = (distance: number): number => {
+        // Find which segment this point belongs to
+        if (distance <= 0) {
+          return flightPath[0].height ?? nominalFlightHeight;
         }
+        
+        if (distance >= distances[distances.length - 1]) {
+          return flightPath[flightPath.length - 1].height ?? nominalFlightHeight;
+        }
+        
+        // Find the segment containing this distance
+        for (let i = 0; i < distances.length - 1; i++) {
+          if (distance >= distances[i] && distance <= distances[i + 1]) {
+            const startHeight = flightPath[i].height ?? nominalFlightHeight;
+            const endHeight = flightPath[i + 1].height ?? nominalFlightHeight;
+            
+            // If heights are the same, no interpolation needed
+            if (startHeight === endHeight) {
+              return startHeight;
+            }
+            
+            // Linear interpolation
+            const segmentStartDist = distances[i];
+            const segmentLength = distances[i + 1] - segmentStartDist;
+            const distanceInSegment = distance - segmentStartDist;
+            const t = segmentLength > 0 ? distanceInSegment / segmentLength : 0;
+            return startHeight + (endHeight - startHeight) * t;
+          }
+        }
+        
+        // Fallback to nominal height
+        return nominalFlightHeight;
+      };
+
+      const mockProfile: ElevationPoint[] = flightPath.map((coord, index) => {
+        const distance = distances[index] || 0;
         // Mock elevation with some variation
         const elevation = 100 + Math.sin(index * 0.1) * 50 + Math.random() * 20;
         return {
-          distance: cumulativeDistance,
+          distance,
           elevation,
           longitude: coord.lng,
-          latitude: coord.lat
+          latitude: coord.lat,
+          flightHeight: interpolateFlightHeight(distance)
         };
       });
       setElevationProfile(mockProfile);

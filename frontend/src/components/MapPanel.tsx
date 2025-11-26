@@ -3,6 +3,7 @@ import maplibregl from 'maplibre-gl';
 // @ts-ignore - proj4 types may not be perfect
 import proj4 from 'proj4';
 import { Coordinate } from '../App';
+import ContextMenu from './ContextMenu';
 import './MapPanel.css';
 
 interface MapPanelProps {
@@ -14,6 +15,7 @@ interface MapPanelProps {
   onUpdatePoint: (index: number, point: Coordinate) => void;
   onDeletePoint: (index: number) => void;
   onDtmLoad: (source: string, info?: any) => void;
+  nominalFlightHeight: number;
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
@@ -24,17 +26,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onAddPoint,
   onUpdatePoint,
   onDeletePoint,
-  onDtmLoad
+  onDtmLoad,
+  nominalFlightHeight
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [dtmLoaded, setDtmLoaded] = useState(false);
   const [dtmBounds, setDtmBounds] = useState<number[] | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const hoveredPointRef = useRef<number | null>(null);
   const dtmImageRef = useRef<HTMLImageElement | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
+  const [editingPointIndex, setEditingPointIndex] = useState<number | null>(null);
 
   // Helper function to check if a point is within DTM bounds
   const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
@@ -94,11 +98,33 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, []);
 
-  // Set up click handler for adding points (separate effect to use latest bounds)
+  // Set up click handler for adding points and editing points (separate effect to use latest bounds)
   useEffect(() => {
     if (!map.current) return;
 
     const handleClick = (e: maplibregl.MapMouseEvent) => {
+      // If editing a point, move it to the new location
+      if (editingPointIndex !== null && dtmLoaded) {
+        const lng = e.lngLat.lng;
+        const lat = e.lngLat.lat;
+        
+        // Check if point is within DTM bounds
+        if (!isPointWithinBounds(lng, lat)) {
+          alert('Cannot move point outside DTM bounding box. Please select a point within the DTM extent.');
+          return;
+        }
+        
+        const currentPoint = flightPath[editingPointIndex];
+        onUpdatePoint(editingPointIndex, {
+          lng,
+          lat,
+          height: currentPoint.height // Preserve height
+        });
+        setEditingPointIndex(null);
+        return;
+      }
+
+      // Otherwise, add new point if drawing
       if (isDrawing && dtmLoaded) {
         const lng = e.lngLat.lng;
         const lat = e.lngLat.lat;
@@ -124,7 +150,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current.off('click', handleClick);
       }
     };
-  }, [isDrawing, dtmLoaded, onAddPoint, isPointWithinBounds]);
+  }, [isDrawing, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath]);
 
   // Update flight path on map
   useEffect(() => {
@@ -231,10 +257,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
       });
 
-      // Handle marker click for deletion (right-click or Ctrl+click)
+      // Handle marker right-click for context menu
       el.addEventListener('contextmenu', (e) => {
         e.preventDefault();
-        onDeletePoint(index);
+        const rect = el.getBoundingClientRect();
+        setContextMenu({
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          pointIndex: index
+        });
       });
 
       el.addEventListener('mouseenter', () => {
@@ -722,11 +753,57 @@ const MapPanel: React.FC<MapPanelProps> = ({
     });
   };
 
+  const handleSetFlightHeight = (pointIndex: number) => {
+    const currentPoint = flightPath[pointIndex];
+    const currentHeight = currentPoint.height ?? nominalFlightHeight;
+    const heightInput = prompt(`Enter flight height (AGL in meters) for point ${pointIndex + 1}:`, currentHeight.toString());
+    
+    if (heightInput !== null) {
+      const height = parseFloat(heightInput);
+      if (!isNaN(height) && height >= 0) {
+        onUpdatePoint(pointIndex, {
+          ...currentPoint,
+          height
+        });
+      } else {
+        alert('Invalid height. Please enter a positive number.');
+      }
+    }
+  };
+
   return (
     <div className="map-panel">
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onDelete={() => {
+            onDeletePoint(contextMenu.pointIndex);
+            setContextMenu(null);
+          }}
+          onEdit={() => {
+            setEditingPointIndex(contextMenu.pointIndex);
+            setContextMenu(null);
+            alert(`Edit mode enabled for point ${contextMenu.pointIndex + 1}. Click on the map to move the point.`);
+          }}
+          onSetHeight={() => {
+            handleSetFlightHeight(contextMenu.pointIndex);
+            setContextMenu(null);
+          }}
+        />
+      )}
+      {editingPointIndex !== null && (
+        <div className="edit-mode-indicator">
+          Edit mode: Click on the map to move point {editingPointIndex + 1}
+        </div>
+      )}
       <div className="map-controls">
         <button
-          onClick={() => setIsDrawing(!isDrawing)}
+          onClick={() => {
+            setIsDrawing(!isDrawing);
+            setEditingPointIndex(null); // Cancel edit mode when toggling drawing
+          }}
           className={isDrawing ? 'active' : ''}
           disabled={!dtmLoaded}
           title={!dtmLoaded ? 'Please load a DTM first' : ''}

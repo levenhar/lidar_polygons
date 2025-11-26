@@ -45,6 +45,8 @@ export function useFlightPath() {
     }
 
     const coordinates = flightPath.map(p => [p.lng, p.lat]);
+    const heights = flightPath.map(p => p.height);
+    const hasHeights = heights.some(h => h !== undefined);
     
     const geoJSON: GeoJSON = {
       type: 'FeatureCollection',
@@ -57,7 +59,8 @@ export function useFlightPath() {
           },
           properties: {
             name: 'Flight Path',
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            ...(hasHeights && { heights })
           }
         }
       ]
@@ -91,9 +94,12 @@ export function useFlightPath() {
         return;
       }
 
-      const coordinates = lineStringFeature.geometry.coordinates.map(coord => ({
+      const heights = lineStringFeature.properties?.heights as number[] | undefined;
+      
+      const coordinates = lineStringFeature.geometry.coordinates.map((coord, index) => ({
         lng: coord[0],
-        lat: coord[1]
+        lat: coord[1],
+        ...(heights && heights[index] !== undefined && { height: heights[index] })
       }));
 
       setFlightPathState(coordinates);

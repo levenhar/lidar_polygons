@@ -115,22 +115,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .curve(d3.curveMonotoneX)
       );
 
-    // Draw ground elevation line
-    g.append('path')
-      .datum(elevationProfile)
-      .attr('fill', 'none')
-      .attr('stroke', '#8B4513')
-      .attr('stroke-width', 2)
-      .attr('d', groundLine);
-
-    // Draw flight altitude line
-    g.append('path')
-      .datum(elevationProfile)
-      .attr('fill', 'none')
-      .attr('stroke', '#1E90FF')
-      .attr('stroke-width', 2)
-      .attr('stroke-dasharray', '5,5')
-      .attr('d', flightLine);
 
     // Find original flight path vertices in the elevation profile
     // Match by coordinates (with small tolerance for floating point precision)

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import maplibregl from 'maplibre-gl';
 // @ts-ignore - proj4 types may not be perfect
 import proj4 from 'proj4';
@@ -36,6 +36,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const hoveredPointRef = useRef<number | null>(null);
   const dtmImageRef = useRef<HTMLImageElement | null>(null);
 
+  // Helper function to check if a point is within DTM bounds
+  const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
+    if (!dtmBounds || dtmBounds.length !== 4) {
+      return false;
+    }
+    const [minLng, minLat, maxLng, maxLat] = dtmBounds;
+    return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
+  }, [dtmBounds]);
+
   // Initialize map
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
@@ -70,17 +79,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
 
-    // Handle map click for adding points
-    map.current.on('click', (e) => {
-      if (isDrawing && dtmLoaded) {
-        const newPoint: Coordinate = {
-          lng: e.lngLat.lng,
-          lat: e.lngLat.lat
-        };
-        onAddPoint(newPoint);
-      }
-    });
-
     return () => {
       if (map.current) {
         // Clean up DTM layer
@@ -94,7 +92,39 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current = null;
       }
     };
-  }, [isDrawing, dtmLoaded, onAddPoint]);
+  }, []);
+
+  // Set up click handler for adding points (separate effect to use latest bounds)
+  useEffect(() => {
+    if (!map.current) return;
+
+    const handleClick = (e: maplibregl.MapMouseEvent) => {
+      if (isDrawing && dtmLoaded) {
+        const lng = e.lngLat.lng;
+        const lat = e.lngLat.lat;
+        
+        // Check if point is within DTM bounds
+        if (!isPointWithinBounds(lng, lat)) {
+          alert('Cannot add point outside DTM bounding box. Please select a point within the DTM extent.');
+          return;
+        }
+        
+        const newPoint: Coordinate = {
+          lng,
+          lat
+        };
+        onAddPoint(newPoint);
+      }
+    };
+
+    map.current.on('click', handleClick);
+
+    return () => {
+      if (map.current) {
+        map.current.off('click', handleClick);
+      }
+    };
+  }, [isDrawing, dtmLoaded, onAddPoint, isPointWithinBounds]);
 
   // Update flight path on map
   useEffect(() => {
@@ -160,10 +190,45 @@ const MapPanel: React.FC<MapPanelProps> = ({
         .setLngLat([point.lng, point.lat])
         .addTo(map.current!);
 
+      // Store the last valid position for this marker
+      let lastValidPosition: [number, number] = [point.lng, point.lat];
+
+      // Handle drag start - store initial position
+      marker.on('dragstart', () => {
+        lastValidPosition = [point.lng, point.lat];
+      });
+
       // Handle marker drag
       marker.on('drag', () => {
         const lngLat = marker.getLngLat();
-        onUpdatePoint(index, { lng: lngLat.lng, lat: lngLat.lat });
+        const lng = lngLat.lng;
+        const lat = lngLat.lat;
+        
+        // Check if point is within DTM bounds
+        if (!isPointWithinBounds(lng, lat)) {
+          // Reset marker to last valid position
+          marker.setLngLat(lastValidPosition);
+          return;
+        }
+        
+        // Update last valid position and state
+        lastValidPosition = [lng, lat];
+        onUpdatePoint(index, { lng, lat });
+      });
+      
+      // Handle drag end to show message if dragged outside bounds
+      marker.on('dragend', () => {
+        const lngLat = marker.getLngLat();
+        const lng = lngLat.lng;
+        const lat = lngLat.lat;
+        
+        // Check if final position is within bounds
+        if (!isPointWithinBounds(lng, lat)) {
+          // Reset to last valid position
+          marker.setLngLat(lastValidPosition);
+          onUpdatePoint(index, { lng: lastValidPosition[0], lat: lastValidPosition[1] });
+          alert('Cannot move point outside DTM bounding box. Point has been reset to the previous valid position.');
+        }
       });
 
       // Handle marker click for deletion (right-click or Ctrl+click)
@@ -191,7 +256,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       flightPath.forEach(point => bounds.extend([point.lng, point.lat]));
       map.current.fitBounds(bounds, { padding: 50 });
     }
-  }, [flightPath, onUpdatePoint, onDeletePoint, onPathPointHover]);
+  }, [flightPath, onUpdatePoint, onDeletePoint, onPathPointHover, isPointWithinBounds]);
 
   // Exit drawing mode if DTM is unloaded
   useEffect(() => {

@@ -250,12 +250,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       markersRef.current.push(marker);
     });
 
-    // Fit map to bounds if path exists
-    if (flightPath.length > 0) {
-      const bounds = new maplibregl.LngLatBounds();
-      flightPath.forEach(point => bounds.extend([point.lng, point.lat]));
-      map.current.fitBounds(bounds, { padding: 50 });
-    }
+    // Don't auto-fit bounds while drawing - let user control the view
+    // Map view will remain fixed during drawing
   }, [flightPath, onUpdatePoint, onDeletePoint, onPathPointHover, isPointWithinBounds]);
 
   // Exit drawing mode if DTM is unloaded

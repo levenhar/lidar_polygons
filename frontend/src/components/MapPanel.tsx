@@ -73,8 +73,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           }
         ]
       },
-      center: [-122.4194, 37.7749], // San Francisco default
-      zoom: 13
+      center: [34.8516, 31.0461], // Israel default
+      zoom: 6
     });
 
     map.current.addControl(new maplibregl.NavigationControl(), 'top-right');

@@ -132,26 +132,61 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('stroke-dasharray', '5,5')
       .attr('d', flightLine);
 
-    // Add data points
+    // Find original flight path vertices in the elevation profile
+    // Match by coordinates (with small tolerance for floating point precision)
+    const originalVertices = flightPath.map((vertex, vertexIndex) => {
+      // Find the closest elevation point to this vertex
+      let closestPoint = elevationProfile[0];
+      let closestDistance = Infinity;
+      
+      for (const point of elevationProfile) {
+        const dist = Math.sqrt(
+          Math.pow(point.longitude - vertex.lng, 2) + 
+          Math.pow(point.latitude - vertex.lat, 2)
+        );
+        if (dist < closestDistance) {
+          closestDistance = dist;
+          closestPoint = point;
+        }
+      }
+      
+      return { point: closestPoint, index: vertexIndex };
+    });
+
+    // Add data points only for original flight path vertices
     g.selectAll('.ground-point')
-      .data(elevationProfile)
+      .data(originalVertices)
       .enter()
       .append('circle')
       .attr('class', 'ground-point')
-      .attr('cx', d => xScale(d.distance))
-      .attr('cy', d => yScale(d.elevation))
+      .attr('cx', d => xScale(d.point.distance))
+      .attr('cy', d => yScale(d.point.elevation))
       .attr('r', 3)
       .attr('fill', '#8B4513');
 
     g.selectAll('.flight-point')
-      .data(elevationProfile)
+      .data(originalVertices)
       .enter()
       .append('circle')
       .attr('class', 'flight-point')
-      .attr('cx', d => xScale(d.distance))
-      .attr('cy', d => yScale(d.elevation + nominalFlightHeight))
+      .attr('cx', d => xScale(d.point.distance))
+      .attr('cy', d => yScale(d.point.elevation + nominalFlightHeight))
       .attr('r', 3)
       .attr('fill', '#1E90FF');
+
+    // Add point number labels only for original vertices
+    g.selectAll('.point-label')
+      .data(originalVertices)
+      .enter()
+      .append('text')
+      .attr('class', 'point-label')
+      .attr('x', d => xScale(d.point.distance))
+      .attr('y', d => yScale(d.point.elevation) - 8)
+      .attr('text-anchor', 'middle')
+      .attr('fill', '#666')
+      .style('font-size', '10px')
+      .style('font-weight', '500')
+      .text(d => d.index + 1);
 
     // Add axes
     const xAxis = d3.axisBottom(xScale)

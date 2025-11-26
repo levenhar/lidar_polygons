@@ -140,8 +140,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
     });
     
-    // Ensure flight path is above DTM if DTM exists
+    // Ensure flight path is above DTM if DTM exists (DTM stays visible below)
     if (map.current.getLayer('dtm-layer')) {
+      // Move flight path to the top to ensure it's above DTM (DTM remains visible)
       map.current.moveLayer('flight-path');
     }
 
@@ -323,7 +324,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const imageData = ctx.createImageData(width, height);
         const range = max - min || 1;
 
-        // Convert elevation data to color (using a terrain color scheme)
+        // Convert elevation data to grayscale
         const noDataValue = rasterData.noDataValue;
         for (let i = 0; i < data.length; i++) {
           let elevation = data[i];
@@ -339,33 +340,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
           
           const normalized = (elevation - min) / range;
           
-          // Terrain color scheme: dark green (low) -> brown -> white (high)
-          let r, g, b;
-          if (normalized < 0.33) {
-            // Low elevation: dark green to brown
-            const t = normalized / 0.33;
-            r = Math.floor(34 + t * 139);
-            g = Math.floor(139 + t * 69);
-            b = Math.floor(34 + t * 19);
-          } else if (normalized < 0.66) {
-            // Medium elevation: brown to tan
-            const t = (normalized - 0.33) / 0.33;
-            r = Math.floor(173 + t * 82);
-            g = Math.floor(108 + t * 47);
-            b = Math.floor(53 + t * 22);
-          } else {
-            // High elevation: tan to white
-            const t = (normalized - 0.66) / 0.34;
-            r = Math.floor(255 + t * 0);
-            g = Math.floor(228 + t * 27);
-            b = Math.floor(181 + t * 74);
-          }
+          // Grayscale: black (low) -> white (high)
+          // Convert normalized value (0-1) to grayscale (0-255)
+          const gray = Math.floor(normalized * 255);
+          const r = gray;
+          const g = gray;
+          const b = gray;
 
           const idx = i * 4;
           imageData.data[idx] = r;     // R
           imageData.data[idx + 1] = g; // G
           imageData.data[idx + 2] = b;  // B
-          imageData.data[idx + 3] = 200; // A (semi-transparent)
+          imageData.data[idx + 3] = 255; // A (fully opaque for better visibility)
         }
 
         ctx.putImageData(imageData, 0, 0);
@@ -396,12 +382,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
           try {
             const imageUrl = canvas.toDataURL();
             console.log('Image URL length:', imageUrl.length);
+            console.log('Canvas dimensions:', canvas.width, 'x', canvas.height);
             console.log('Coordinates to use:', [
               [minX, maxY], // top-left
               [maxX, maxY], // top-right
               [maxX, minY], // bottom-right
               [minX, minY]  // bottom-left
             ]);
+
+            // Remove existing source if present
+            if (map.current.getSource('dtm-source')) {
+              map.current.removeSource('dtm-source');
+            }
 
             // Add image source with geographic coordinates
             map.current.addSource('dtm-source', {
@@ -415,26 +407,111 @@ const MapPanel: React.FC<MapPanelProps> = ({
               ]
             });
             
-            // Verify source was added
+            // Verify source was added and wait for it to load
             const source = map.current.getSource('dtm-source');
             console.log('Source added, type:', source?.type);
+            if (source && 'coordinates' in source) {
+              console.log('Source coordinates:', (source as any).coordinates);
+            }
+            
+            // Check if source has an image property (for image sources)
+            if (source && 'image' in source) {
+              const imageSource = source as any;
+              console.log('Image source image property:', imageSource.image);
+              if (imageSource.image) {
+                console.log('Image loaded:', imageSource.image.complete);
+                console.log('Image dimensions:', imageSource.image.width, 'x', imageSource.image.height);
+              }
+            }
 
             console.log('DTM source added successfully');
 
             // Add raster layer to display the image
             // Place DTM layer above OSM but below flight path
+            // Determine where to place it
+            let beforeId: string | undefined = undefined;
+            if (map.current.getLayer('flight-path')) {
+              // If flight path exists, place DTM before it (so flight path stays on top)
+              beforeId = 'flight-path';
+            }
+            // If no flight path, add at top (will be above OSM)
+            
             map.current.addLayer({
               id: 'dtm-layer',
               type: 'raster',
               source: 'dtm-source',
               paint: {
-                'raster-opacity': 0.7
+                'raster-opacity': 1.0  // Full opacity for maximum visibility
               }
-            });
+            }, beforeId);
             
-            // If flight path layer exists, move it above DTM
+            // If flight path layer exists, ensure it's above DTM (move to top)
             if (map.current.getLayer('flight-path')) {
               map.current.moveLayer('flight-path');
+            }
+            
+            // Reduce OSM opacity significantly to make DTM clearly visible
+            // Since DTM is grayscale, we want it to be the dominant layer
+            if (map.current.getLayer('osm-layer')) {
+              const currentOpacity = map.current.getPaintProperty('osm-layer', 'raster-opacity');
+              console.log('Current OSM opacity:', currentOpacity);
+              // Set OSM to 30% opacity so DTM grayscale is clearly visible on top
+              map.current.setPaintProperty('osm-layer', 'raster-opacity', 0.3);
+            }
+            
+            // Force map to repaint
+            map.current.triggerRepaint();
+            
+            // Verify layer order and visibility
+            console.log('Layer order after DTM addition:');
+            const style = map.current.getStyle();
+            if (style && style.layers) {
+              style.layers.forEach((layer: any, index: number) => {
+                const layerObj = map.current!.getLayer(layer.id);
+                const visibility = layerObj ? 'visible' : 'not found';
+                console.log(`  ${index}: ${layer.id} (${layer.type}) - ${visibility}`);
+              });
+            }
+            
+            // Verify DTM layer exists and is visible
+            const dtmLayer = map.current.getLayer('dtm-layer');
+            if (dtmLayer) {
+              console.log('DTM layer verified:', dtmLayer);
+              const opacity = map.current.getPaintProperty('dtm-layer', 'raster-opacity');
+              console.log('DTM layer paint properties - opacity:', opacity);
+            } else {
+              console.error('DTM layer not found after addition!');
+            }
+            
+            // Verify source
+            const dtmSource = map.current.getSource('dtm-source');
+            if (dtmSource && 'coordinates' in dtmSource) {
+              console.log('DTM source verified:', dtmSource);
+              console.log('DTM source coordinates:', (dtmSource as any).coordinates);
+            } else {
+              console.error('DTM source not found after addition!');
+            }
+            
+            // Check current map bounds vs DTM bounds
+            const mapBounds = map.current.getBounds();
+            const mapBoundsArray = mapBounds.toArray();
+            console.log('Current map bounds:', mapBoundsArray);
+            console.log('DTM bounds:', bounds);
+            
+            // Check if DTM bounds are within map viewport
+            const [mapMinLng, mapMinLat, mapMaxLng, mapMaxLat] = [
+              mapBoundsArray[0][0], mapBoundsArray[0][1],
+              mapBoundsArray[1][0], mapBoundsArray[1][1]
+            ];
+            const [dtmMinLng, dtmMinLat, dtmMaxLng, dtmMaxLat] = bounds;
+            
+            const dtmInViewport = !(
+              dtmMaxLng < mapMinLng || dtmMinLng > mapMaxLng ||
+              dtmMaxLat < mapMinLat || dtmMinLat > mapMaxLat
+            );
+            console.log('DTM in viewport:', dtmInViewport);
+            if (!dtmInViewport) {
+              console.warn('DTM bounds are outside current map viewport! Use "Fit to DTM" button to see it.');
             }
 
             console.log('DTM layer added successfully');
@@ -477,7 +554,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
         // Convert canvas to image
         const img = new Image();
         img.onload = () => {
-          console.log('DTM image loaded, adding to map...');
+          console.log('DTM image loaded successfully, dimensions:', img.width, 'x', img.height);
+          console.log('Image src length:', img.src.length);
           
           // Wait for map to be fully loaded
           if (!map.current) {
@@ -499,10 +577,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
         img.onerror = (error) => {
           console.error('Error loading DTM image:', error);
           setDtmLoaded(false);
-          alert('Failed to create DTM image from canvas');
+          alert('Failed to create DTM image from canvas. Check console for details.');
         };
 
-        img.src = canvas.toDataURL();
+        const dataUrl = canvas.toDataURL();
+        console.log('Canvas data URL created, length:', dataUrl.length);
+        if (dataUrl.length < 100) {
+          console.error('Canvas data URL seems too short, might be empty!');
+        }
+        img.src = dataUrl;
       } catch (error) {
         console.error('Error loading DTM:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';

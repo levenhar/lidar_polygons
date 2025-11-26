@@ -365,7 +365,7 @@ app.get('/api/dtm/:filename/raster', async (req, res) => {
 });
 
 // Get elevation data along a path
-// This endpoint samples the DTM at points along the path
+// This endpoint samples the DTM at points along the path, including interpolated points along line segments
 app.post('/api/elevation-profile', async (req, res) => {
   try {
     const { coordinates, dtmPath } = req.body;
@@ -390,7 +390,7 @@ app.post('/api/elevation-profile', async (req, res) => {
     }
     
     console.log(`Sampling elevation profile from DTM: ${filename}`);
-    console.log(`Number of coordinates: ${coordinates.length}`);
+    console.log(`Number of input coordinates: ${coordinates.length}`);
     
     // Load the GeoTIFF
     const tiff = await fromFile(filePath);
@@ -470,22 +470,43 @@ app.post('/api/elevation-profile', async (req, res) => {
       }
     };
     
-    // Sample elevation at each coordinate
-    const profile = [];
-    for (let i = 0; i < coordinates.length; i++) {
-      const [lon, lat] = coordinates[i];
+    // Helper function to calculate distance between two coordinates (Haversine formula)
+    const calculateDistance = (coord1, coord2) => {
+      const R = 6371000; // Earth radius in meters
+      const [lon1, lat1] = coord1;
+      const [lon2, lat2] = coord2;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = 
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    };
+    
+    // Helper function to interpolate points along a line segment
+    // Returns an array of coordinates along the segment at regular intervals
+    const interpolateSegment = (start, end, intervalMeters) => {
+      const distance = calculateDistance(start, end);
+      const numPoints = Math.max(2, Math.ceil(distance / intervalMeters));
+      const points = [];
       
-      // Convert to pixel coordinates
+      for (let i = 0; i < numPoints; i++) {
+        const t = i / (numPoints - 1);
+        const lon = start[0] + (end[0] - start[0]) * t;
+        const lat = start[1] + (end[1] - start[1]) * t;
+        points.push([lon, lat]);
+      }
+      
+      return points;
+    };
+    
+    // Sample elevation at a coordinate
+    const sampleElevation = (lon, lat) => {
       const pixel = geoToPixel(lon, lat);
       if (!pixel) {
-        console.warn(`Could not convert coordinates [${lon}, ${lat}] to pixel coordinates`);
-        profile.push({
-          distance: 0,
-          elevation: 0,
-          longitude: lon,
-          latitude: lat
-        });
-        continue;
+        return null;
       }
       
       const { pixelX, pixelY } = pixel;
@@ -507,8 +528,50 @@ app.post('/api/elevation-profile', async (req, res) => {
         elevation = null;
       }
       
+      return elevation !== null ? elevation : null;
+    };
+    
+    // Generate sampling points along the entire path
+    // Use a sampling interval of 5 meters to get dense coverage
+    const samplingInterval = 5; // meters
+    const allPoints = [];
+    
+    // Always include the first point
+    allPoints.push(coordinates[0]);
+    
+    // For each segment, interpolate points along it
+    for (let i = 0; i < coordinates.length - 1; i++) {
+      const start = coordinates[i];
+      const end = coordinates[i + 1];
+      
+      // Get interpolated points along this segment (excluding the start point to avoid duplicates)
+      const segmentPoints = interpolateSegment(start, end, samplingInterval);
+      
+      // Add all points except the first (which is the same as the previous segment's end)
+      for (let j = 1; j < segmentPoints.length; j++) {
+        allPoints.push(segmentPoints[j]);
+      }
+    }
+    
+    console.log(`Generated ${allPoints.length} sampling points along the path`);
+    
+    // Sample elevation at all points
+    const profile = [];
+    let cumulativeDistance = 0;
+    
+    for (let i = 0; i < allPoints.length; i++) {
+      const [lon, lat] = allPoints[i];
+      
+      // Calculate cumulative distance
+      if (i > 0) {
+        cumulativeDistance += calculateDistance(allPoints[i - 1], allPoints[i]);
+      }
+      
+      // Sample elevation
+      const elevation = sampleElevation(lon, lat);
+      
       profile.push({
-        distance: 0, // Distance will be calculated on frontend
+        distance: cumulativeDistance,
         elevation: elevation !== null ? elevation : 0,
         longitude: lon,
         latitude: lat
@@ -516,7 +579,10 @@ app.post('/api/elevation-profile', async (req, res) => {
     }
     
     console.log(`Successfully sampled ${profile.length} elevation points`);
-    console.log(`Elevation range: ${Math.min(...profile.map(p => p.elevation))} to ${Math.max(...profile.map(p => p.elevation))}`);
+    const validElevations = profile.filter(p => p.elevation > 0 || p.elevation < 0).map(p => p.elevation);
+    if (validElevations.length > 0) {
+      console.log(`Elevation range: ${Math.min(...validElevations).toFixed(2)} to ${Math.max(...validElevations).toFixed(2)}`);
+    }
     
     res.json({ profile });
   } catch (error) {

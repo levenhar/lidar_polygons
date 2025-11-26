@@ -270,17 +270,31 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     img.onload = () => {
       canvas.width = img.width;
       canvas.height = img.height;
-      ctx?.drawImage(img, 0, 0);
+      
+      // Fill canvas with white background
+      if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0);
+      }
+      
       canvas.toBlob((blob) => {
         if (blob) {
           const url = URL.createObjectURL(blob);
+          
+          // Open image in new tab
+          window.open(url, '_blank');
+          
+          // Also download the image
           const a = document.createElement('a');
           a.href = url;
           a.download = `elevation-profile-${Date.now()}.png`;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
-          URL.revokeObjectURL(url);
+          
+          // Clean up the URL after a delay to allow the new tab to load
+          setTimeout(() => URL.revokeObjectURL(url), 100);
         }
       });
     };

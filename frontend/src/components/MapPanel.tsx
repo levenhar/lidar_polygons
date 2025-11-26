@@ -916,30 +916,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
       )}
       <div className="map-controls">
-        <button
-          onClick={() => {
-            setIsDrawing(!isDrawing);
-            setEditingPointIndex(null); // Cancel edit mode when toggling drawing
-            setIsParallelLineMode(false); // Cancel parallel line mode
-          }}
-          className={isDrawing ? 'active' : ''}
-          disabled={!dtmLoaded}
-          title={!dtmLoaded ? 'Please load a DTM first' : ''}
-        >
-          {isDrawing ? 'Stop Drawing' : 'Draw Path'}
-        </button>
-        <button
-          onClick={() => {
-            setIsParallelLineMode(!isParallelLineMode);
-            setIsDrawing(false); // Cancel drawing mode
-            setEditingPointIndex(null); // Cancel edit mode
-          }}
-          className={isParallelLineMode ? 'active' : ''}
-          disabled={!dtmLoaded || flightPath.length < 2}
-          title={!dtmLoaded ? 'Please load a DTM first' : flightPath.length < 2 ? 'Flight path must have at least 2 points' : 'Create a parallel line to an existing segment'}
-        >
-          {isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}
-        </button>
         <input
           type="file"
           accept=".tif,.tiff,.geotiff"
@@ -950,6 +926,33 @@ const MapPanel: React.FC<MapPanelProps> = ({
         <label htmlFor="dtm-upload" className="button-label">
           Load DTM
         </label>
+        {dtmLoaded && (
+          <>
+            <button
+              onClick={() => {
+                setIsDrawing(!isDrawing);
+                setEditingPointIndex(null); // Cancel edit mode when toggling drawing
+                setIsParallelLineMode(false); // Cancel parallel line mode
+              }}
+              className={isDrawing ? 'active' : ''}
+              title="Click on the map to add points to your flight path"
+            >
+              {isDrawing ? 'Stop Drawing' : 'Draw Path'}
+            </button>
+            <button
+              onClick={() => {
+                setIsParallelLineMode(!isParallelLineMode);
+                setIsDrawing(false); // Cancel drawing mode
+                setEditingPointIndex(null); // Cancel edit mode
+              }}
+              className={isParallelLineMode ? 'active' : ''}
+              disabled={flightPath.length < 2}
+              title={flightPath.length < 2 ? 'Flight path must have at least 2 points' : 'Create a parallel line to an existing segment'}
+            >
+              {isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}
+            </button>
+          </>
+        )}
         {dtmSource && dtmLoaded && (
           <>
             <span className="dtm-status">DTM Loaded</span>

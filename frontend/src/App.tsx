@@ -47,7 +47,10 @@ function App() {
 
   // Calculate elevation profile when flight path changes
   React.useEffect(() => {
-    if (flightPath.length >= 2 && dtmSource) {
+    if (flightPath.length === 0) {
+      // Clear profile when flight path is empty
+      calculateProfile([], dtmSource || '');
+    } else if (flightPath.length >= 2 && dtmSource) {
       calculateProfile(flightPath, dtmSource);
     }
   }, [flightPath, dtmSource, calculateProfile]);

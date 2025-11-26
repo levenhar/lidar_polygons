@@ -707,6 +707,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   };
 
+  const handleDeleteAllPoints = () => {
+    if (window.confirm('Are you sure you want to delete all points?')) {
+      onPathChange([]);
+    }
+  };
+
+  const handleResetView = () => {
+    if (!map.current) return;
+    map.current.flyTo({
+      center: [34.8516, 31.0461], // Israel default
+      zoom: 6,
+      duration: 1500
+    });
+  };
+
   return (
     <div className="map-panel">
       <div className="map-controls">
@@ -739,6 +754,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
             </button>
           </>
         )}
+        {flightPath.length > 0 && (
+          <button
+            onClick={handleDeleteAllPoints}
+            title="Delete all flight path points"
+            style={{ background: '#e74c3c' }}
+          >
+            Delete All Points
+          </button>
+        )}
+        <button
+          onClick={handleResetView}
+          title="Reset map view to default extent"
+        >
+          Reset View
+        </button>
       </div>
       <div ref={mapContainer} className="map-container" />
     </div>

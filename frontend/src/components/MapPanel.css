@@ -2,65 +2,64 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  border-right: 2px solid #ddd;
+  border-right: 1px solid #e5e7eb;
   position: relative;
 }
 
 .map-controls {
   display: flex;
+  gap: 1.5rem;
+  padding: 1rem 1.25rem;
+  background: #ffffff;
+  border-bottom: 1px solid #7DD3FC;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
   gap: 0.5rem;
-  padding: 0.5rem;
-  background: #f5f5f5;
-  border-bottom: 1px solid #ddd;
-  align-items: center;
+  min-width: 0;
 }
 
-.map-controls button {
-  padding: 0.5rem 1rem;
-  background: #3498db;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  transition: background 0.2s;
+.group-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #0369A1;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.25rem;
+  padding: 0;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid #7DD3FC;
 }
 
-.map-controls button:hover {
-  background: #2980b9;
+.group-columns {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
 }
 
-.map-controls button.active {
-  background: #e74c3c;
+.group-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 160px;
+  max-width: 160px;
 }
 
-.map-controls button.active:hover {
-  background: #c0392b;
+/* Legacy support - keep for backward compatibility */
+.group-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 160px;
+  max-width: 160px;
 }
 
-.map-controls .button-label {
-  padding: 0.5rem 1rem;
-  background: #27ae60;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.9rem;
-  transition: background 0.2s;
-  display: inline-block;
-}
-
-.map-controls .button-label:hover {
-  background: #229954;
-}
-
-.dtm-status {
-  padding: 0.5rem 1rem;
-  background: #27ae60;
-  color: white;
-  border-radius: 4px;
-  font-size: 0.9rem;
-}
+/* Button styles are now in index.css - shared across all components */
 
 .map-container {
   flex: 1;
@@ -77,23 +76,25 @@
   align-items: center;
   justify-content: center;
   font-weight: bold;
-  font-size: 0.8rem;
+  font-size: 0.875rem;
   border: 2px solid white;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 .edit-mode-indicator {
   position: absolute;
-  top: 60px;
+  top: 70px;
   left: 50%;
   transform: translateX(-50%);
-  background: #ff9800;
-  color: white;
-  padding: 0.5rem 1rem;
-  border-radius: 4px;
-  font-size: 0.9rem;
+  background: #f59e0b;
+  color: #ffffff;
+  padding: 0.625rem 1.25rem;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 500;
   z-index: 1000;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  border: 1px solid #d97706;
 }
 
 

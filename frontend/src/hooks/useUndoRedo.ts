@@ -1,12 +1,15 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useMemo } from 'react';
 
 export function useUndoRedo<T>(initialState: T) {
   const [state, setState] = useState<T>(initialState);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const historyRef = useRef<T[]>([initialState]);
 
-  const canUndo = currentIndex > 0;
-  const canRedo = currentIndex < historyRef.current.length - 1;
+  // Compute canUndo and canRedo reactively based on currentIndex
+  const canUndo = useMemo(() => currentIndex > 0, [currentIndex]);
+  const canRedo = useMemo(() => {
+    return currentIndex < historyRef.current.length - 1;
+  }, [currentIndex]);
 
   const setStateWithHistory = useCallback((newState: T, addToHistory: boolean = true) => {
     if (addToHistory) {
@@ -17,13 +20,19 @@ export function useUndoRedo<T>(initialState: T) {
       
       // Add new state to history
       historyRef.current.push(newState);
-      const newIndex = historyRef.current.length - 1;
       
       // Limit history size to prevent memory issues (keep last 50 states)
-      if (historyRef.current.length > 50) {
-        historyRef.current = historyRef.current.slice(-50);
-        setCurrentIndex(historyRef.current.length - 1);
+      const maxHistorySize = 50;
+      if (historyRef.current.length > maxHistorySize) {
+        // Remove oldest entries, keeping the most recent ones
+        const itemsToRemove = historyRef.current.length - maxHistorySize;
+        historyRef.current = historyRef.current.slice(itemsToRemove);
+        // Adjust currentIndex to account for removed items
+        const newIndex = historyRef.current.length - 1;
+        setCurrentIndex(newIndex);
       } else {
+        // Normal case: just update index to the new state
+        const newIndex = historyRef.current.length - 1;
         setCurrentIndex(newIndex);
       }
     }
@@ -34,16 +43,18 @@ export function useUndoRedo<T>(initialState: T) {
   const undo = useCallback(() => {
     if (currentIndex > 0) {
       const newIndex = currentIndex - 1;
+      const previousState = historyRef.current[newIndex];
       setCurrentIndex(newIndex);
-      setState(historyRef.current[newIndex]);
+      setState(previousState);
     }
   }, [currentIndex]);
 
   const redo = useCallback(() => {
     if (currentIndex < historyRef.current.length - 1) {
       const newIndex = currentIndex + 1;
+      const nextState = historyRef.current[newIndex];
       setCurrentIndex(newIndex);
-      setState(historyRef.current[newIndex]);
+      setState(nextState);
     }
   }, [currentIndex]);
 

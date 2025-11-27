@@ -23,4 +23,134 @@ code {
     monospace;
 }
 
+/* Shared Button Component Styles - Used by all buttons across the application */
+.btn {
+  padding: 0.625rem 1rem;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1rem;
+  font-weight: 500;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  width: 100%;
+  min-height: 38px;
+  box-sizing: border-box;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Primary Button - Filled, Bold */
+.btn-primary {
+  background: #0EA5E9;
+  color: #ffffff;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #0284C7;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active:not(:disabled) {
+  background: #0369A1;
+  transform: translateY(0);
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+}
+
+.btn-primary.active {
+  background: #0EA5E9;
+  border: 2px solid #0284C7;
+}
+
+.btn-primary.active:hover {
+  background: #0284C7;
+}
+
+/* Secondary Button - Outlined */
+.btn-secondary {
+  background: transparent;
+  color: #374151;
+  border: 1.5px solid #7DD3FC;
+  box-shadow: none;
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background: #E0F2FE;
+  border-color: #0EA5E9;
+  color: #0EA5E9;
+}
+
+.btn-secondary:active:not(:disabled) {
+  background: #BAE6FD;
+  border-color: #0EA5E9;
+  color: #0284C7;
+}
+
+.btn-secondary.active {
+  background: #E0F2FE;
+  border-color: #0EA5E9;
+  color: #0EA5E9;
+}
+
+.btn-secondary.active:hover {
+  background: #BAE6FD;
+  border-color: #0284C7;
+  color: #0284C7;
+}
+
+/* Tertiary Button - Text Only with Border */
+.btn-tertiary {
+  background: transparent;
+  color: #6b7280;
+  border: 1.5px solid #7DD3FC;
+  box-shadow: none;
+  padding: 0.625rem 1rem;
+}
+
+.btn-tertiary:hover:not(:disabled) {
+  background: #E0F2FE;
+  color: #0EA5E9;
+  border-color: #0EA5E9;
+}
+
+.btn-tertiary:active:not(:disabled) {
+  background: #BAE6FD;
+  color: #0284C7;
+  border-color: #0284C7;
+}
+
+.btn-tertiary:disabled {
+  border-color: #7DD3FC;
+}
+
+/* Destructive Button - Outlined Red */
+.btn-destructive {
+  background: transparent;
+  color: #dc2626;
+  border: 1.5px solid #fca5a5;
+  box-shadow: none;
+}
+
+.btn-destructive:hover:not(:disabled) {
+  background: #fef2f2;
+  border-color: #f87171;
+  color: #b91c1c;
+}
+
+.btn-destructive:active:not(:disabled) {
+  background: #fee2e2;
+  border-color: #ef4444;
+  color: #991b1b;
+}
+
 

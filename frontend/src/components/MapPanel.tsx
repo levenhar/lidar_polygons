@@ -19,6 +19,10 @@ interface MapPanelProps {
   onDtmLoad: (source: string, info?: any) => void;
   onDtmUnload: () => void;
   nominalFlightHeight: number;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
@@ -32,7 +36,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onDeletePoint,
   onDtmLoad,
   onDtmUnload,
-  nominalFlightHeight
+  nominalFlightHeight,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<maplibregl.Map | null>(null);
@@ -817,6 +825,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Prevent uploading if a DTM is already loaded
+    if (dtmLoaded) {
+      alert('A DTM is already loaded. Please unload it first before loading a new one.');
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
+
     const formData = new FormData();
     formData.append('dtm', file);
 
@@ -933,77 +950,133 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
       )}
       <div className="map-controls">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".tif,.tiff,.geotiff"
-          onChange={handleFileUpload}
-          id="dtm-upload"
-          style={{ display: 'none' }}
-        />
-        <label htmlFor="dtm-upload" className="button-label">
-          Load DTM
-        </label>
-        {dtmLoaded && (
-          <>
-            <button
-              onClick={() => {
-                setIsDrawing(!isDrawing);
-                setEditingPointIndex(null); // Cancel edit mode when toggling drawing
-                setIsParallelLineMode(false); // Cancel parallel line mode
-              }}
-              className={isDrawing ? 'active' : ''}
-              title="Click on the map to add points to your flight path"
-            >
-              {isDrawing ? 'Stop Drawing' : 'Draw Path'}
-            </button>
-            <button
-              onClick={() => {
-                setIsParallelLineMode(!isParallelLineMode);
-                setIsDrawing(false); // Cancel drawing mode
-                setEditingPointIndex(null); // Cancel edit mode
-              }}
-              className={isParallelLineMode ? 'active' : ''}
-              disabled={flightPath.length < 2}
-              title={flightPath.length < 2 ? 'Flight path must have at least 2 points' : 'Create a parallel line to an existing segment'}
-            >
-              {isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}
-            </button>
-          </>
-        )}
-        {dtmSource && dtmLoaded && (
-          <>
-            <span className="dtm-status">DTM Loaded</span>
-            <button
-              onClick={handleFitToDTM}
-              title="Fit map to DTM extent"
-            >
-              Fit to DTM
-            </button>
-            <button
-              onClick={onDtmUnload}
-              title="Unload DTM from map"
-              style={{ background: '#e74c3c' }}
-            >
-              Unload DTM
-            </button>
-          </>
-        )}
-        {flightPath.length > 0 && (
-          <button
-            onClick={handleDeleteAllPoints}
-            title="Delete all flight path points"
-            style={{ background: '#e74c3c' }}
-          >
-            Delete All Points
-          </button>
-        )}
-        <button
-          onClick={handleResetView}
-          title="Reset map view to default extent"
-        >
-          Reset View
-        </button>
+        <div className="control-group">
+          <div className="group-title">Data Management</div>
+          <div className="group-columns">
+            <div className="group-column">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".tif,.tiff,.geotiff"
+                onChange={handleFileUpload}
+                id="dtm-upload"
+                style={{ display: 'none' }}
+                disabled={dtmLoaded}
+              />
+              <label 
+                htmlFor="dtm-upload" 
+                className={`btn btn-secondary ${dtmLoaded ? 'disabled' : ''}`}
+                style={dtmLoaded ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
+                title={dtmLoaded ? 'A DTM is already loaded. Unload it first to load a new one.' : 'Load a Digital Terrain Model file'}
+              >
+                Load DTM
+              </label>
+              <button
+                onClick={onDtmUnload}
+                className="btn btn-destructive"
+                disabled={!dtmSource || !dtmLoaded}
+                title={!dtmSource || !dtmLoaded ? 'No DTM loaded' : 'Unload DTM from map'}
+              >
+                Unload DTM
+              </button>
+            </div>
+            <div className="group-column">
+              <button
+                onClick={handleDeleteAllPoints}
+                className="btn btn-destructive"
+                disabled={flightPath.length === 0}
+                title={flightPath.length === 0 ? 'No points to delete' : 'Delete all flight path points'}
+              >
+                Delete All Points
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="control-group">
+          <div className="group-title">Planning Options</div>
+          <div className="group-columns">
+            <div className="group-column">
+              <button
+                onClick={() => {
+                  setIsDrawing(!isDrawing);
+                  setEditingPointIndex(null);
+                  setIsParallelLineMode(false);
+                }}
+                className={`btn btn-primary ${isDrawing ? 'active' : ''}`}
+                disabled={!dtmLoaded}
+                title={!dtmLoaded ? 'Load a DTM first to enable drawing' : 'Click on the map to add points to your flight path'}
+              >
+                {isDrawing ? 'Stop Drawing' : 'Draw Path'}
+              </button>
+              <button
+                onClick={() => {
+                  setIsParallelLineMode(!isParallelLineMode);
+                  setIsDrawing(false);
+                  setEditingPointIndex(null);
+                }}
+                className={`btn btn-secondary ${isParallelLineMode ? 'active' : ''}`}
+                disabled={!dtmLoaded || flightPath.length < 2}
+                title={
+                  !dtmLoaded 
+                    ? 'Load a DTM first to enable parallel line creation'
+                    : flightPath.length < 2 
+                      ? 'Flight path must have at least 2 points' 
+                      : 'Create a parallel line to an existing segment'
+                }
+              >
+                {isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="control-group">
+          <div className="group-title">History</div>
+          <div className="group-columns">
+            <div className="group-column">
+              <button
+                onClick={onUndo}
+                disabled={!canUndo || flightPath.length === 0}
+                className="btn btn-secondary"
+                title={flightPath.length === 0 ? 'Draw points first to enable undo' : 'Undo last action (Ctrl+Z)'}
+              >
+                Undo
+              </button>
+              <button
+                onClick={onRedo}
+                disabled={!canRedo || flightPath.length === 0}
+                className="btn btn-secondary"
+                title={flightPath.length === 0 ? 'Draw points first to enable redo' : 'Redo last action (Ctrl+Y or Ctrl+Shift+Z)'}
+              >
+                Redo
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="control-group">
+          <div className="group-title">View Controls</div>
+          <div className="group-columns">
+            <div className="group-column">
+              <button
+                onClick={handleFitToDTM}
+                className="btn btn-tertiary"
+                disabled={!dtmLoaded}
+                title={!dtmLoaded ? 'Load a DTM first to fit to its extent' : 'Fit map to DTM extent'}
+              >
+                Fit to DTM
+              </button>
+              <button
+                onClick={handleResetView}
+                className="btn btn-tertiary"
+                title="Reset map view to default extent"
+              >
+                Reset View
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div ref={mapContainer} className="map-container" />
     </div>

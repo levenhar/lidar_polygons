@@ -85,21 +85,23 @@ function App() {
   const handleDtmUnload = useCallback(() => {
     setDtmSource(null);
     setDtmInfo(null);
-  }, []);
+    // Clear all flight path points when unloading DTM
+    setFlightPath([]);
+  }, [setFlightPath]);
 
   // Handle keyboard shortcuts for undo/redo
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Check for Ctrl+Z (undo) or Ctrl+Y (redo)
+      // Check for Ctrl+Z (undo) or Ctrl+Y / Ctrl+Shift+Z (redo)
       if (e.ctrlKey || e.metaKey) {
-        if (e.key === 'z' || e.key === 'Z') {
-          // Prevent default browser undo behavior
+        if ((e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+          // Ctrl+Z or Cmd+Z: Undo
           e.preventDefault();
           if (canUndo) {
             undo();
           }
-        } else if (e.key === 'y' || e.key === 'Y') {
-          // Prevent default browser redo behavior
+        } else if (e.key === 'y' || e.key === 'Y' || ((e.key === 'z' || e.key === 'Z') && e.shiftKey)) {
+          // Ctrl+Y or Ctrl+Shift+Z or Cmd+Shift+Z: Redo
           e.preventDefault();
           if (canRedo) {
             redo();
@@ -119,62 +121,91 @@ function App() {
       <div className="app-header">
         <h1>LiDAR Mission Planner</h1>
         <div className="header-controls">
-          <label>
-            Nominal Flight Height (m):
-            <input
-              type="number"
-              value={nominalFlightHeight}
-              onChange={(e) => setNominalFlightHeight(Number(e.target.value))}
-              min="0"
-              step="10"
-            />
-          </label>
-          <label>
-            Safety Height (m):
-            <input
-              type="number"
-              value={safetyHeight}
-              onChange={(e) => setSafetyHeight(Number(e.target.value))}
-              min="0"
-              step="10"
-            />
-          </label>
-          <label>
-            Resolution Height (m):
-            <input
-              type="number"
-              value={resolutionHeight}
-              onChange={(e) => setResolutionHeight(Number(e.target.value))}
-              min="0"
-              step="10"
-            />
-          </label>
-          <label>
-            Search Radius (m):
-            <input
-              type="number"
-              value={searchRadius}
-              onChange={(e) => setSearchRadius(Number(e.target.value))}
-              min="1"
-              step="5"
-            />
-          </label>
-          <button onClick={exportGeoJSON}>Export GeoJSON</button>
-          <input
-            type="file"
-            accept=".geojson,.json"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) {
-                importGeoJSON(file);
-              }
-            }}
-            style={{ display: 'none' }}
-            id="import-geojson"
-          />
-          <label htmlFor="import-geojson" className="button-label">
-            Import GeoJSON
-          </label>
+          <div className="header-group">
+            <div className="group-title">Flight Parameters</div>
+            <div className="group-inputs">
+              <label>
+                <span className="input-label">Nominal Height (m)</span>
+                <input
+                  type="number"
+                  value={nominalFlightHeight}
+                  onChange={(e) => setNominalFlightHeight(Number(e.target.value))}
+                  min="0"
+                  step="10"
+                  className="modern-input"
+                />
+              </label>
+              <label>
+                <span className="input-label">Safety (m)</span>
+                <input
+                  type="number"
+                  value={safetyHeight}
+                  onChange={(e) => setSafetyHeight(Number(e.target.value))}
+                  min="0"
+                  step="10"
+                  className="modern-input"
+                />
+              </label>
+              <label>
+                <span className="input-label">Resolution (m)</span>
+                <input
+                  type="number"
+                  value={resolutionHeight}
+                  onChange={(e) => setResolutionHeight(Number(e.target.value))}
+                  min="0"
+                  step="10"
+                  className="modern-input"
+                />
+              </label>
+              <label>
+                <span className="input-label">Search Radius (m)</span>
+                <input
+                  type="number"
+                  value={searchRadius}
+                  onChange={(e) => setSearchRadius(Number(e.target.value))}
+                  min="1"
+                  step="5"
+                  className="modern-input"
+                />
+              </label>
+            </div>
+          </div>
+          <div className="header-group">
+            <div className="group-title">Data Export</div>
+            <div className="group-columns">
+              <div className="group-column">
+                <button 
+                  onClick={exportGeoJSON} 
+                  className="btn btn-secondary"
+                  disabled={flightPath.length < 2}
+                  title={flightPath.length < 2 ? 'Draw at least 2 points to export GeoJSON' : 'Export flight path as GeoJSON'}
+                >
+                  Export GeoJSON
+                </button>
+                <input
+                  type="file"
+                  accept=".geojson,.json"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      importGeoJSON(file);
+                    }
+                  }}
+                  style={{ display: 'none' }}
+                  id="import-geojson"
+                  disabled={!dtmSource}
+                />
+                <label 
+                  htmlFor="import-geojson" 
+                  className={`btn btn-secondary ${!dtmSource ? 'disabled' : ''}`}
+                  style={!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
+                  title={!dtmSource ? 'Load a DTM first to import GeoJSON' : 'Import flight path from GeoJSON file'}
+                >
+                  Import GeoJSON
+                </label>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
       <div className="app-panels">
@@ -190,6 +221,10 @@ function App() {
           onDtmLoad={handleDtmLoad}
           onDtmUnload={handleDtmUnload}
           nominalFlightHeight={nominalFlightHeight}
+          onUndo={undo}
+          onRedo={redo}
+          canUndo={canUndo}
+          canRedo={canRedo}
         />
         <ElevationProfile
           elevationProfile={elevationProfile}

@@ -36,11 +36,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     svg.selectAll('*').remove(); // Clear previous render
 
     const margin = { top: 20, right: 30, bottom: 60, left: 80 };
-    const width = containerRef.current.clientWidth - margin.left - margin.right;
+    const legendWidth = 160; // Space for legend outside the graph
+    const width = containerRef.current.clientWidth - margin.left - margin.right - legendWidth;
     const height = 400 - margin.top - margin.bottom;
 
-    // Set SVG dimensions
-    svg.attr('width', width + margin.left + margin.right)
+    // Set SVG dimensions (include space for legend)
+    svg.attr('width', width + margin.left + margin.right + legendWidth)
        .attr('height', height + margin.top + margin.bottom);
 
     const g = svg.append('g')
@@ -303,7 +304,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('y', d => yScale(d.point.elevation) - 8)
       .attr('text-anchor', 'middle')
       .attr('fill', '#666')
-      .style('font-size', '10px')
+      .style('font-size', '12px')
       .style('font-weight', '500')
       .text(d => d.index + 1);
 
@@ -316,41 +317,49 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .ticks(10)
       .tickFormat(d => `${d}m`);
 
-    g.append('g')
+    const xAxisGroup = g.append('g')
       .attr('transform', `translate(0,${height})`)
-      .call(xAxis)
-      .append('text')
+      .call(xAxis);
+    
+    xAxisGroup.selectAll('text')
+      .style('font-size', '12px');
+    
+    xAxisGroup.append('text')
       .attr('x', width / 2)
       .attr('y', 50)
       .attr('fill', 'black')
       .style('text-anchor', 'middle')
+      .style('font-size', '14px')
       .text('Distance (meters)');
 
-    g.append('g')
-      .call(yAxis)
-      .append('text')
+    const yAxisGroup = g.append('g')
+      .call(yAxis);
+    
+    yAxisGroup.selectAll('text')
+      .style('font-size', '12px');
+    
+    yAxisGroup.append('text')
       .attr('transform', 'rotate(-90)')
       .attr('y', -60)
       .attr('x', -height / 2)
       .attr('fill', 'black')
       .style('text-anchor', 'middle')
+      .style('font-size', '14px')
       .text('Elevation (meters)');
 
-    // Highlight selected point
+    // Highlight selected point (only for user-imported points, not interpolated ones)
     if (selectedPoint && flightPath.length > 0) {
-      // Find closest point in elevation profile
-      const closestIndex = flightPath.findIndex(
-        p => Math.abs(p.lng - selectedPoint.lng) < 0.0001 &&
-             Math.abs(p.lat - selectedPoint.lat) < 0.0001
+      // Find the selected point in the original vertices (user-imported points only)
+      const selectedVertex = originalVertices.find(
+        v => Math.abs(v.point.longitude - selectedPoint.lng) < 0.0001 &&
+             Math.abs(v.point.latitude - selectedPoint.lat) < 0.0001
       );
 
-      if (closestIndex >= 0 && closestIndex < elevationProfile.length) {
-        const point = elevationProfile[closestIndex];
-        
-        // Draw vertical line at selected point
+      if (selectedVertex) {
+        // Draw vertical line at selected point's distance
         g.append('line')
-          .attr('x1', xScale(point.distance))
-          .attr('x2', xScale(point.distance))
+          .attr('x1', xScale(selectedVertex.point.distance))
+          .attr('x2', xScale(selectedVertex.point.distance))
           .attr('y1', 0)
           .attr('y2', height)
           .attr('stroke', '#ff0000')
@@ -359,17 +368,47 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
     }
 
-    // Add legend
-    const legend = g.append('g')
-      .attr('transform', `translate(${width - 150}, 20)`);
+    // Add legend outside the graph area
+    const legend = svg.append('g')
+      .attr('transform', `translate(${width + margin.left + 10}, ${margin.top + 20})`);
 
     const legendData = [
       { label: 'Ground Elevation', color: '#8B4513', style: 'solid' },
       { label: 'Flight Altitude', color: '#1E90FF', style: 'dashed' },
-      ...(pointsWithMinMax.length > 0 ? [{ label: 'Min/Max Elevation Range', color: '#FF6B6B', style: 'solid' }] : []),
+      ...(pointsWithMinMax.length > 0 ? [{ label: 'Min/Max Elevation', color: '#FF6B6B', style: 'solid' }] : []),
       { label: `Safety (+${safetyHeight}m)`, color: '#FFD700', style: 'dashed' },
       { label: `Resolution (+${resolutionHeight}m)`, color: '#32CD32', style: 'dashed' }
     ];
+
+    // Calculate the width of the longest label
+    const tempText = svg.append('text')
+      .style('font-size', '14px')
+      .style('visibility', 'hidden');
+    
+    let maxTextWidth = 0;
+    legendData.forEach(item => {
+      tempText.text(item.label);
+      const textWidth = (tempText.node() as SVGTextElement)?.getBBox().width || 0;
+      if (textWidth > maxTextWidth) {
+        maxTextWidth = textWidth;
+      }
+    });
+    tempText.remove();
+
+    // Add white background rectangle for legend
+    // Width = line width (20px) + spacing (5px) + text width + padding (10px on each side)
+    const legendHeight = legendData.length * 20;
+    const legendBoxWidth = 20 + 5 + maxTextWidth + 20; // line + spacing + text + padding
+    legend.append('rect')
+      .attr('x', -5)
+      .attr('y', -12)
+      .attr('width', legendBoxWidth)
+      .attr('height', legendHeight + 4)
+      .attr('fill', '#ffffff')
+      .attr('stroke', '#e5e7eb')
+      .attr('stroke-width', 1)
+      .attr('rx', 4)
+      .attr('opacity', 0.95);
 
     legendData.forEach((item, i) => {
       const legendItem = legend.append('g')
@@ -388,7 +427,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .attr('x', 25)
         .attr('y', 4)
         .attr('fill', 'black')
-        .style('font-size', '12px')
+        .style('font-size', '14px')
         .text(item.label);
     });
 
@@ -477,12 +516,25 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       <div className="elevation-header">
         <h2>Elevation Profile</h2>
         <div className="elevation-controls">
-          <button onClick={exportPNG} disabled={elevationProfile.length === 0}>
-            Export PNG
-          </button>
-          <button onClick={exportCSV} disabled={elevationProfile.length === 0}>
-            Export CSV
-          </button>
+          <div className="control-group">
+            <div className="group-title">Export</div>
+            <div className="group-buttons">
+              <button 
+                onClick={exportPNG} 
+                disabled={elevationProfile.length === 0}
+                className="btn btn-secondary"
+              >
+                Export PNG
+              </button>
+              <button 
+                onClick={exportCSV} 
+                disabled={elevationProfile.length === 0}
+                className="btn btn-secondary"
+              >
+                Export CSV
+              </button>
+            </div>
+          </div>
         </div>
       </div>
       <div ref={containerRef} className="elevation-chart-container">

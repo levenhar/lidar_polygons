@@ -973,6 +973,124 @@ const MapPanel: React.FC<MapPanelProps> = ({
     onAddPoint(newPoint);
   };
 
+  const handleCreatePointFromCoordinates = () => {
+    if (!dtmLoaded) {
+      alert('Please load a DTM first.');
+      return;
+    }
+
+    // Prompt user to choose coordinate system
+    const coordTypeInput = prompt(
+      `Select coordinate system:\n` +
+      `1 - Geographic (Lat/Lng)\n` +
+      `2 - UTM\n\n` +
+      `Enter 1 or 2:`,
+      '1'
+    );
+
+    if (coordTypeInput === null) return;
+
+    const coordType = coordTypeInput.trim();
+    let lng: number, lat: number;
+
+    if (coordType === '1') {
+      // Geographic coordinates (Lat/Lng)
+      const lngInput = prompt('Enter Longitude (decimal degrees, -180 to 180):', '');
+      if (lngInput === null) return;
+
+      const latInput = prompt('Enter Latitude (decimal degrees, -90 to 90):', '');
+      if (latInput === null) return;
+
+      lng = parseFloat(lngInput);
+      lat = parseFloat(latInput);
+
+      if (isNaN(lng) || isNaN(lat)) {
+        alert('Invalid coordinates. Please enter valid numbers.');
+        return;
+      }
+
+      if (lng < -180 || lng > 180) {
+        alert('Invalid longitude. Please enter a value between -180 and 180.');
+        return;
+      }
+
+      if (lat < -90 || lat > 90) {
+        alert('Invalid latitude. Please enter a value between -90 and 90.');
+        return;
+      }
+    } else if (coordType === '2') {
+      // UTM coordinates
+      const eastingInput = prompt('Enter UTM Easting (meters):', '');
+      if (eastingInput === null) return;
+
+      const northingInput = prompt('Enter UTM Northing (meters):', '');
+      if (northingInput === null) return;
+
+      const zoneInput = prompt('Enter UTM Zone (1-60):', '36');
+      if (zoneInput === null) return;
+
+      const hemisphereInput = prompt('Enter Hemisphere (N for North, S for South):', 'N');
+      if (hemisphereInput === null) return;
+
+      const easting = parseFloat(eastingInput);
+      const northing = parseFloat(northingInput);
+      const zone = parseInt(zoneInput, 10);
+      const hemisphere = hemisphereInput.trim().toUpperCase();
+
+      if (isNaN(easting) || isNaN(northing) || isNaN(zone)) {
+        alert('Invalid UTM coordinates. Please enter valid numbers.');
+        return;
+      }
+
+      if (zone < 1 || zone > 60) {
+        alert('Invalid UTM zone. Please enter a value between 1 and 60.');
+        return;
+      }
+
+      if (hemisphere !== 'N' && hemisphere !== 'S') {
+        alert('Invalid hemisphere. Please enter N for North or S for South.');
+        return;
+      }
+
+      // Convert UTM to WGS84 using proj4
+      try {
+        // Define UTM projection using proj4 string format
+        // UTM zones: central meridian at 6° intervals, false easting 500,000m, false northing 10,000,000m for Southern hemisphere
+        const utmProjString = `+proj=utm +zone=${zone} +${hemisphere === 'N' ? 'north' : 'south'} +datum=WGS84 +units=m +no_defs`;
+        
+        // Define WGS84 (EPSG:4326) projection
+        const wgs84Proj = '+proj=longlat +datum=WGS84 +no_defs';
+        
+        // Transform from UTM to WGS84
+        const [transformedLng, transformedLat] = proj4(utmProjString, wgs84Proj, [easting, northing]);
+        lng = transformedLng;
+        lat = transformedLat;
+        
+        console.log(`Converted UTM (Zone ${zone}${hemisphere}, ${easting}, ${northing}) to WGS84: (${lng}, ${lat})`);
+      } catch (transformError) {
+        console.error('Error transforming UTM coordinates:', transformError);
+        alert(`Failed to convert UTM coordinates: ${transformError instanceof Error ? transformError.message : 'Unknown error'}`);
+        return;
+      }
+    } else {
+      alert('Invalid selection. Please enter 1 for Geographic or 2 for UTM.');
+      return;
+    }
+
+    // Check if point is within DTM bounds
+    if (!isPointWithinBounds(lng, lat)) {
+      alert('The specified point is outside DTM bounding box. Please enter coordinates within the DTM extent.');
+      return;
+    }
+
+    // Create and add the new point
+    const newPoint: Coordinate = {
+      lng,
+      lat
+    };
+    onAddPoint(newPoint);
+  };
+
   return (
     <div className="map-panel">
       {contextMenu && (
@@ -1098,6 +1216,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 }
               >
                 Azimuth + Distance
+              </button>
+              <button
+                onClick={handleCreatePointFromCoordinates}
+                className="btn btn-secondary"
+                disabled={!dtmLoaded}
+                title={
+                  !dtmLoaded 
+                    ? 'Load a DTM first to enable coordinate-based point creation'
+                    : 'Add a new point by entering coordinates (UTM or Geographic)'
+                }
+              >
+                Point by Coordinate
               </button>
             </div>
           </div>

@@ -17,6 +17,7 @@ interface MapPanelProps {
   onUpdatePoint: (index: number, point: Coordinate) => void;
   onDeletePoint: (index: number) => void;
   onDtmLoad: (source: string, info?: any) => void;
+  onDtmUnload: () => void;
   nominalFlightHeight: number;
 }
 
@@ -30,6 +31,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onUpdatePoint,
   onDeletePoint,
   onDtmLoad,
+  onDtmUnload,
   nominalFlightHeight
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
@@ -41,6 +43,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const markersRef = useRef<maplibregl.Marker[]>([]);
   const hoveredPointRef = useRef<number | null>(null);
   const dtmImageRef = useRef<HTMLImageElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [editingPointIndex, setEditingPointIndex] = useState<number | null>(null);
 
@@ -414,6 +417,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
       if (map.current && map.current.getSource('dtm-source')) {
         map.current.removeSource('dtm-source');
+      }
+      // Restore OSM opacity to full when DTM is unloaded
+      if (map.current && map.current.getLayer('osm-layer')) {
+        map.current.setPaintProperty('osm-layer', 'raster-opacity', 1.0);
+      }
+      // Reset file input so it can be used again
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
       }
       dtmImageRef.current = null;
       setDtmLoaded(false);
@@ -822,6 +833,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     } catch (error) {
       console.error('Error uploading DTM:', error);
       alert('Failed to upload DTM file');
+    } finally {
+      // Reset file input so the same file can be selected again
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     }
   };
 
@@ -918,6 +934,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       )}
       <div className="map-controls">
         <input
+          ref={fileInputRef}
           type="file"
           accept=".tif,.tiff,.geotiff"
           onChange={handleFileUpload}
@@ -962,6 +979,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
               title="Fit map to DTM extent"
             >
               Fit to DTM
+            </button>
+            <button
+              onClick={onDtmUnload}
+              title="Unload DTM from map"
+              style={{ background: '#e74c3c' }}
+            >
+              Unload DTM
             </button>
           </>
         )}

@@ -82,6 +82,11 @@ function App() {
     }
   }, []);
 
+  const handleDtmUnload = useCallback(() => {
+    setDtmSource(null);
+    setDtmInfo(null);
+  }, []);
+
   // Handle keyboard shortcuts for undo/redo
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -183,6 +188,7 @@ function App() {
           onUpdatePoint={updatePoint}
           onDeletePoint={deletePoint}
           onDtmLoad={handleDtmLoad}
+          onDtmUnload={handleDtmUnload}
           nominalFlightHeight={nominalFlightHeight}
         />
         <ElevationProfile

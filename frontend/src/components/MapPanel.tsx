@@ -4,7 +4,7 @@ import maplibregl from 'maplibre-gl';
 import proj4 from 'proj4';
 import { Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
-import { calculateParallelLine, findClosestPointOnLine } from '../utils/geometry';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination } from '../utils/geometry';
 import './MapPanel.css';
 
 interface MapPanelProps {
@@ -917,6 +917,62 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   };
 
+  const handleCreatePointFromAzimuthDistance = () => {
+    if (flightPath.length === 0) {
+      alert('Please add at least one point first before creating a point from azimuth and distance.');
+      return;
+    }
+
+    if (!dtmLoaded) {
+      alert('Please load a DTM first.');
+      return;
+    }
+
+    const lastPoint = flightPath[flightPath.length - 1];
+    
+    // Prompt for azimuth (in degrees, 0-360, measured from north)
+    const azimuthInput = prompt(
+      `Enter azimuth in degrees (0-360, measured from north):\n` +
+      `0° = North, 90° = East, 180° = South, 270° = West`,
+      '0'
+    );
+    
+    if (azimuthInput === null) return;
+    
+    const azimuth = parseFloat(azimuthInput);
+    if (isNaN(azimuth) || azimuth < 0 || azimuth >= 360) {
+      alert('Invalid azimuth. Please enter a number between 0 and 360.');
+      return;
+    }
+
+    // Prompt for distance (in meters)
+    const distanceInput = prompt('Enter distance in meters:', '100');
+    
+    if (distanceInput === null) return;
+    
+    const distance = parseFloat(distanceInput);
+    if (isNaN(distance) || distance <= 0) {
+      alert('Invalid distance. Please enter a positive number.');
+      return;
+    }
+
+    // Convert azimuth (degrees from north) to bearing (radians from north)
+    // Azimuth and bearing are the same, just need to convert to radians
+    const bearing = (azimuth * Math.PI) / 180;
+
+    // Calculate new point
+    const newPoint = calculateDestination(lastPoint, bearing, distance);
+
+    // Check if new point is within DTM bounds
+    if (!isPointWithinBounds(newPoint.lng, newPoint.lat)) {
+      alert('The calculated point is outside DTM bounding box. Please use a smaller distance or different azimuth.');
+      return;
+    }
+
+    // Add the new point
+    onAddPoint(newPoint);
+  };
+
   return (
     <div className="map-panel">
       {contextMenu && (
@@ -1026,6 +1082,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 }
               >
                 {isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}
+              </button>
+            </div>
+            <div className="group-column">
+              <button
+                onClick={handleCreatePointFromAzimuthDistance}
+                className="btn btn-secondary"
+                disabled={!dtmLoaded || flightPath.length === 0}
+                title={
+                  !dtmLoaded 
+                    ? 'Load a DTM first to enable azimuth/distance point creation'
+                    : flightPath.length === 0 
+                      ? 'Add at least one point first' 
+                      : 'Create a new point from the last point using azimuth and distance'
+                }
+              >
+                Azimuth + Distance
               </button>
             </div>
           </div>

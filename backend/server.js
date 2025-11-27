@@ -368,7 +368,7 @@ app.get('/api/dtm/:filename/raster', async (req, res) => {
 // This endpoint samples the DTM at points along the path, including interpolated points along line segments
 app.post('/api/elevation-profile', async (req, res) => {
   try {
-    const { coordinates, dtmPath } = req.body;
+    const { coordinates, dtmPath, radiusMeters } = req.body;
     
     if (!coordinates || !Array.isArray(coordinates) || coordinates.length < 2) {
       return res.status(400).json({ error: 'Invalid coordinates array' });
@@ -377,6 +377,9 @@ app.post('/api/elevation-profile', async (req, res) => {
     if (!dtmPath) {
       return res.status(400).json({ error: 'DTM path is required' });
     }
+    
+    // Default radius is 50 meters if not specified
+    const radius = radiusMeters || 50;
     
     // Extract filename from path
     const filename = dtmPath.split('/').pop();
@@ -531,6 +534,168 @@ app.post('/api/elevation-profile', async (req, res) => {
       return elevation !== null ? elevation : null;
     };
     
+    // Calculate min and max elevation within a given radius (in meters)
+    const getMinMaxElevationInRadius = (centerLon, centerLat, radiusMeters) => {
+      // Convert radius from meters to degrees (approximate)
+      // At equator: 1 degree ≈ 111,320 meters
+      // Adjust for latitude: degrees_lon = meters / (111,320 * cos(lat))
+      // degrees_lat = meters / 111,320
+      const metersPerDegreeLat = 111320;
+      const metersPerDegreeLon = 111320 * Math.cos(centerLat * Math.PI / 180);
+      
+      const radiusDegLat = radiusMeters / metersPerDegreeLat;
+      const radiusDegLon = radiusMeters / metersPerDegreeLon;
+      
+      // Calculate bounding box for the circular area
+      const minLon = centerLon - radiusDegLon;
+      const maxLon = centerLon + radiusDegLon;
+      const minLat = centerLat - radiusDegLat;
+      const maxLat = centerLat + radiusDegLat;
+      
+      // Convert bounding box corners to pixels
+      const minPixel = geoToPixel(minLon, minLat);
+      const maxPixel = geoToPixel(maxLon, maxLat);
+      
+      if (!minPixel || !maxPixel) {
+        return { min: null, max: null };
+      }
+      
+      // Get pixel bounds to sample
+      const minPixelX = Math.max(0, Math.min(width - 1, minPixel.pixelX));
+      const maxPixelX = Math.max(0, Math.min(width - 1, maxPixel.pixelX));
+      const minPixelY = Math.max(0, Math.min(height - 1, minPixel.pixelY));
+      const maxPixelY = Math.max(0, Math.min(height - 1, maxPixel.pixelY));
+      
+      // Sample pixels within the bounding box and check if they're within radius
+      let minElevation = Infinity;
+      let maxElevation = -Infinity;
+      let hasValidData = false;
+      
+      // Calculate center pixel for distance checking
+      const centerPixel = geoToPixel(centerLon, centerLat);
+      if (!centerPixel) {
+        return { min: null, max: null };
+      }
+      
+      // Estimate pixel resolution for efficient sampling
+      // Calculate approximate meters per pixel
+      let metersPerPixelX, metersPerPixelY;
+      if (modelPixelScale) {
+        const [scaleX, scaleY] = modelPixelScale;
+        // Scale is in units per pixel - convert to meters if needed
+        // For geographic coordinates, we need to account for latitude
+        if (isProjected) {
+          metersPerPixelX = scaleX;
+          metersPerPixelY = scaleY;
+        } else {
+          // Approximate conversion for geographic coordinates
+          metersPerPixelX = scaleX * 111320 * Math.cos(centerLat * Math.PI / 180);
+          metersPerPixelY = scaleY * 111320;
+        }
+      } else {
+        // Fallback: estimate from bounding box
+        const pixelWidth = maxX - minX;
+        const pixelHeight = maxY - minY;
+        if (isProjected) {
+          metersPerPixelX = pixelWidth / width;
+          metersPerPixelY = pixelHeight / height;
+        } else {
+          metersPerPixelX = (pixelWidth / width) * 111320 * Math.cos(centerLat * Math.PI / 180);
+          metersPerPixelY = (pixelHeight / height) * 111320;
+        }
+      }
+      
+      // Calculate step size to sample approximately 100-200 points within radius
+      const estimatedPixelsInRadius = Math.max(10, Math.min(200, (radiusMeters / Math.min(metersPerPixelX, metersPerPixelY))));
+      const stepSize = Math.max(1, Math.floor(Math.sqrt((maxPixelX - minPixelX) * (maxPixelY - minPixelY) / estimatedPixelsInRadius)));
+      
+      // Sample pixels with step size
+      for (let py = minPixelY; py <= maxPixelY; py += stepSize) {
+        for (let px = minPixelX; px <= maxPixelX; px += stepSize) {
+          // Convert pixel back to geographic coordinates to check distance
+          let sampleLon, sampleLat;
+          
+          if (modelPixelScale && modelTiepoint) {
+            const [tieI, tieJ, tieK, geoX, geoY, geoZ] = modelTiepoint;
+            const [scaleX, scaleY, scaleZ] = modelPixelScale;
+            
+            // Convert pixel to geo coordinates
+            const geoX_coord = (px - tieI) * scaleX + geoX;
+            const geoY_coord = geoY - (py - tieJ) * scaleY;
+            
+            // Transform back to WGS84 if needed
+            if (isProjected && sourceProj) {
+              try {
+                [sampleLon, sampleLat] = proj4(sourceProj, 'EPSG:4326', [geoX_coord, geoY_coord]);
+              } catch (e) {
+                continue;
+              }
+            } else {
+              sampleLon = geoX_coord;
+              sampleLat = geoY_coord;
+            }
+          } else {
+            // Fallback: use bounding box interpolation
+            sampleLon = minX + ((px / width) * (maxX - minX));
+            sampleLat = maxY - ((py / height) * (maxY - minY));
+          }
+          
+          // Check if this pixel is within the circular radius
+          const distance = calculateDistance([centerLon, centerLat], [sampleLon, sampleLat]);
+          if (distance > radiusMeters) {
+            continue; // Skip pixels outside the radius
+          }
+          
+          // Get elevation at this pixel
+          const index = py * width + px;
+          if (index < 0 || index >= elevationData.length) continue;
+          
+          let elevation = elevationData[index];
+          
+          // Handle no-data values
+          if (noDataValue !== null && noDataValue !== undefined && elevation === noDataValue) {
+            continue;
+          }
+          if (isNaN(elevation) || !isFinite(elevation)) {
+            continue;
+          }
+          
+          // Update min/max
+          if (elevation < minElevation) minElevation = elevation;
+          if (elevation > maxElevation) maxElevation = elevation;
+          hasValidData = true;
+        }
+      }
+      
+      // Also check immediate neighbors of center pixel for accuracy
+      const centerX = Math.round(centerPixel.pixelX);
+      const centerY = Math.round(centerPixel.pixelY);
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const px = centerX + dx;
+          const py = centerY + dy;
+          if (px < 0 || px >= width || py < 0 || py >= height) continue;
+          
+          const index = py * width + px;
+          if (index < 0 || index >= elevationData.length) continue;
+          
+          let elevation = elevationData[index];
+          if (noDataValue !== null && noDataValue !== undefined && elevation === noDataValue) continue;
+          if (isNaN(elevation) || !isFinite(elevation)) continue;
+          
+          if (elevation < minElevation) minElevation = elevation;
+          if (elevation > maxElevation) maxElevation = elevation;
+          hasValidData = true;
+        }
+      }
+      
+      if (!hasValidData) {
+        return { min: null, max: null };
+      }
+      
+      return { min: minElevation, max: maxElevation };
+    };
+    
     // Generate sampling points along the entire path
     // Use a sampling interval of 5 meters to get dense coverage
     const samplingInterval = 5; // meters
@@ -567,14 +732,31 @@ app.post('/api/elevation-profile', async (req, res) => {
         cumulativeDistance += calculateDistance(allPoints[i - 1], allPoints[i]);
       }
       
-      // Sample elevation
+      // Sample elevation at the point
       const elevation = sampleElevation(lon, lat);
+      
+      // Calculate min/max elevation within radius
+      let minElevation = undefined;
+      let maxElevation = undefined;
+      
+      try {
+        const result = getMinMaxElevationInRadius(lon, lat, radius);
+        if (result.min !== null && result.max !== null) {
+          minElevation = result.min;
+          maxElevation = result.max;
+        }
+      } catch (error) {
+        console.error(`Error calculating min/max at point ${i}:`, error);
+        // Continue without min/max for this point
+      }
       
       profile.push({
         distance: cumulativeDistance,
         elevation: elevation !== null ? elevation : 0,
         longitude: lon,
-        latitude: lat
+        latitude: lat,
+        minElevation: minElevation,
+        maxElevation: maxElevation
       });
     }
     
@@ -582,6 +764,16 @@ app.post('/api/elevation-profile', async (req, res) => {
     const validElevations = profile.filter(p => p.elevation > 0 || p.elevation < 0).map(p => p.elevation);
     if (validElevations.length > 0) {
       console.log(`Elevation range: ${Math.min(...validElevations).toFixed(2)} to ${Math.max(...validElevations).toFixed(2)}`);
+    }
+    
+    // Log min/max statistics
+    const pointsWithMinMax = profile.filter(p => p.minElevation !== undefined && p.maxElevation !== undefined);
+    console.log(`Points with min/max elevation: ${pointsWithMinMax.length} out of ${profile.length}`);
+    if (pointsWithMinMax.length > 0) {
+      const minValues = pointsWithMinMax.map(p => p.minElevation).filter(v => v !== undefined);
+      const maxValues = pointsWithMinMax.map(p => p.maxElevation).filter(v => v !== undefined);
+      console.log(`Min elevation range: ${Math.min(...minValues).toFixed(2)} to ${Math.max(...minValues).toFixed(2)}`);
+      console.log(`Max elevation range: ${Math.min(...maxValues).toFixed(2)} to ${Math.max(...maxValues).toFixed(2)}`);
     }
     
     res.json({ profile });

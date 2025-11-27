@@ -10,7 +10,8 @@ export function useElevationProfile() {
   const calculateProfile = useCallback(async (
     flightPath: Coordinate[],
     dtmSource: string,
-    nominalFlightHeight: number
+    nominalFlightHeight: number,
+    searchRadius: number = 50
   ) => {
     if (flightPath.length < 2) {
       setElevationProfile([]);
@@ -45,9 +46,12 @@ export function useElevationProfile() {
         segmentDistances.push(segmentDist);
       }
       
+      console.log(`Calculating elevation profile with search radius: ${searchRadius}m`);
+      
       const response = await axios.post('http://localhost:5000/api/elevation-profile', {
         coordinates,
-        dtmPath: dtmSource
+        dtmPath: dtmSource,
+        radiusMeters: searchRadius // User-configurable radius for min/max calculation
       });
 
       // Helper function to interpolate flight height for any point along the path
@@ -95,10 +99,24 @@ export function useElevationProfile() {
           elevation: point.elevation,
           longitude: point.longitude,
           latitude: point.latitude,
-          flightHeight: interpolateFlightHeight(distance)
+          flightHeight: interpolateFlightHeight(distance),
+          minElevation: point.minElevation,
+          maxElevation: point.maxElevation
         };
       });
 
+      // Log min/max statistics
+      const pointsWithMinMax = profile.filter(p => p.minElevation !== undefined && p.maxElevation !== undefined);
+      console.log(`Elevation profile loaded: ${profile.length} points, ${pointsWithMinMax.length} with min/max values`);
+      if (pointsWithMinMax.length > 0) {
+        console.log(`Sample min/max values:`, pointsWithMinMax.slice(0, 3).map(p => ({
+          distance: p.distance.toFixed(1),
+          min: p.minElevation?.toFixed(1),
+          max: p.maxElevation?.toFixed(1),
+          elevation: p.elevation.toFixed(1)
+        })));
+      }
+      
       setElevationProfile(profile);
     } catch (error) {
       console.error('Error calculating elevation profile:', error);

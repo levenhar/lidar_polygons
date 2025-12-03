@@ -8,5 +8,6 @@ uploads/
 *.geotiff
 *.tif
 *.tiff
+.vscode/
 
 

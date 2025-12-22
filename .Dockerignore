@@ -12,5 +12,3 @@ uploads/
 *.tiff
 .vscode/
 package-lock.json
-.geojson
-.kml

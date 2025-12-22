@@ -7,6 +7,12 @@ import { Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
 import { calculateParallelLine, findClosestPointOnLine, calculateDestination } from '../utils/geometry';
 import './MapPanel.css';
+import { TileLayerOptions } from 'leaflet';
+
+
+type TileLayerOptionsWithAgent = TileLayerOptions & {
+  httpsAgent?: any;
+};
 
 // Fix for default marker icons in Leaflet with webpack/vite
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -82,18 +88,54 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Initialize map
   useEffect(() => {
+    async function initializeHttpAgent() {
+      if (typeof window !== 'undefined') {
+        // We are in the browser no need for agent
+        return null
+      } else {
+        // We are in a Node.js env
+        try {
+          const httpsModule = await import('node:https');
+          const httpsagent_f = new httpsModule.Agent({
+              rejectUnauthorized: false,
+          });
+          return httpsagent_f
+        } catch (error) {
+          console.error("Failed to import node:https:", error);
+          return null // or undefined
+        }
+      }
+    }
     if (!mapContainer.current || map.current) return;
 
-    map.current = L.map(mapContainer.current, {
-      center: [31.0461, 34.8516], // Israel default (lat, lng for Leaflet)
-      zoom: 6
-    });
+    initializeHttpAgent().then(async(httpsAgent_f) => {
+      if (mapContainer.current) {
+        map.current = L.map(mapContainer.current, {
+          center: [31.50, 35.02], // israel defulat
+          zoom: 7 ,
+          // crs: L.CRS.EPSG4326
+        });
+      }
 
-    // Add OpenStreetMap tile layer
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap contributors',
-      maxZoom: 19
-    }).addTo(map.current);
+      // Create option *after* httpsAgent_f is define
+      const options: TileLayerOptionsWithAgent = {
+        maxZoom:19,
+        httpsAgent:httpsAgent_f
+      };
+
+      const response = await fetch('/api/token')
+
+      if (!response.ok){
+        const errorData = await response.json().catch(() => ({error: 'Unknown error'}));
+        throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
+      }
+      const MAPS_TOKEN = await response.json();
+      const url = `https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png?token=${MAPS_TOKEN.token}`;
+      
+      if (map.current) {
+        L.tileLayer(url,options).addTo(map.current)
+      }
+    });
 
     return () => {
       if (map.current) {
@@ -291,7 +333,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       });
 
       // Handle marker drag
-      marker.on('drag', (e: L.DragEvent) => {
+      marker.on('drag', (e: L.LeafletEvent) => {
         const latlng = e.target.getLatLng();
         const lng = latlng.lng;
         const lat = latlng.lat;
@@ -309,7 +351,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       });
       
       // Handle drag end to show message if dragged outside bounds
-      marker.on('dragend', (e: L.DragEvent) => {
+      marker.on('dragend', (e: L.LeafletEvent) => {
         const latlng = e.target.getLatLng();
         const lng = latlng.lng;
         const lat = latlng.lat;
@@ -434,7 +476,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (!filename) return;
 
         // Fetch raster data
-        const response = await fetch(`http://localhost:5000/api/dtm/${filename}/raster`);
+        const response = await fetch(`/api/dtm/${filename}/raster`);
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
           throw new Error(errorData.error || `Failed to load DTM data: ${response.status}`);
@@ -568,6 +610,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         console.log('Canvas rendered, creating image...');
 
         // Helper function to add DTM layer
+        // @ts-ignore
         const addDTMLayer = (img: HTMLImageElement, bounds: number[]) => {
           if (!map.current) {
             console.error('Map not initialized');
@@ -754,7 +797,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       });
 
       // Send request
-      xhr.open('POST', 'http://localhost:5000/api/upload-dtm');
+      xhr.open('POST', '/api/upload-dtm');
       xhr.send(formData);
     } catch (error) {
       console.error('Error uploading DTM:', error);

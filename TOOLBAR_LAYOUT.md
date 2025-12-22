@@ -112,3 +112,4 @@ The toolbar has been reorganized into a modern, clean structure following Materi
 - **Borders**: 1px solid #e5e7eb for separation
 - **Transitions**: Smooth 0.2s cubic-bezier transitions on all interactive elements
 
+

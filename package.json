@@ -4,7 +4,7 @@
   "description": "LiDAR Mission Planning Tool with synchronized map and elevation profile",
   "scripts": {
     "install:all": "npm install && cd frontend && npm install && cd ../backend && npm install",
-    "dev:frontend": "cd frontend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev --host",
     "dev:backend": "cd backend && npm run dev",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "build": "cd frontend && npm run build"

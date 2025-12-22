@@ -33,27 +33,16 @@ interface DTMInfo {
 
 function App() {
   const [dtmSource, setDtmSource] = useState<string | null>(null);
+  // @ts-ignore
   const [dtmInfo, setDtmInfo] = useState<DTMInfo | null>(null);
-  const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(250);
+  const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(200);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
   const [searchRadius, setSearchRadius] = useState<number>(50);
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
   
-  const {
-    flightPath,
-    addPoint,
-    addPoints,
-    updatePoint,
-    deletePoint,
-    insertPoints,
-    setFlightPath,
-    exportGeoJSON,
-    importGeoJSON,
-    undo,
-    redo,
-    canUndo,
-    canRedo
+  // @ts-ignore
+  const {flightPath, addPoint, addPoints,updatePoint, deletePoint, insertPoints, setFlightPath, exportGeoJSON,importGeoJSON,undo, redo, canUndo, canRedo
   } = useFlightPath();
 
   const { elevationProfile, loading, calculateProfile } = useElevationProfile();

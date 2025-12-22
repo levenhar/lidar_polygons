@@ -1,11 +1,26 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import maplibregl from 'maplibre-gl';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 // @ts-ignore - proj4 types may not be perfect
 import proj4 from 'proj4';
 import { Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
 import { calculateParallelLine, findClosestPointOnLine, calculateDestination } from '../utils/geometry';
 import './MapPanel.css';
+import { TileLayerOptions } from 'leaflet';
+
+
+type TileLayerOptionsWithAgent = TileLayerOptions & {
+  httpsAgent?: any;
+};
+
+// Fix for default marker icons in Leaflet with webpack/vite
+delete (L.Icon.Default.prototype as any)._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+});
 
 interface MapPanelProps {
   dtmSource: string | null;
@@ -43,17 +58,24 @@ const MapPanel: React.FC<MapPanelProps> = ({
   canRedo
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
-  const map = useRef<maplibregl.Map | null>(null);
+  const map = useRef<L.Map | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [isParallelLineMode, setIsParallelLineMode] = useState(false);
   const [dtmLoaded, setDtmLoaded] = useState(false);
   const [dtmBounds, setDtmBounds] = useState<number[] | null>(null);
-  const markersRef = useRef<maplibregl.Marker[]>([]);
+  const [dtmOpacity, setDtmOpacity] = useState<number>(0.1); // Default 90% transparency (10% opacity)
+  const markersRef = useRef<L.Marker[]>([]);
+  const flightPathLineRef = useRef<L.Polyline | null>(null);
+  const flightPathClickableLineRef = useRef<L.Polyline | null>(null);
   const hoveredPointRef = useRef<number | null>(null);
-  const dtmImageRef = useRef<HTMLImageElement | null>(null);
+  const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
+  const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
+  const dtmTransparencyControlRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [editingPointIndex, setEditingPointIndex] = useState<number | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [isUploading, setIsUploading] = useState<boolean>(false);
 
   // Helper function to check if a point is within DTM bounds
   const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
@@ -66,47 +88,66 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Initialize map
   useEffect(() => {
+    async function initializeHttpAgent() {
+      if (typeof window !== 'undefined') {
+        // We are in the browser no need for agent
+        return null
+      } else {
+        // We are in a Node.js env
+        try {
+          const httpsModule = await import('node:https');
+          const httpsagent_f = new httpsModule.Agent({
+              rejectUnauthorized: false,
+          });
+          return httpsagent_f
+        } catch (error) {
+          console.error("Failed to import node:https:", error);
+          return null // or undefined
+        }
+      }
+    }
     if (!mapContainer.current || map.current) return;
 
-    map.current = new maplibregl.Map({
-      container: mapContainer.current,
-      style: {
-        version: 8,
-        sources: {
-          'osm-tiles': {
-            type: 'raster',
-            tiles: [
-              'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
-            ],
-            tileSize: 256,
-            attribution: '© OpenStreetMap contributors'
-          }
-        },
-        layers: [
-          {
-            id: 'osm-layer',
-            type: 'raster',
-            source: 'osm-tiles',
-            minzoom: 0,
-            maxzoom: 19
-          }
-        ]
-      },
-      center: [34.8516, 31.0461], // Israel default
-      zoom: 6
-    });
+    initializeHttpAgent().then(async(httpsAgent_f) => {
+      if (mapContainer.current) {
+        map.current = L.map(mapContainer.current, {
+          center: [31.50, 35.02], // israel defulat
+          zoom: 7 ,
+          // crs: L.CRS.EPSG4326
+        });
+      }
 
-    map.current.addControl(new maplibregl.NavigationControl(), 'top-right');
+      // Create option *after* httpsAgent_f is define
+      const options: TileLayerOptionsWithAgent = {
+        maxZoom:19,
+        httpsAgent:httpsAgent_f
+      };
+
+      const response_token = await fetch('/api/token')
+
+      if (!response_token.ok){
+        const errorData = await response_token.json().catch(() => ({error: 'Unknown error'}));
+        throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
+      }
+      const MAPS_TOKEN = await response_token.json();
+
+
+      const response_url = await fetch('/api/url')
+
+      if (!response_url.ok){
+        const errorData = await response_url.json().catch(() => ({error: 'Unknown error'}));
+        throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
+      }
+      const raw_url = await response_url.json();
+      const url = `${raw_url.url}?token=${MAPS_TOKEN.token}`;
+      
+      if (map.current) {
+        L.tileLayer(url,options).addTo(map.current)
+      }
+    });
 
     return () => {
       if (map.current) {
-        // Clean up DTM layer
-        if (map.current.getLayer('dtm-layer')) {
-          map.current.removeLayer('dtm-layer');
-        }
-        if (map.current.getSource('dtm-source')) {
-          map.current.removeSource('dtm-source');
-        }
         map.current.remove();
         map.current = null;
       }
@@ -117,11 +158,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
   useEffect(() => {
     if (!map.current) return;
 
-    const handleClick = (e: maplibregl.MapMouseEvent) => {
+    const handleClick = (e: L.LeafletMouseEvent) => {
       // If editing a point, move it to the new location
       if (editingPointIndex !== null && dtmLoaded) {
-        const lng = e.lngLat.lng;
-        const lat = e.lngLat.lat;
+        const lng = e.latlng.lng;
+        const lat = e.latlng.lat;
         
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
@@ -141,80 +182,71 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       // If in parallel line mode, handle line segment selection
       if (isParallelLineMode && dtmLoaded && flightPath.length >= 2 && map.current) {
-        // Use MapLibre's queryRenderedFeatures to detect clicks on the line
-        const features = map.current.queryRenderedFeatures(e.point, {
-          layers: ['flight-path-clickable']
-        });
+        // Find which segment was clicked by calculating distance to each segment
+        const clickPoint = { lng: e.latlng.lng, lat: e.latlng.lat };
+        let closestSegmentIndex = -1;
+        let closestDistance = Infinity;
         
-        if (features.length > 0) {
-          // Find which segment was clicked by calculating distance to each segment
-          const clickPoint = { lng: e.lngLat.lng, lat: e.lngLat.lat };
-          let closestSegmentIndex = -1;
-          let closestDistance = Infinity;
+        for (let i = 0; i < flightPath.length - 1; i++) {
+          const result = findClosestPointOnLine(clickPoint, flightPath[i], flightPath[i + 1]);
           
-          for (let i = 0; i < flightPath.length - 1; i++) {
-            const result = findClosestPointOnLine(clickPoint, flightPath[i], flightPath[i + 1]);
-            
-            // Check if click is close enough to the segment (100 meters threshold)
-            if (result.distance < 100) {
-              if (result.distance < closestDistance) {
-                closestDistance = result.distance;
-                closestSegmentIndex = i;
-              }
+          // Check if click is close enough to the segment (100 meters threshold)
+          if (result.distance < 100) {
+            if (result.distance < closestDistance) {
+              closestDistance = result.distance;
+              closestSegmentIndex = i;
             }
           }
+        }
+        
+        if (closestSegmentIndex >= 0) {
+          // Prompt for offset distance
+          const distanceInput = prompt(
+            `Enter offset distance in meters for parallel line:\n(Positive = right side, Negative = left side)`,
+            '50'
+          );
           
-          if (closestSegmentIndex >= 0) {
-            // Prompt for offset distance
-            const distanceInput = prompt(
-              `Enter offset distance in meters for parallel line:\n(Positive = right side, Negative = left side)`,
-              '50'
-            );
-            
-            if (distanceInput !== null) {
-              const offsetDistance = parseFloat(distanceInput);
-              if (!isNaN(offsetDistance)) {
-                const segmentStart = flightPath[closestSegmentIndex];
-                const segmentEnd = flightPath[closestSegmentIndex + 1];
-                
-                // Calculate parallel line
-                const [parallelStart, parallelEnd] = calculateParallelLine(
-                  segmentStart,
-                  segmentEnd,
-                  offsetDistance
-                );
-                
-                // Check if parallel points are within bounds
-                if (
-                  isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
-                  isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
-                ) {
-                  // Add parallel line points at the end of the flight path as a single operation
-                  // Point 3 should be closer to point 2, so we add parallelEnd first (which corresponds to point 2)
-                  // Then add parallelStart (which corresponds to point 1)
-                  onAddPoints([parallelEnd, parallelStart]); // Add both points in a single undoable action
-                  setIsParallelLineMode(false);
-                  alert(`Parallel line created with offset of ${offsetDistance}m. Added 2 new points at the end of the path.`);
-                } else {
-                  alert('Parallel line points would be outside DTM bounds. Please use a smaller offset.');
-                }
+          if (distanceInput !== null) {
+            const offsetDistance = parseFloat(distanceInput);
+            if (!isNaN(offsetDistance)) {
+              const segmentStart = flightPath[closestSegmentIndex];
+              const segmentEnd = flightPath[closestSegmentIndex + 1];
+              
+              // Calculate parallel line
+              const [parallelStart, parallelEnd] = calculateParallelLine(
+                segmentStart,
+                segmentEnd,
+                offsetDistance
+              );
+              
+              // Check if parallel points are within bounds
+              if (
+                isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
+                isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
+              ) {
+                // Add parallel line points at the end of the flight path as a single operation
+                // Point 3 should be closer to point 2, so we add parallelEnd first (which corresponds to point 2)
+                // Then add parallelStart (which corresponds to point 1)
+                onAddPoints([parallelEnd, parallelStart]); // Add both points in a single undoable action
+                setIsParallelLineMode(false);
+                alert(`Parallel line created with offset of ${offsetDistance}m. Added 2 new points at the end of the path.`);
               } else {
-                alert('Invalid distance. Please enter a number.');
+                alert('Parallel line points would be outside DTM bounds. Please use a smaller offset.');
               }
+            } else {
+              alert('Invalid distance. Please enter a number.');
             }
-          } else {
-            alert('Could not determine which line segment was clicked. Please click closer to a line segment.');
           }
         } else {
-          alert('Please click on a line segment to create a parallel line.');
+          alert('Could not determine which line segment was clicked. Please click closer to a line segment.');
         }
         return;
       }
 
       // Otherwise, add new point if drawing
       if (isDrawing && dtmLoaded) {
-        const lng = e.lngLat.lng;
-        const lat = e.lngLat.lat;
+        const lng = e.latlng.lng;
+        const lat = e.latlng.lat;
         
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
@@ -237,7 +269,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current.off('click', handleClick);
       }
     };
-  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath]);
+  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints]);
 
   // Update flight path on map
   useEffect(() => {
@@ -247,70 +279,39 @@ const MapPanel: React.FC<MapPanelProps> = ({
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
 
-    // Remove existing flight path source and layers
-    if (map.current.getLayer('flight-path-clickable')) {
-      map.current.removeLayer('flight-path-clickable');
+    // Remove existing flight path lines
+    if (flightPathLineRef.current) {
+      map.current.removeLayer(flightPathLineRef.current);
+      flightPathLineRef.current = null;
     }
-    if (map.current.getSource('flight-path')) {
-      map.current.removeLayer('flight-path');
-      map.current.removeSource('flight-path');
+    if (flightPathClickableLineRef.current) {
+      map.current.removeLayer(flightPathClickableLineRef.current);
+      flightPathClickableLineRef.current = null;
     }
 
     if (flightPath.length === 0) return;
 
-    // Add flight path line
-    map.current.addSource('flight-path', {
-      type: 'geojson',
-      data: {
-        type: 'Feature',
-        geometry: {
-          type: 'LineString',
-          coordinates: flightPath.map(p => [p.lng, p.lat])
-        }
-      }
-    });
+    // Convert coordinates to Leaflet format (lat, lng)
+    const latlngs = flightPath.map(p => [p.lat, p.lng] as [number, number]);
 
-    // Add invisible clickable layer for line segment selection (wide stroke)
-    map.current.addLayer({
-      id: 'flight-path-clickable',
-      type: 'line',
-      source: 'flight-path',
-      layout: {
-        'line-join': 'round',
-        'line-cap': 'round'
-      },
-      paint: {
-        'line-color': 'transparent',
-        'line-width': 20, // Wide invisible line for easier clicking
-        'line-opacity': 0
-      }
-    });
+    // Add invisible clickable line for line segment selection (wide stroke)
+    flightPathClickableLineRef.current = L.polyline(latlngs, {
+      color: 'transparent',
+      weight: 20, // Wide invisible line for easier clicking
+      opacity: 0,
+      interactive: true
+    }).addTo(map.current);
 
-    // Add flight path layer (will be on top)
-    map.current.addLayer({
-      id: 'flight-path',
-      type: 'line',
-      source: 'flight-path',
-      layout: {
-        'line-join': 'round',
-        'line-cap': 'round'
-      },
-      paint: {
-        'line-color': '#ff0000',
-        'line-width': 3,
-        'line-opacity': 0.8
-      }
-    });
-    
-    // Ensure flight path is above DTM if DTM exists (DTM stays visible below)
-    if (map.current.getLayer('dtm-layer')) {
-      // Move flight path to the top to ensure it's above DTM (DTM remains visible)
-      map.current.moveLayer('flight-path');
-    }
+    // Add flight path line (will be on top)
+    flightPathLineRef.current = L.polyline(latlngs, {
+      color: '#ff0000',
+      weight: 3,
+      opacity: 0.8
+    }).addTo(map.current);
 
     // Update cursor style for clickable line layer when in parallel line mode
-    if (isParallelLineMode) {
-      map.current.getCanvas().style.cursor = 'crosshair';
+    if (isParallelLineMode && flightPathClickableLineRef.current) {
+      map.current.getContainer().style.cursor = 'crosshair';
     }
 
     // Add markers for each point
@@ -320,50 +321,55 @@ const MapPanel: React.FC<MapPanelProps> = ({
       el.innerHTML = `${index + 1}`;
       el.style.cursor = 'pointer';
 
-      const marker = new maplibregl.Marker({
-        element: el,
+      const icon = L.divIcon({
+        className: 'flight-point-marker-container',
+        html: el,
+        iconSize: [30, 30],
+        iconAnchor: [15, 15]
+      });
+
+      const marker = L.marker([point.lat, point.lng], {
+        icon: icon,
         draggable: true
-      })
-        .setLngLat([point.lng, point.lat])
-        .addTo(map.current!);
+      }).addTo(map.current!);
 
       // Store the last valid position for this marker
-      let lastValidPosition: [number, number] = [point.lng, point.lat];
+      let lastValidPosition: [number, number] = [point.lat, point.lng];
 
       // Handle drag start - store initial position
       marker.on('dragstart', () => {
-        lastValidPosition = [point.lng, point.lat];
+        lastValidPosition = [point.lat, point.lng];
       });
 
       // Handle marker drag
-      marker.on('drag', () => {
-        const lngLat = marker.getLngLat();
-        const lng = lngLat.lng;
-        const lat = lngLat.lat;
+      marker.on('drag', (e: L.LeafletEvent) => {
+        const latlng = e.target.getLatLng();
+        const lng = latlng.lng;
+        const lat = latlng.lat;
         
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
           // Reset marker to last valid position
-          marker.setLngLat(lastValidPosition);
+          marker.setLatLng(lastValidPosition);
           return;
         }
         
         // Update last valid position and state
-        lastValidPosition = [lng, lat];
+        lastValidPosition = [lat, lng];
         onUpdatePoint(index, { lng, lat });
       });
       
       // Handle drag end to show message if dragged outside bounds
-      marker.on('dragend', () => {
-        const lngLat = marker.getLngLat();
-        const lng = lngLat.lng;
-        const lat = lngLat.lat;
+      marker.on('dragend', (e: L.LeafletEvent) => {
+        const latlng = e.target.getLatLng();
+        const lng = latlng.lng;
+        const lat = latlng.lat;
         
         // Check if final position is within bounds
         if (!isPointWithinBounds(lng, lat)) {
           // Reset to last valid position
-          marker.setLngLat(lastValidPosition);
-          onUpdatePoint(index, { lng: lastValidPosition[0], lat: lastValidPosition[1] });
+          marker.setLatLng(lastValidPosition);
+          onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
           alert('Cannot move point outside DTM bounding box. Point has been reset to the previous valid position.');
         }
       });
@@ -410,33 +416,64 @@ const MapPanel: React.FC<MapPanelProps> = ({
   useEffect(() => {
     if (!map.current) return;
     if (isParallelLineMode) {
-      map.current.getCanvas().style.cursor = 'crosshair';
+      map.current.getContainer().style.cursor = 'crosshair';
     } else if (!isDrawing && editingPointIndex === null) {
-      map.current.getCanvas().style.cursor = '';
+      map.current.getContainer().style.cursor = '';
     }
   }, [isParallelLineMode, isDrawing, editingPointIndex]);
+
+  // Prevent map dragging when interacting with DTM transparency slider
+  useEffect(() => {
+    if (!dtmTransparencyControlRef.current || !map.current) return;
+
+    const element = dtmTransparencyControlRef.current;
+    
+    // Use Leaflet's built-in methods to prevent map interactions
+    L.DomEvent.disableClickPropagation(element);
+    L.DomEvent.disableScrollPropagation(element);
+    
+    // Prevent drag events
+    L.DomEvent.on(element, 'mousedown', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'mouseup', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'mousemove', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchstart', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchend', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchmove', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'dblclick', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'contextmenu', L.DomEvent.stopPropagation);
+
+    return () => {
+      L.DomEvent.off(element, 'mousedown', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'mouseup', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'mousemove', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchstart', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchend', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchmove', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'dblclick', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'contextmenu', L.DomEvent.stopPropagation);
+    };
+  }, [dtmLoaded]);
 
   // Handle DTM source changes - load and display DTM
   useEffect(() => {
     if (!map.current || !dtmSource) {
-      // Remove DTM layer if source is cleared
-      if (map.current && map.current.getLayer('dtm-layer')) {
-        map.current.removeLayer('dtm-layer');
+      // Remove DTM overlay if source is cleared
+      if (dtmImageOverlayRef.current && map.current) {
+        map.current.removeLayer(dtmImageOverlayRef.current);
+        dtmImageOverlayRef.current = null;
       }
-      if (map.current && map.current.getSource('dtm-source')) {
-        map.current.removeSource('dtm-source');
-      }
-      // Restore OSM opacity to full when DTM is unloaded
-      if (map.current && map.current.getLayer('osm-layer')) {
-        map.current.setPaintProperty('osm-layer', 'raster-opacity', 1.0);
+      // Remove DTM boundary if present
+      if (dtmBoundaryRef.current && map.current) {
+        map.current.removeLayer(dtmBoundaryRef.current);
+        dtmBoundaryRef.current = null;
       }
       // Reset file input so it can be used again
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
-      dtmImageRef.current = null;
       setDtmLoaded(false);
       setDtmBounds(null);
+      // Keep opacity setting - don't reset it so user preference persists
       return;
     }
 
@@ -448,7 +485,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (!filename) return;
 
         // Fetch raster data
-        const response = await fetch(`http://localhost:5000/api/dtm/${filename}/raster`);
+        const response = await fetch(`/api/dtm/${filename}/raster`);
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
           throw new Error(errorData.error || `Failed to load DTM data: ${response.status}`);
@@ -582,7 +619,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
         console.log('Canvas rendered, creating image...');
 
         // Helper function to add DTM layer
-        const addDTMLayer = (img: HTMLImageElement, bounds: number[], wasProjected: boolean) => {
+        // @ts-ignore
+        const addDTMLayer = (img: HTMLImageElement, bounds: number[]) => {
           if (!map.current) {
             console.error('Map not initialized');
             return;
@@ -590,14 +628,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
           console.log('Adding DTM layer to map...');
           console.log('Bounds (WGS84):', bounds);
-          console.log('Was Projected:', wasProjected);
 
-          // Remove existing DTM layer if present
-          if (map.current.getLayer('dtm-layer')) {
-            map.current.removeLayer('dtm-layer');
+          // Remove existing DTM overlay if present
+          if (dtmImageOverlayRef.current) {
+            map.current.removeLayer(dtmImageOverlayRef.current);
+            dtmImageOverlayRef.current = null;
           }
-          if (map.current.getSource('dtm-source')) {
-            map.current.removeSource('dtm-source');
+          // Remove existing DTM boundary if present
+          if (dtmBoundaryRef.current) {
+            map.current.removeLayer(dtmBoundaryRef.current);
+            dtmBoundaryRef.current = null;
           }
 
           // Get bounds (now in WGS84 lat/lon)
@@ -607,153 +647,37 @@ const MapPanel: React.FC<MapPanelProps> = ({
             const imageUrl = canvas.toDataURL();
             console.log('Image URL length:', imageUrl.length);
             console.log('Canvas dimensions:', canvas.width, 'x', canvas.height);
-            console.log('Coordinates to use:', [
-              [minX, maxY], // top-left
-              [maxX, maxY], // top-right
-              [maxX, minY], // bottom-right
-              [minX, minY]  // bottom-left
-            ]);
 
-            // Remove existing source if present
-            if (map.current.getSource('dtm-source')) {
-              map.current.removeSource('dtm-source');
-            }
-
-            // Add image source with geographic coordinates
-            map.current.addSource('dtm-source', {
-              type: 'image',
-              url: imageUrl,
-              coordinates: [
-                [minX, maxY], // top-left (west, north)
-                [maxX, maxY], // top-right (east, north)
-                [maxX, minY], // bottom-right (east, south)
-                [minX, minY]  // bottom-left (west, south)
-              ]
-            });
-            
-            // Verify source was added and wait for it to load
-            const source = map.current.getSource('dtm-source');
-            console.log('Source added, type:', source?.type);
-            if (source && 'coordinates' in source) {
-              console.log('Source coordinates:', (source as any).coordinates);
-            }
-            
-            // Check if source has an image property (for image sources)
-            if (source && 'image' in source) {
-              const imageSource = source as any;
-              console.log('Image source image property:', imageSource.image);
-              if (imageSource.image) {
-                console.log('Image loaded:', imageSource.image.complete);
-                console.log('Image dimensions:', imageSource.image.width, 'x', imageSource.image.height);
-              }
-            }
-
-            console.log('DTM source added successfully');
-
-            // Add raster layer to display the image
-            // Place DTM layer above OSM but below flight path
-            // Determine where to place it
-            let beforeId: string | undefined = undefined;
-            if (map.current.getLayer('flight-path')) {
-              // If flight path exists, place DTM before it (so flight path stays on top)
-              beforeId = 'flight-path';
-            }
-            // If no flight path, add at top (will be above OSM)
-            
-            map.current.addLayer({
-              id: 'dtm-layer',
-              type: 'raster',
-              source: 'dtm-source',
-              paint: {
-                'raster-opacity': 1.0  // Full opacity for maximum visibility
-              }
-            }, beforeId);
-            
-            // If flight path layer exists, ensure it's above DTM (move to top)
-            if (map.current.getLayer('flight-path')) {
-              map.current.moveLayer('flight-path');
-            }
-            
-            // Reduce OSM opacity significantly to make DTM clearly visible
-            // Since DTM is grayscale, we want it to be the dominant layer
-            if (map.current.getLayer('osm-layer')) {
-              const currentOpacity = map.current.getPaintProperty('osm-layer', 'raster-opacity');
-              console.log('Current OSM opacity:', currentOpacity);
-              // Set OSM to 30% opacity so DTM grayscale is clearly visible on top
-              map.current.setPaintProperty('osm-layer', 'raster-opacity', 0.3);
-            }
-            
-            // Force map to repaint
-            map.current.triggerRepaint();
-            
-            // Verify layer order and visibility
-            console.log('Layer order after DTM addition:');
-            const style = map.current.getStyle();
-            if (style && style.layers) {
-              style.layers.forEach((layer: any, index: number) => {
-                const layerObj = map.current!.getLayer(layer.id);
-                const visibility = layerObj ? 'visible' : 'not found';
-                console.log(`  ${index}: ${layer.id} (${layer.type}) - ${visibility}`);
-              });
-            }
-            
-            // Verify DTM layer exists and is visible
-            const dtmLayer = map.current.getLayer('dtm-layer');
-            if (dtmLayer) {
-              console.log('DTM layer verified:', dtmLayer);
-              const opacity = map.current.getPaintProperty('dtm-layer', 'raster-opacity');
-              console.log('DTM layer paint properties - opacity:', opacity);
-            } else {
-              console.error('DTM layer not found after addition!');
-            }
-            
-            // Verify source
-            const dtmSource = map.current.getSource('dtm-source');
-            if (dtmSource && 'coordinates' in dtmSource) {
-              console.log('DTM source verified:', dtmSource);
-              console.log('DTM source coordinates:', (dtmSource as any).coordinates);
-            } else {
-              console.error('DTM source not found after addition!');
-            }
-            
-            // Check current map bounds vs DTM bounds
-            const mapBounds = map.current.getBounds();
-            const mapBoundsArray = mapBounds.toArray();
-            console.log('Current map bounds:', mapBoundsArray);
-            console.log('DTM bounds:', bounds);
-            
-            // Check if DTM bounds are within map viewport
-            const [mapMinLng, mapMinLat, mapMaxLng, mapMaxLat] = [
-              mapBoundsArray[0][0], mapBoundsArray[0][1],
-              mapBoundsArray[1][0], mapBoundsArray[1][1]
+            // Create image overlay bounds in Leaflet format (southwest, northeast)
+            const imageBounds: L.LatLngBoundsExpression = [
+              [minY, minX], // Southwest (south, west)
+              [maxY, maxX]  // Northeast (north, east)
             ];
-            const [dtmMinLng, dtmMinLat, dtmMaxLng, dtmMaxLat] = bounds;
-            
-            const dtmInViewport = !(
-              dtmMaxLng < mapMinLng || dtmMinLng > mapMaxLng ||
-              dtmMaxLat < mapMinLat || dtmMinLat > mapMaxLat
-            );
-            console.log('DTM in viewport:', dtmInViewport);
-            if (!dtmInViewport) {
-              console.warn('DTM bounds are outside current map viewport! Use "Fit to DTM" button to see it.');
-            }
+
+            // Add image overlay with user-defined opacity (default 90% transparency = 10% opacity)
+            dtmImageOverlayRef.current = L.imageOverlay(imageUrl, imageBounds, {
+              opacity: dtmOpacity
+            }).addTo(map.current);
+
+            // Add black solid stroke boundary rectangle
+            dtmBoundaryRef.current = L.rectangle(imageBounds, {
+              color: '#000000',
+              weight: 2,
+              fill: false,
+              opacity: 1.0
+            }).addTo(map.current);
 
             console.log('DTM layer added successfully');
-            dtmImageRef.current = img;
             setDtmLoaded(true);
             setDtmBounds(bounds); // Store bounds for the "Fit to DTM" button
 
             // Fit map to DTM bounds (now in WGS84)
             console.log('Fitting map to DTM bounds (WGS84):', bounds);
             try {
-              map.current.fitBounds(
-                [[minX, minY], [maxX, maxY]],
-                { 
-                  padding: { top: 50, bottom: 50, left: 50, right: 50 },
-                  duration: 1500,
-                  maxZoom: 18
-                }
-              );
+              map.current.fitBounds(imageBounds, {
+                padding: [50, 50],
+                maxZoom: 18
+              });
               console.log('Map fitted to DTM bounds successfully');
             } catch (fitError) {
               console.error('Error fitting map to bounds:', fitError);
@@ -761,11 +685,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               const centerLng = (minX + maxX) / 2;
               const centerLat = (minY + maxY) / 2;
               console.log('Falling back to center:', centerLng, centerLat);
-              map.current.flyTo({
-                center: [centerLng, centerLat],
-                zoom: 13,
-                duration: 1500
-              });
+              map.current.setView([centerLat, centerLng], 13);
             }
           } catch (sourceError) {
             console.error('Error adding DTM source/layer:', sourceError);
@@ -787,15 +707,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             return;
           }
 
-          if (!map.current.loaded()) {
-            console.log('Map not loaded yet, waiting...');
-            map.current.once('load', () => {
-              console.log('Map loaded, adding DTM layer...');
-              addDTMLayer(img, transformedBounds, isProjected);
-            });
-          } else {
-            addDTMLayer(img, transformedBounds, isProjected);
-          }
+          addDTMLayer(img, transformedBounds);
         };
 
         img.onerror = (error) => {
@@ -837,19 +749,70 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const formData = new FormData();
     formData.append('dtm', file);
 
+    // Reset progress and set uploading state
+    setUploadProgress(0);
+    setIsUploading(true);
+
     try {
-      const response = await fetch('http://localhost:5000/api/upload-dtm', {
-        method: 'POST',
-        body: formData
+      // Use XMLHttpRequest to track upload progress
+      const xhr = new XMLHttpRequest();
+
+      // Track upload progress
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          setUploadProgress(percentComplete);
+        }
       });
 
-      const data = await response.json();
-      if (data.success) {
-        onDtmLoad(data.path, data);
-      }
+      // Handle completion
+      xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (data.success) {
+              onDtmLoad(data.path, data);
+            } else {
+              throw new Error(data.error || 'Upload failed');
+            }
+          } catch (parseError) {
+            console.error('Error parsing response:', parseError);
+            alert('Failed to parse server response');
+          }
+        } else {
+          try {
+            const errorData = JSON.parse(xhr.responseText);
+            throw new Error(errorData.error || `Upload failed with status ${xhr.status}`);
+          } catch {
+            throw new Error(`Upload failed with status ${xhr.status}`);
+          }
+        }
+        setIsUploading(false);
+        setUploadProgress(0);
+      });
+
+      // Handle errors
+      xhr.addEventListener('error', () => {
+        console.error('Error uploading DTM:', xhr.statusText);
+        alert('Failed to upload DTM file');
+        setIsUploading(false);
+        setUploadProgress(0);
+      });
+
+      // Handle abort
+      xhr.addEventListener('abort', () => {
+        setIsUploading(false);
+        setUploadProgress(0);
+      });
+
+      // Send request
+      xhr.open('POST', '/api/upload-dtm');
+      xhr.send(formData);
     } catch (error) {
       console.error('Error uploading DTM:', error);
       alert('Failed to upload DTM file');
+      setIsUploading(false);
+      setUploadProgress(0);
     } finally {
       // Reset file input so the same file can be selected again
       if (fileInputRef.current) {
@@ -863,24 +826,20 @@ const MapPanel: React.FC<MapPanelProps> = ({
     
     const [minX, minY, maxX, maxY] = dtmBounds;
     try {
-      map.current.fitBounds(
-        [[minX, minY], [maxX, maxY]],
-        { 
-          padding: { top: 50, bottom: 50, left: 50, right: 50 },
-          duration: 1500,
-          maxZoom: 18
-        }
-      );
+      const imageBounds: L.LatLngBoundsExpression = [
+        [minY, minX], // Southwest
+        [maxY, maxX]  // Northeast
+      ];
+      map.current.fitBounds(imageBounds, {
+        padding: [50, 50],
+        maxZoom: 18
+      });
     } catch (fitError) {
       console.error('Error fitting map to DTM bounds:', fitError);
       // Fallback: center on the middle of the bounds
       const centerLng = (minX + maxX) / 2;
       const centerLat = (minY + maxY) / 2;
-      map.current.flyTo({
-        center: [centerLng, centerLat],
-        zoom: 13,
-        duration: 1500
-      });
+      map.current.setView([centerLat, centerLng], 13);
     }
   };
 
@@ -892,11 +851,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleResetView = () => {
     if (!map.current) return;
-    map.current.flyTo({
-      center: [34.8516, 31.0461], // Israel default
-      zoom: 6,
-      duration: 1500
-    });
+    map.current.setView([31.0461, 34.8516], 6); // Israel default
   };
 
   const handleSetFlightHeight = (pointIndex: number) => {
@@ -971,6 +926,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     // Add the new point
     onAddPoint(newPoint);
+  };
+
+  // Handle DTM opacity change
+  const handleDtmOpacityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newOpacity = parseFloat(e.target.value);
+    setDtmOpacity(newOpacity);
+    
+    // Update the DTM overlay opacity if it exists
+    if (dtmImageOverlayRef.current) {
+      dtmImageOverlayRef.current.setOpacity(newOpacity);
+    }
   };
 
   const handleCreatePointFromCoordinates = () => {
@@ -1280,10 +1246,43 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
         </div>
       </div>
-      <div ref={mapContainer} className="map-container" />
+      <div ref={mapContainer} className="map-container">
+        {isUploading && (
+          <div className="upload-progress-overlay">
+            <div className="upload-progress-container">
+              <div className="upload-progress-label">Uploading DTM: {uploadProgress}%</div>
+              <div className="upload-progress-bar">
+                <div 
+                  className="upload-progress-fill" 
+                  style={{ width: `${uploadProgress}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+        {dtmLoaded && (
+          <div 
+            ref={dtmTransparencyControlRef}
+            className="dtm-transparency-control"
+          >
+            <label htmlFor="dtm-opacity-slider" className="dtm-opacity-label">
+              DTM Transparency: {Math.round((1 - dtmOpacity) * 100)}%
+            </label>
+            <input
+              id="dtm-opacity-slider"
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={dtmOpacity}
+              onChange={handleDtmOpacityChange}
+              className="dtm-opacity-slider"
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 };
 
 export default MapPanel;
-

@@ -48,7 +48,7 @@ export function useElevationProfile() {
       
       console.log(`Calculating elevation profile with search radius: ${searchRadius}m`);
       
-      const response = await axios.post('http://localhost:5000/api/elevation-profile', {
+      const response = await axios.post('/api/elevation-profile', {
         coordinates,
         dtmPath: dtmSource,
         radiusMeters: searchRadius // User-configurable radius for min/max calculation

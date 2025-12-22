@@ -35,7 +35,7 @@ function App() {
   const [dtmSource, setDtmSource] = useState<string | null>(null);
   // @ts-ignore
   const [dtmInfo, setDtmInfo] = useState<DTMInfo | null>(null);
-  const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(250);
+  const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(200);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
   const [searchRadius, setSearchRadius] = useState<number>(50);

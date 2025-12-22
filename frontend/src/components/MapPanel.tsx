@@ -123,14 +123,23 @@ const MapPanel: React.FC<MapPanelProps> = ({
         httpsAgent:httpsAgent_f
       };
 
-      const response = await fetch('/api/token')
+      const response_token = await fetch('/api/token')
 
-      if (!response.ok){
-        const errorData = await response.json().catch(() => ({error: 'Unknown error'}));
+      if (!response_token.ok){
+        const errorData = await response_token.json().catch(() => ({error: 'Unknown error'}));
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
-      const MAPS_TOKEN = await response.json();
-      const url = `https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png?token=${MAPS_TOKEN.token}`;
+      const MAPS_TOKEN = await response_token.json();
+
+
+      const response_url = await fetch('/api/url')
+
+      if (!response_url.ok){
+        const errorData = await response_url.json().catch(() => ({error: 'Unknown error'}));
+        throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
+      }
+      const raw_url = await response_url.json();
+      const url = `${raw_url.url}?token=${MAPS_TOKEN.token}`;
       
       if (map.current) {
         L.tileLayer(url,options).addTo(map.current)

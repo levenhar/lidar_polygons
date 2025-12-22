@@ -16,9 +16,8 @@ dotenv.config();
 
 const app = express();
 const PORT = process.env.BACKEND_PORT;
-console.log("PORT")
-console.log(PORT)
 const MAPS_TOKEN = process.env.MAPS_TOKEN;
+const MAPS_URL = process.env.MAPS_URL;
 
 //Middleware
 app.use((req, res, next) => {
@@ -73,6 +72,11 @@ app.get('/api/health', (req, res) => {
 // token endpoint
 app.get('/api/token', (req, res) => {
   res.json({ token: MAPS_TOKEN})
+})
+
+// url endpoint
+app.get('/api/url', (req, res) => {
+  res.json({ url: MAPS_URL})
 })
 
 

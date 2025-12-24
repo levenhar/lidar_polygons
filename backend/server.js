@@ -18,6 +18,7 @@ const app = express();
 const PORT = process.env.BACKEND_PORT;
 const MAPS_TOKEN = process.env.MAPS_TOKEN;
 const MAPS_URL = process.env.MAPS_URL;
+const MAPS_CRS = process.env.MAPS_CRS;
 
 //Middleware
 app.use((req, res, next) => {
@@ -77,6 +78,11 @@ app.get('/api/token', (req, res) => {
 // url endpoint
 app.get('/api/url', (req, res) => {
   res.json({ url: MAPS_URL})
+})
+
+// crs endpoint
+app.get('/api/crs', (req, res) => {
+  res.json({ crs: MAPS_CRS})
 })
 
 

@@ -109,10 +109,40 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (!mapContainer.current || map.current) return;
 
     initializeHttpAgent().then(async(httpsAgent_f) => {
+      const response_crs = await fetch('/api/crs')
+
+      if (!response_crs.ok){
+        const errorData = await response_crs.json().catch(() => ({error: 'Unknown error'}));
+        throw new Error(errorData.error || 'Failed to get CRS for maps ${response.status}');
+      }
+      const crsResponse = await response_crs.json();
+      const crsString = crsResponse.crs;
+
+      // Map CRS string from env to Leaflet CRS object
+      let leafletCrs: L.CRS;
+      if (!crsString) {
+        // Default to EPSG3857 if not specified
+        leafletCrs = L.CRS.EPSG3857;
+      } else {
+        // Normalize the CRS string (handle both "EPSG4326" and "EPSG:4326" formats)
+        const normalizedCrs = crsString.replace(':', '').toUpperCase();
+        
+        // Map common CRS strings to Leaflet CRS objects
+        // Use type assertion to access CRS dynamically, with fallback
+        const crsKey = normalizedCrs as keyof typeof L.CRS;
+        if (L.CRS[crsKey]) {
+          leafletCrs = L.CRS[crsKey];
+        } else {
+          console.warn(`Unknown CRS: ${crsString}. Defaulting to EPSG3857.`);
+          leafletCrs = L.CRS.EPSG3857;
+        }
+      }
+
       if (mapContainer.current) {
         map.current = L.map(mapContainer.current, {
           center: [31.50, 35.02], // israel defulat
           zoom: 7 ,
+          crs: leafletCrs
           // crs: L.CRS.EPSG4326
         });
       }

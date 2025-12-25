@@ -47,17 +47,40 @@ function App() {
   const {flightPath, addPoint, addPoints,updatePoint, deletePoint, insertPoints, setFlightPath, exportGeoJSON,importGeoJSON,undo, redo, canUndo, canRedo
   } = useFlightPath();
 
-  const { elevationProfile, loading, calculateProfile } = useElevationProfile();
+  const { elevationProfile, loading, calculateProfile, refreshFlightHeights } = useElevationProfile();
 
-  // Calculate elevation profile when flight path changes
+  // Track last inputs so we can avoid expensive recalculation when only nominal height changes
+  const lastProfileParamsRef = React.useRef<{
+    flightPath: Coordinate[];
+    dtmSource: string | null;
+    searchRadius: number;
+    nominalFlightHeight: number;
+  } | null>(null);
+
   React.useEffect(() => {
-    if (flightPath.length === 0) {
-      // Clear profile when flight path is empty
-      calculateProfile([], dtmSource || '', nominalFlightHeight, searchRadius);
-    } else if (flightPath.length >= 2 && dtmSource) {
-      calculateProfile(flightPath, dtmSource, nominalFlightHeight, searchRadius);
+    const prev = lastProfileParamsRef.current;
+    const baseChanged = !prev || prev.flightPath !== flightPath || prev.dtmSource !== dtmSource || prev.searchRadius !== searchRadius;
+    const nominalChanged = !prev || prev.nominalFlightHeight !== nominalFlightHeight;
+
+    if (baseChanged) {
+      if (flightPath.length === 0) {
+        // Clear profile when flight path is empty
+        calculateProfile([], dtmSource || '', nominalFlightHeight, searchRadius);
+      } else if (flightPath.length >= 2 && dtmSource) {
+        calculateProfile(flightPath, dtmSource, nominalFlightHeight, searchRadius);
+      }
+    } else if (nominalChanged) {
+      // Fast update: adjust flight heights without reloading elevations
+      refreshFlightHeights(flightPath, nominalFlightHeight);
     }
-  }, [flightPath, dtmSource, nominalFlightHeight, searchRadius, calculateProfile]);
+
+    lastProfileParamsRef.current = {
+      flightPath,
+      dtmSource,
+      searchRadius,
+      nominalFlightHeight
+    };
+  }, [flightPath, dtmSource, nominalFlightHeight, searchRadius, calculateProfile, refreshFlightHeights]);
 
   const handlePathPointHover = useCallback((point: Coordinate | null) => {
     setSelectedPoint(point);

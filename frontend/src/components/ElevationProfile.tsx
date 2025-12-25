@@ -1,6 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { ElevationPoint, Coordinate } from '../App';
+import ContextMenu from './ContextMenu';
 import './ElevationProfile.css';
 
 interface ElevationProfileProps {
@@ -11,6 +12,10 @@ interface ElevationProfileProps {
   resolutionHeight: number;
   selectedPoint: Coordinate | null;
   flightPath: Coordinate[];
+  onDeletePoint: (index: number) => void;
+  onUpdatePoint: (index: number, point: Coordinate) => void;
+  onSetFlightHeight: (index: number) => void;
+  onEditPointRequest: (index: number) => void;
 }
 
 const ElevationProfile: React.FC<ElevationProfileProps> = ({
@@ -20,10 +25,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   safetyHeight,
   resolutionHeight,
   selectedPoint,
-  flightPath
+  flightPath,
+  onDeletePoint,
+  onUpdatePoint,
+  onSetFlightHeight,
+  onEditPointRequest
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current || elevationProfile.length === 0) {
@@ -274,7 +284,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     });
 
     // Add data points only for original flight path vertices
-    g.selectAll('.ground-point')
+    const groundPoints = g.selectAll('.ground-point')
       .data(originalVertices)
       .enter()
       .append('circle')
@@ -282,9 +292,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('cx', d => xScale(d.point.distance))
       .attr('cy', d => yScale(d.point.elevation))
       .attr('r', 3)
-      .attr('fill', '#8B4513');
+      .attr('fill', '#8B4513')
+      .style('cursor', 'pointer');
 
-    g.selectAll('.flight-point')
+    // Add right-click handler for ground points
+    groundPoints.on('contextmenu', function(event: any, d: { point: ElevationPoint; index: number }) {
+      event.preventDefault();
+      event.stopPropagation();
+      // Get the click position in screen coordinates
+      const clickX = event.clientX || (event as MouseEvent).clientX;
+      const clickY = event.clientY || (event as MouseEvent).clientY;
+      setContextMenu({
+        x: clickX,
+        y: clickY,
+        pointIndex: d.index
+      });
+    });
+
+    const flightPoints = g.selectAll('.flight-point')
       .data(originalVertices)
       .enter()
       .append('circle')
@@ -292,7 +317,22 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('cx', d => xScale(d.point.distance))
       .attr('cy', d => yScale(d.point.elevation + (d.point.flightHeight ?? nominalFlightHeight)))
       .attr('r', 3)
-      .attr('fill', '#1E90FF');
+      .attr('fill', '#1E90FF')
+      .style('cursor', 'pointer');
+
+    // Add right-click handler for flight points
+    flightPoints.on('contextmenu', function(event: any, d: { point: ElevationPoint; index: number }) {
+      event.preventDefault();
+      event.stopPropagation();
+      // Get the click position in screen coordinates
+      const clickX = event.clientX || (event as MouseEvent).clientX;
+      const clickY = event.clientY || (event as MouseEvent).clientY;
+      setContextMenu({
+        x: clickX,
+        y: clickY,
+        pointIndex: d.index
+      });
+    });
 
     // Add point number labels only for original vertices
     g.selectAll('.point-label')
@@ -431,7 +471,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .text(item.label);
     });
 
-  }, [elevationProfile, nominalFlightHeight, safetyHeight, resolutionHeight, selectedPoint, flightPath]);
+  }, [elevationProfile, nominalFlightHeight, safetyHeight, resolutionHeight, selectedPoint, flightPath, onDeletePoint, onUpdatePoint, onSetFlightHeight, onEditPointRequest]);
 
   const exportPNG = () => {
     if (!svgRef.current) return;
@@ -511,8 +551,31 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const handleSetFlightHeight = (pointIndex: number) => {
+    onSetFlightHeight(pointIndex);
+  };
+
   return (
     <div className="elevation-panel">
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onDelete={() => {
+            onDeletePoint(contextMenu.pointIndex);
+            setContextMenu(null);
+          }}
+          onEdit={() => {
+            onEditPointRequest(contextMenu.pointIndex);
+            setContextMenu(null);
+          }}
+          onSetHeight={() => {
+            handleSetFlightHeight(contextMenu.pointIndex);
+            setContextMenu(null);
+          }}
+        />
+      )}
       <div className="elevation-header">
         <h2>Elevation Profile</h2>
         <div className="elevation-controls">
@@ -539,7 +602,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       </div>
       <div ref={containerRef} className="elevation-chart-container">
         {loading ? (
-          <div className="loading">Calculating elevation profile...</div>
+          <div className="loading">
+            <div className="loading-spinner"></div>
+            <div className="loading-text">Calculating elevation profile...</div>
+          </div>
         ) : elevationProfile.length === 0 ? (
           <div className="no-data">
             Draw a flight path on the map to see the elevation profile

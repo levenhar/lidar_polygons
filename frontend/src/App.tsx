@@ -40,6 +40,7 @@ function App() {
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
   const [searchRadius, setSearchRadius] = useState<number>(50);
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
+  const [editPointIndex, setEditPointIndex] = useState<number | null>(null);
   
   // @ts-ignore
   const {flightPath, addPoint, addPoints,updatePoint, deletePoint, insertPoints, setFlightPath, exportGeoJSON,importGeoJSON,undo, redo, canUndo, canRedo
@@ -77,6 +78,30 @@ function App() {
     // Clear all flight path points when unloading DTM
     setFlightPath([]);
   }, [setFlightPath]);
+
+  const handleSetFlightHeight = useCallback((pointIndex: number) => {
+    if (pointIndex < 0 || pointIndex >= flightPath.length) return;
+    const currentPoint = flightPath[pointIndex];
+    const currentHeight = currentPoint.height ?? nominalFlightHeight;
+    const heightInput = prompt(`Enter flight height (AGL in meters) for point ${pointIndex + 1}:`, currentHeight.toString());
+    
+    if (heightInput !== null) {
+      const height = parseFloat(heightInput);
+      if (!isNaN(height) && height >= 0) {
+        updatePoint(pointIndex, {
+          ...currentPoint,
+          height
+        });
+      } else {
+        alert('Invalid height. Please enter a positive number.');
+      }
+    }
+  }, [flightPath, nominalFlightHeight, updatePoint]);
+
+  const handleEditPointRequest = useCallback((pointIndex: number) => {
+    setEditPointIndex(pointIndex);
+    alert(`Edit mode enabled for point ${pointIndex + 1}. Click on the map to move the point.`);
+  }, []);
 
   // Handle keyboard shortcuts for undo/redo
   React.useEffect(() => {
@@ -214,6 +239,8 @@ function App() {
           onRedo={redo}
           canUndo={canUndo}
           canRedo={canRedo}
+          editPointIndex={editPointIndex}
+          onEditPointIndexChange={setEditPointIndex}
         />
         <ElevationProfile
           elevationProfile={elevationProfile}
@@ -223,6 +250,10 @@ function App() {
           resolutionHeight={resolutionHeight}
           selectedPoint={selectedPoint}
           flightPath={flightPath}
+          onDeletePoint={deletePoint}
+          onUpdatePoint={updatePoint}
+          onSetFlightHeight={handleSetFlightHeight}
+          onEditPointRequest={handleEditPointRequest}
         />
       </div>
     </div>

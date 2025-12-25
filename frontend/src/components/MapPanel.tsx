@@ -38,6 +38,8 @@ interface MapPanelProps {
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  editPointIndex?: number | null;
+  onEditPointIndexChange?: (index: number | null) => void;
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
@@ -55,7 +57,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onUndo,
   onRedo,
   canUndo,
-  canRedo
+  canRedo,
+  editPointIndex: externalEditPointIndex,
+  onEditPointIndexChange
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -190,7 +194,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     const handleClick = (e: L.LeafletMouseEvent) => {
       // If editing a point, move it to the new location
-      if (editingPointIndex !== null && dtmLoaded) {
+      const currentEditingIndex = externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
+      if (currentEditingIndex !== null && dtmLoaded) {
         const lng = e.latlng.lng;
         const lat = e.latlng.lat;
         
@@ -200,13 +205,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
           return;
         }
         
-        const currentPoint = flightPath[editingPointIndex];
-        onUpdatePoint(editingPointIndex, {
+        const currentPoint = flightPath[currentEditingIndex];
+        onUpdatePoint(currentEditingIndex, {
           lng,
           lat,
           height: currentPoint.height // Preserve height
         });
         setEditingPointIndex(null);
+        if (onEditPointIndexChange) {
+          onEditPointIndexChange(null);
+        }
         return;
       }
 
@@ -442,15 +450,23 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [dtmLoaded, isDrawing, isParallelLineMode]);
 
+  // Sync external edit point index with internal state
+  useEffect(() => {
+    if (externalEditPointIndex !== undefined && externalEditPointIndex !== editingPointIndex) {
+      setEditingPointIndex(externalEditPointIndex);
+    }
+  }, [externalEditPointIndex]);
+
   // Update cursor when parallel line mode changes
   useEffect(() => {
     if (!map.current) return;
+    const currentEditingIndex = externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
     if (isParallelLineMode) {
       map.current.getContainer().style.cursor = 'crosshair';
-    } else if (!isDrawing && editingPointIndex === null) {
+    } else if (!isDrawing && currentEditingIndex === null) {
       map.current.getContainer().style.cursor = '';
     }
-  }, [isParallelLineMode, isDrawing, editingPointIndex]);
+  }, [isParallelLineMode, isDrawing, editingPointIndex, externalEditPointIndex]);
 
   // Prevent map dragging when interacting with DTM transparency slider
   useEffect(() => {
@@ -766,6 +782,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Check file size (199 MB = 199 * 1024 * 1024 bytes)
+    const maxSizeBytes = 199 * 1024 * 1024; // 199 MB
+    if (file.size > maxSizeBytes) {
+      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+      alert(`File size (${fileSizeMB} MB) exceeds the maximum allowed size of 199 MB. Please use a smaller DTM file.`);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      return;
+    }
 
     // Prevent uploading if a DTM is already loaded
     if (dtmLoaded) {
@@ -1100,6 +1127,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           }}
           onEdit={() => {
             setEditingPointIndex(contextMenu.pointIndex);
+            if (onEditPointIndexChange) {
+              onEditPointIndexChange(contextMenu.pointIndex);
+            }
             setContextMenu(null);
             alert(`Edit mode enabled for point ${contextMenu.pointIndex + 1}. Click on the map to move the point.`);
           }}
@@ -1109,9 +1139,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           }}
         />
       )}
-      {editingPointIndex !== null && (
+      {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex) !== null && (
         <div className="edit-mode-indicator">
-          Edit mode: Click on the map to move point {editingPointIndex + 1}
+          Edit mode: Click on the map to move point {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex)! + 1}
         </div>
       )}
       {isParallelLineMode && (
@@ -1171,6 +1201,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 onClick={() => {
                   setIsDrawing(!isDrawing);
                   setEditingPointIndex(null);
+                  if (onEditPointIndexChange) {
+                    onEditPointIndexChange(null);
+                  }
                   setIsParallelLineMode(false);
                 }}
                 className={`btn btn-primary ${isDrawing ? 'active' : ''}`}
@@ -1184,6 +1217,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   setIsParallelLineMode(!isParallelLineMode);
                   setIsDrawing(false);
                   setEditingPointIndex(null);
+                  if (onEditPointIndexChange) {
+                    onEditPointIndexChange(null);
+                  }
                 }}
                 className={`btn btn-secondary ${isParallelLineMode ? 'active' : ''}`}
                 disabled={!dtmLoaded || flightPath.length < 2}

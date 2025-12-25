@@ -157,7 +157,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Create option *after* httpsAgent_f is define
       const options: TileLayerOptionsWithAgent = {
         maxZoom:19,
-        httpsAgent:httpsAgent_f
+        httpsAgent:httpsAgent_f,
+        noWrap: true // prevent repeated world copies when zoomed out
       };
 
       const response_token = await fetch('/api/token')

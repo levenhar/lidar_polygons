@@ -41,6 +41,7 @@ function App() {
   const [searchRadius, setSearchRadius] = useState<number>(50);
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
   const [editPointIndex, setEditPointIndex] = useState<number | null>(null);
+  const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);
   
   // @ts-ignore
   const {flightPath, addPoint, addPoints,updatePoint, deletePoint, insertPoints, setFlightPath, exportGeoJSON,importGeoJSON,undo, redo, canUndo, canRedo
@@ -60,6 +61,10 @@ function App() {
 
   const handlePathPointHover = useCallback((point: Coordinate | null) => {
     setSelectedPoint(point);
+  }, []);
+
+  const handleElevationPointHover = useCallback((point: ElevationPoint | null) => {
+    setHoveredElevationPoint(point);
   }, []);
 
   const handleDtmLoad = useCallback((source: string, info?: any) => {
@@ -241,6 +246,7 @@ function App() {
           canRedo={canRedo}
           editPointIndex={editPointIndex}
           onEditPointIndexChange={setEditPointIndex}
+          hoveredElevationPoint={hoveredElevationPoint}
         />
         <ElevationProfile
           elevationProfile={elevationProfile}
@@ -254,6 +260,7 @@ function App() {
           onUpdatePoint={updatePoint}
           onSetFlightHeight={handleSetFlightHeight}
           onEditPointRequest={handleEditPointRequest}
+          onElevationPointHover={handleElevationPointHover}
         />
       </div>
     </div>

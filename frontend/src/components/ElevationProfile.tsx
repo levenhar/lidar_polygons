@@ -16,6 +16,7 @@ interface ElevationProfileProps {
   onUpdatePoint: (index: number, point: Coordinate) => void;
   onSetFlightHeight: (index: number) => void;
   onEditPointRequest: (index: number) => void;
+  onElevationPointHover?: (point: ElevationPoint | null) => void;
 }
 
 const ElevationProfile: React.FC<ElevationProfileProps> = ({
@@ -29,7 +30,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   onDeletePoint,
   onUpdatePoint,
   onSetFlightHeight,
-  onEditPointRequest
+  onEditPointRequest,
+  onElevationPointHover
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -471,7 +473,115 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .text(item.label);
     });
 
-  }, [elevationProfile, nominalFlightHeight, safetyHeight, resolutionHeight, selectedPoint, flightPath, onDeletePoint, onUpdatePoint, onSetFlightHeight, onEditPointRequest]);
+    // Add invisible overlay for hover detection on all elevation points (on top of everything)
+    // This allows hover detection regardless of which curve the user is over
+    // Note: We need to allow right-click events to pass through to input points
+    if (onElevationPointHover) {
+      const overlay = g.append('rect')
+        .attr('x', 0)
+        .attr('y', 0)
+        .attr('width', width)
+        .attr('height', height)
+        .attr('fill', 'transparent')
+        .style('cursor', 'crosshair')
+        .style('pointer-events', 'all'); // Ensure it captures mouse events
+
+      overlay.on('mousemove', function(event: MouseEvent) {
+        const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+        
+        // Check if we're near any input point (ground or flight points)
+        // If so, don't interfere with their right-click events
+        let isNearInputPoint = false;
+        if (originalVertices.length > 0) {
+          for (const vertex of originalVertices) {
+            const pointX = xScale(vertex.point.distance);
+            const groundY = yScale(vertex.point.elevation);
+            const flightY = yScale(vertex.point.elevation + (vertex.point.flightHeight ?? nominalFlightHeight));
+            
+            // Check if mouse is within 10 pixels of ground or flight point
+            const distToGround = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(groundY - mouseY, 2));
+            const distToFlight = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(flightY - mouseY, 2));
+            
+            if (distToGround < 10 || distToFlight < 10) {
+              isNearInputPoint = true;
+              break;
+            }
+          }
+        }
+        
+        // Only update hover if not near an input point
+        if (!isNearInputPoint) {
+          // Find the closest point based on distance (x-coordinate)
+          let closestPoint: ElevationPoint | null = null;
+          let closestDistance = Infinity;
+          
+          for (const point of elevationProfile) {
+            const pointX = xScale(point.distance);
+            const distance = Math.abs(pointX - mouseX);
+            
+            if (distance < closestDistance) {
+              closestDistance = distance;
+              closestPoint = point;
+            }
+          }
+          
+          if (closestPoint) {
+            onElevationPointHover(closestPoint);
+          }
+        }
+      });
+
+      overlay.on('mouseleave', () => {
+        if (onElevationPointHover) {
+          onElevationPointHover(null);
+        }
+      });
+
+      // Allow right-click events to pass through to input points
+      overlay.on('contextmenu', function(event: MouseEvent) {
+        // Check if we're clicking on an input point
+        const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+        let clickedInputPoint: { point: ElevationPoint; index: number; isFlight: boolean } | null = null;
+        
+        if (originalVertices.length > 0) {
+          for (const vertex of originalVertices) {
+            const pointX = xScale(vertex.point.distance);
+            const groundY = yScale(vertex.point.elevation);
+            const flightY = yScale(vertex.point.elevation + (vertex.point.flightHeight ?? nominalFlightHeight));
+            
+            // Check if click is within 10 pixels of ground or flight point
+            const distToGround = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(groundY - mouseY, 2));
+            const distToFlight = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(flightY - mouseY, 2));
+            
+            if (distToGround < 10) {
+              clickedInputPoint = { point: vertex.point, index: vertex.index, isFlight: false };
+              break;
+            } else if (distToFlight < 10) {
+              clickedInputPoint = { point: vertex.point, index: vertex.index, isFlight: true };
+              break;
+            }
+          }
+        }
+        
+        // If clicking on an input point, trigger the context menu for that point
+        if (clickedInputPoint) {
+          event.preventDefault();
+          event.stopPropagation();
+          const clickX = event.clientX || (event as MouseEvent).clientX;
+          const clickY = event.clientY || (event as MouseEvent).clientY;
+          setContextMenu({
+            x: clickX,
+            y: clickY,
+            pointIndex: clickedInputPoint.index
+          });
+        } else {
+          // If not clicking on an input point, prevent default to avoid browser context menu
+          event.preventDefault();
+        }
+      });
+    }
+
+  }, [elevationProfile, nominalFlightHeight, safetyHeight, resolutionHeight, selectedPoint, flightPath, onDeletePoint, onUpdatePoint, onSetFlightHeight, onEditPointRequest, onElevationPointHover]);
 
   const exportPNG = () => {
     if (!svgRef.current) return;

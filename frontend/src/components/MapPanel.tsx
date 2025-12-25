@@ -3,7 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 // @ts-ignore - proj4 types may not be perfect
 import proj4 from 'proj4';
-import { Coordinate } from '../App';
+import { Coordinate, ElevationPoint } from '../App';
 import ContextMenu from './ContextMenu';
 import { calculateParallelLine, findClosestPointOnLine, calculateDestination } from '../utils/geometry';
 import './MapPanel.css';
@@ -40,6 +40,7 @@ interface MapPanelProps {
   canRedo: boolean;
   editPointIndex?: number | null;
   onEditPointIndexChange?: (index: number | null) => void;
+  hoveredElevationPoint?: ElevationPoint | null;
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
@@ -59,7 +60,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   canUndo,
   canRedo,
   editPointIndex: externalEditPointIndex,
-  onEditPointIndexChange
+  onEditPointIndexChange,
+  hoveredElevationPoint
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -76,6 +78,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const dtmTransparencyControlRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const hoveredElevationMarkerRef = useRef<L.Marker | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [editingPointIndex, setEditingPointIndex] = useState<number | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
@@ -439,6 +442,32 @@ const MapPanel: React.FC<MapPanelProps> = ({
     // Don't auto-fit bounds while drawing - let user control the view
     // Map view will remain fixed during drawing
   }, [flightPath, onUpdatePoint, onDeletePoint, onPathPointHover, isPointWithinBounds, isParallelLineMode]);
+
+  // Update hovered elevation point marker
+  useEffect(() => {
+    if (!map.current) return;
+
+    // Remove existing hovered elevation marker
+    if (hoveredElevationMarkerRef.current) {
+      map.current.removeLayer(hoveredElevationMarkerRef.current);
+      hoveredElevationMarkerRef.current = null;
+    }
+
+    // Add new marker if there's a hovered elevation point
+    if (hoveredElevationPoint) {
+      const icon = L.divIcon({
+        className: 'hovered-elevation-marker',
+        html: '<div style="background-color: #9B59B6; width: 14px; height: 14px; border-radius: 50%; border: 2px solid black; box-shadow: 0 0 6px rgba(155,89,182,0.8);"></div>',
+        iconSize: [14, 14],
+        iconAnchor: [7, 7]
+      });
+
+      hoveredElevationMarkerRef.current = L.marker(
+        [hoveredElevationPoint.latitude, hoveredElevationPoint.longitude],
+        { icon }
+      ).addTo(map.current);
+    }
+  }, [hoveredElevationPoint]);
 
   // Exit drawing mode if DTM is unloaded
   useEffect(() => {

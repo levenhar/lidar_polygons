@@ -14,6 +14,12 @@ type TileLayerOptionsWithAgent = TileLayerOptions & {
   httpsAgent?: any;
 };
 
+interface BaseMapConfig {
+  id: string;
+  name: string;
+  url: string;
+}
+
 // Fix for default marker icons in Leaflet with webpack/vite
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -65,6 +71,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
+  const baseLayerRef = useRef<L.TileLayer | null>(null);
+  const tileLayerOptionsRef = useRef<TileLayerOptionsWithAgent | null>(null);
+  const mapTokenRef = useRef<string | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [isParallelLineMode, setIsParallelLineMode] = useState(false);
   const [dtmLoaded, setDtmLoaded] = useState(false);
@@ -83,6 +92,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [editingPointIndex, setEditingPointIndex] = useState<number | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [baseMaps, setBaseMaps] = useState<BaseMapConfig[]>([]);
+  const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
 
   // Helper function to check if a point is within DTM bounds
   const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
@@ -92,6 +103,72 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const [minLng, minLat, maxLng, maxLat] = dtmBounds;
     return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
   }, [dtmBounds]);
+
+  // Helper function to get preview tile URL (0/0/0 tile)
+  const getPreviewTileUrl = useCallback((baseUrl: string): string => {
+    // Replace Leaflet tile placeholders with 0/0/0
+    let previewUrl = baseUrl
+      .replace('{z}', '0')
+      .replace('{x}', '0')
+      .replace('{y}', '0')
+      .replace('{s}', 'a'); // Use 'a' subdomain for OSM-style tiles
+    
+    // Add token if available
+    if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
+      const separator = previewUrl.includes('?') ? '&' : '?';
+      previewUrl = `${previewUrl}${separator}token=${mapTokenRef.current}`;
+    }
+    
+    return previewUrl;
+  }, []);
+
+  const switchBaseMap = useCallback((nextBaseMapId: string) => {
+    if (!map.current || !tileLayerOptionsRef.current) {
+      console.warn('⚠️ Cannot switch basemap - missing dependencies');
+      return;
+    }
+    const nextBaseMap = baseMaps.find((entry) => entry.id === nextBaseMapId);
+    if (!nextBaseMap) {
+      console.warn('⚠️ Basemap not found:', nextBaseMapId);
+      return;
+    }
+    if (nextBaseMap.id === activeBaseMapId) {
+      console.log('ℹ️ Already on basemap:', nextBaseMapId);
+      return;
+    }
+
+    console.log('🔄 Switching basemap to:', nextBaseMap.name);
+
+    if (baseLayerRef.current) {
+      baseLayerRef.current.remove();
+    }
+
+    let urlWithToken = nextBaseMap.url;
+    
+    // Only append token if it's not empty
+    if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
+      const separator = nextBaseMap.url.includes('?') ? '&' : '?';
+      urlWithToken = `${nextBaseMap.url}${separator}token=${mapTokenRef.current}`;
+    }
+    
+    console.log('🗺️ New basemap URL:', urlWithToken);
+    baseLayerRef.current = L.tileLayer(urlWithToken, tileLayerOptionsRef.current).addTo(map.current);
+    setActiveBaseMapId(nextBaseMap.id);
+    console.log('✅ Basemap switched successfully');
+  }, [activeBaseMapId, baseMaps]);
+
+  const handleCycleBaseMap = useCallback(() => {
+    if (baseMaps.length < 2) return;
+    const currentIndex = baseMaps.findIndex((entry) => entry.id === activeBaseMapId);
+    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % baseMaps.length : 0;
+    switchBaseMap(baseMaps[nextIndex].id);
+  }, [activeBaseMapId, baseMaps, switchBaseMap]);
+
+  const handleBaseMapButtonClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    handleCycleBaseMap();
+  }, [handleCycleBaseMap]);
 
   // Initialize map
   useEffect(() => {
@@ -160,6 +237,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         httpsAgent:httpsAgent_f,
         noWrap: true // prevent repeated world copies when zoomed out
       };
+      tileLayerOptionsRef.current = options;
 
       const response_token = await fetch('/api/token')
 
@@ -168,6 +246,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
       const MAPS_TOKEN = await response_token.json();
+      mapTokenRef.current = MAPS_TOKEN.token || '';
 
 
       const response_url = await fetch('/api/url')
@@ -177,11 +256,55 @@ const MapPanel: React.FC<MapPanelProps> = ({
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
       const raw_url = await response_url.json();
-      const url = `${raw_url.url}?token=${MAPS_TOKEN.token}`;
-      
-      if (map.current) {
-        L.tileLayer(url,options).addTo(map.current)
+      const primaryUrl = raw_url?.url;
+      const alternateUrl = raw_url?.altUrl;
+
+      console.log('🗺️ Map URLs received:', { primaryUrl, alternateUrl });
+
+      const availableBaseMaps: BaseMapConfig[] = [];
+      if (primaryUrl) {
+        availableBaseMaps.push({
+          id: 'primary',
+          name: 'OSM',
+          url: primaryUrl
+        });
       }
+      if (alternateUrl) {
+        availableBaseMaps.push({
+          id: 'alternate',
+          name: 'Satellite',
+          url: alternateUrl
+        });
+      }
+
+      console.log('🗺️ Available basemaps:', availableBaseMaps);
+      
+      console.log('🔍 Checking dependencies:', {
+        mapExists: !!map.current,
+        baseMapsCount: availableBaseMaps.length,
+        tileOptionsExists: !!tileLayerOptionsRef.current,
+        token: mapTokenRef.current || '(empty)'
+      });
+
+      if (map.current && availableBaseMaps.length > 0 && tileLayerOptionsRef.current) {
+        const initialBaseMap = availableBaseMaps[0];
+        let initialUrl = initialBaseMap.url;
+        
+        // Only append token if it's not empty
+        if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
+          const separator = initialBaseMap.url.includes('?') ? '&' : '?';
+          initialUrl = `${initialBaseMap.url}${separator}token=${mapTokenRef.current}`;
+        }
+        
+        console.log('🗺️ Initializing basemap:', { id: initialBaseMap.id, url: initialUrl });
+        baseLayerRef.current = L.tileLayer(initialUrl, tileLayerOptionsRef.current).addTo(map.current);
+        setActiveBaseMapId(initialBaseMap.id);
+        console.log('✅ Basemap layer added to map');
+      } else {
+        console.error('❌ Cannot add basemap - missing dependencies');
+      }
+      
+      setBaseMaps(availableBaseMaps);
     });
 
     return () => {
@@ -189,6 +312,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current.remove();
         map.current = null;
       }
+      baseLayerRef.current = null;
+      tileLayerOptionsRef.current = null;
+      mapTokenRef.current = null;
     };
   }, []);
 
@@ -1144,6 +1270,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     onAddPoint(newPoint);
   };
 
+  const currentBaseIndex = baseMaps.findIndex((entry) => entry.id === activeBaseMapId);
+  const nextBaseMap = baseMaps.length > 1
+    ? baseMaps[(Math.max(currentBaseIndex, 0) + 1) % baseMaps.length]
+    : null;
+
   return (
     <div className="map-panel">
       {contextMenu && (
@@ -1375,6 +1506,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
               className="dtm-opacity-slider"
             />
           </div>
+        )}
+        {baseMaps.length > 1 && nextBaseMap && (
+          <button
+            type="button"
+            className="basemap-toggle"
+            onClick={handleBaseMapButtonClick}
+            title={`Switch to ${nextBaseMap.name}`}
+          >
+            <div 
+              className="basemap-preview" 
+              style={{
+                backgroundImage: `url(${getPreviewTileUrl(nextBaseMap.url)})`
+              }}
+            ></div>
+          </button>
         )}
       </div>
     </div>

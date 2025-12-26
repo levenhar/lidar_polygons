@@ -6,7 +6,7 @@ interface ContextMenuProps {
   y: number;
   onClose: () => void;
   onDelete: () => void;
-  onEdit: () => void;
+  onEdit?: () => void;
   onSetHeight: () => void;
 }
 
@@ -68,12 +68,14 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
       >
         Delete Point
       </div>
-      <div
-        className="context-menu-item"
-        onClick={() => handleMenuItemClick(onEdit)}
-      >
-        Edit Point
-      </div>
+      {onEdit && (
+        <div
+          className="context-menu-item"
+          onClick={() => handleMenuItemClick(onEdit)}
+        >
+          Edit / Move Point
+        </div>
+      )}
       <div
         className="context-menu-item"
         onClick={() => handleMenuItemClick(onSetHeight)}

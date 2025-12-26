@@ -44,7 +44,20 @@ function App() {
   const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);
   
   // @ts-ignore
-  const {flightPath, addPoint, addPoints,updatePoint, deletePoint, insertPoints, setFlightPath, exportGeoJSON,importGeoJSON,undo, redo, canUndo, canRedo
+  const {
+    flightPath,
+    addPoint,
+    addPoints,
+    updatePoint,
+    deletePoint,
+    insertPoints,
+    setFlightPath,
+    exportGeoJSON,
+    importGeoJSON,
+    undo,
+    redo,
+    canUndo,
+    canRedo
   } = useFlightPath();
 
   const { elevationProfile, loading, calculateProfile, refreshFlightHeights } = useElevationProfile();
@@ -258,6 +271,7 @@ function App() {
           onPathChange={setFlightPath}
           onAddPoint={addPoint}
           onAddPoints={addPoints}
+          onInsertPoints={insertPoints}
           onUpdatePoint={updatePoint}
           onDeletePoint={deletePoint}
           onDtmLoad={handleDtmLoad}

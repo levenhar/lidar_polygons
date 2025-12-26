@@ -35,6 +35,7 @@ interface MapPanelProps {
   onPathChange: (path: Coordinate[]) => void;
   onAddPoint: (point: Coordinate) => void;
   onAddPoints: (points: Coordinate[]) => void;
+  onInsertPoints: (index: number, points: Coordinate[]) => void;
   onUpdatePoint: (index: number, point: Coordinate) => void;
   onDeletePoint: (index: number) => void;
   onDtmLoad: (source: string, info?: any) => void;
@@ -56,6 +57,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onPathChange,
   onAddPoint,
   onAddPoints,
+  onInsertPoints,
   onUpdatePoint,
   onDeletePoint,
   onDtmLoad,
@@ -470,6 +472,71 @@ const MapPanel: React.FC<MapPanelProps> = ({
       interactive: true
     }).addTo(map.current);
 
+    // Allow inserting a new vertex by clicking on a line segment.
+    // This works even in drawing mode, and stops propagation to avoid double-adding points.
+    const handleClickableLineClick = (e: L.LeafletMouseEvent) => {
+      const originalEvent = e.originalEvent as MouseEvent | undefined;
+      if (originalEvent && originalEvent.button !== 0) return; // left-click only
+      if (!dtmLoaded) return;
+      if (isParallelLineMode) return;
+
+      // If editing a point via "click to move", don't insert
+      const currentEditingIndex =
+        externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
+      if (currentEditingIndex !== null) return;
+
+      if (flightPath.length < 2) return;
+
+      const clickPoint = { lng: e.latlng.lng, lat: e.latlng.lat };
+      let closestSegmentIndex = -1;
+      let closestDistance = Infinity;
+      let closestT = 0;
+
+      for (let i = 0; i < flightPath.length - 1; i++) {
+        const result = findClosestPointOnLine(clickPoint, flightPath[i], flightPath[i + 1]);
+        if (result.distance < 100 && result.distance < closestDistance) {
+          closestDistance = result.distance;
+          closestSegmentIndex = i;
+          closestT = result.t;
+        }
+      }
+
+      if (closestSegmentIndex < 0) return;
+
+      // Avoid inserting directly on an existing vertex
+      if (closestT <= 1e-4 || closestT >= 1 - 1e-4) return;
+
+      const start = flightPath[closestSegmentIndex];
+      const end = flightPath[closestSegmentIndex + 1];
+
+      const lng = start.lng + closestT * (end.lng - start.lng);
+      const lat = start.lat + closestT * (end.lat - start.lat);
+
+      if (!isPointWithinBounds(lng, lat)) {
+        alert('Cannot add point outside DTM bounding box. Please select a point within the DTM extent.');
+        return;
+      }
+
+      const startHasHeight = start.height !== undefined;
+      const endHasHeight = end.height !== undefined;
+      const shouldSetHeight = startHasHeight || endHasHeight;
+      const startHeight = start.height ?? nominalFlightHeight;
+      const endHeight = end.height ?? nominalFlightHeight;
+
+      const newPoint: Coordinate = {
+        lng,
+        lat,
+        ...(shouldSetHeight ? { height: startHeight + (endHeight - startHeight) * closestT } : {})
+      };
+
+      onInsertPoints(closestSegmentIndex + 1, [newPoint]);
+
+      // Prevent map click handler from also firing (especially in drawing mode)
+      L.DomEvent.stop(e);
+    };
+
+    flightPathClickableLineRef.current.on('click', handleClickableLineClick);
+
     // Add flight path line (will be on top)
     flightPathLineRef.current = L.polyline(latlngs, {
       color: '#ff0000',
@@ -498,51 +565,40 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       const marker = L.marker([point.lat, point.lng], {
         icon: icon,
-        draggable: true
+        draggable: false // Disable default dragging
       }).addTo(map.current!);
 
       // Store the last valid position for this marker
       let lastValidPosition: [number, number] = [point.lat, point.lng];
+      let isDraggingWithLeftClick = false;
 
-      // Handle drag start - store initial position
-      marker.on('dragstart', () => {
+      // Handle marker left-click to start dragging
+      el.addEventListener('mousedown', (e) => {
+        // Only handle left mouse button (button 0)
+        if (e.button !== 0) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Start left-click drag mode
+        isDraggingWithLeftClick = true;
         lastValidPosition = [point.lat, point.lng];
-      });
-
-      // Handle marker drag
-      marker.on('drag', (e: L.LeafletEvent) => {
-        const latlng = e.target.getLatLng();
-        const lng = latlng.lng;
-        const lat = latlng.lat;
+        el.style.cursor = 'grabbing';
+        el.classList.add('is-dragging');
+        marker.setZIndexOffset(1000);
         
-        // Check if point is within DTM bounds
-        if (!isPointWithinBounds(lng, lat)) {
-          // Reset marker to last valid position
-          marker.setLatLng(lastValidPosition);
-          return;
-        }
-        
-        // Update last valid position and state
-        lastValidPosition = [lat, lng];
-        onUpdatePoint(index, { lng, lat });
-      });
-      
-      // Handle drag end to show message if dragged outside bounds
-      marker.on('dragend', (e: L.LeafletEvent) => {
-        const latlng = e.target.getLatLng();
-        const lng = latlng.lng;
-        const lat = latlng.lat;
-        
-        // Check if final position is within bounds
-        if (!isPointWithinBounds(lng, lat)) {
-          // Reset to last valid position
-          marker.setLatLng(lastValidPosition);
-          onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
-          alert('Cannot move point outside DTM bounding box. Point has been reset to the previous valid position.');
+        // Prevent all map interactions while dragging
+        if (map.current) {
+          map.current.dragging.disable();
+          map.current.touchZoom.disable();
+          map.current.doubleClickZoom.disable();
+          map.current.scrollWheelZoom.disable();
+          map.current.boxZoom.disable();
+          map.current.keyboard.disable();
         }
       });
 
-      // Handle marker right-click for context menu
+      // Re-add context menu for right-click
       el.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         const rect = el.getBoundingClientRect();
@@ -551,6 +607,85 @@ const MapPanel: React.FC<MapPanelProps> = ({
           y: rect.top + rect.height / 2,
           pointIndex: index
         });
+      });
+
+      // Handle mouse move to update marker position during drag
+      const handleMouseMove = (e: MouseEvent) => {
+        if (!isDraggingWithLeftClick || !map.current) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Use Leaflet's helper to convert the mouse event to map coordinates
+        const latlng = map.current.mouseEventToLatLng(e as any);
+        const lng = latlng.lng;
+        const lat = latlng.lat;
+        
+        // Check if point is within DTM bounds
+        if (!isPointWithinBounds(lng, lat)) {
+          return; // Don't update if outside bounds
+        }
+        
+        // Update marker position
+        marker.setLatLng([lat, lng]);
+        lastValidPosition = [lat, lng];
+      };
+
+      // Handle mouse up to end drag
+      const handleMouseUp = (e: MouseEvent) => {
+        if (!isDraggingWithLeftClick) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+
+        // On release, ALWAYS drop the point exactly where the mouse was released
+        // (even if there were few/no mousemove events).
+        if (map.current) {
+          const dropLatLng = map.current.mouseEventToLatLng(e as any);
+          const dropLng = dropLatLng.lng;
+          const dropLat = dropLatLng.lat;
+
+          if (isPointWithinBounds(dropLng, dropLat)) {
+            marker.setLatLng([dropLat, dropLng]);
+            lastValidPosition = [dropLat, dropLng];
+            // Update React state ONCE at the end to avoid re-rendering/remounting markers mid-drag
+            onUpdatePoint(index, { lng: dropLng, lat: dropLat, height: point.height });
+          }
+        }
+        
+        isDraggingWithLeftClick = false;
+        el.style.cursor = 'pointer';
+        el.classList.remove('is-dragging');
+        marker.setZIndexOffset(0);
+        
+        // Re-enable all map interactions
+        if (map.current) {
+          map.current.dragging.enable();
+          map.current.touchZoom.enable();
+          map.current.doubleClickZoom.enable();
+          map.current.scrollWheelZoom.enable();
+          map.current.boxZoom.enable();
+          map.current.keyboard.enable();
+        }
+        
+        // Validate final position
+        const finalLatLng = marker.getLatLng();
+        if (!isPointWithinBounds(finalLatLng.lng, finalLatLng.lat)) {
+          // Reset to last valid position if outside bounds
+          marker.setLatLng(lastValidPosition);
+          onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
+          alert('Cannot move point outside DTM bounding box. Point has been reset to the previous valid position.');
+        }
+      };
+
+      // Add event listeners to document for mouse move and up
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      
+      // Store cleanup function
+      marker.on('remove', () => {
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
       });
 
       el.addEventListener('mouseenter', () => {
@@ -568,7 +703,20 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     // Don't auto-fit bounds while drawing - let user control the view
     // Map view will remain fixed during drawing
-  }, [flightPath, onUpdatePoint, onDeletePoint, onPathPointHover, isPointWithinBounds, isParallelLineMode]);
+  }, [
+    flightPath,
+    onInsertPoints,
+    onUpdatePoint,
+    onDeletePoint,
+    onPathPointHover,
+    isPointWithinBounds,
+    dtmLoaded,
+    isDrawing,
+    isParallelLineMode,
+    nominalFlightHeight,
+    editingPointIndex,
+    externalEditPointIndex
+  ]);
 
   // Update hovered elevation point marker
   useEffect(() => {
@@ -1285,14 +1433,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
           onDelete={() => {
             onDeletePoint(contextMenu.pointIndex);
             setContextMenu(null);
-          }}
-          onEdit={() => {
-            setEditingPointIndex(contextMenu.pointIndex);
-            if (onEditPointIndexChange) {
-              onEditPointIndexChange(contextMenu.pointIndex);
-            }
-            setContextMenu(null);
-            alert(`Edit mode enabled for point ${contextMenu.pointIndex + 1}. Click on the map to move the point.`);
           }}
           onSetHeight={() => {
             handleSetFlightHeight(contextMenu.pointIndex);

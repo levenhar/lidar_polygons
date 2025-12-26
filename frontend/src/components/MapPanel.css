@@ -85,6 +85,25 @@
   font-size: 0.875rem;
   border: 2px solid white;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+  transition: transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  transform-origin: center;
+}
+
+.flight-point-marker.is-dragging {
+  /* High-contrast “picked up” state */
+  background: #2563EB; /* accessible blue */
+  border-color: #ffffff;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
+  transform: scale(1.12);
+}
+
+.flight-point-marker.is-dragging::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
+  pointer-events: none;
 }
 
 .edit-mode-indicator {

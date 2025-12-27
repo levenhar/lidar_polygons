@@ -64,6 +64,48 @@ export function calculateDestination(
   };
 }
 
+export type UTurnSide = 'L' | 'R';
+
+/**
+ * Generate a U-turn arc (semi-circle) starting at `start`, tangent-aligned to the inbound segment
+ * defined by `prev -> start`.
+ *
+ * - Returns `numPoints` points along the arc (does NOT include the start point).
+ * - Side 'R' means the U-turn ends offset to the RIGHT of travel direction; 'L' ends to the LEFT.
+ */
+export function generateUTurnPoints(
+  prev: Coordinate,
+  start: Coordinate,
+  radiusMeters: number,
+  numPoints: number = 10,
+  side: UTurnSide = 'R'
+): Coordinate[] {
+  if (numPoints <= 0) return [];
+  if (!(radiusMeters > 0)) return [];
+
+  const inboundBearing = calculateBearing(prev, start);
+  const rightPerp = inboundBearing + Math.PI / 2;
+  const leftPerp = inboundBearing - Math.PI / 2;
+
+  // To keep the start tangent aligned with inboundBearing:
+  // - Side 'R' (end on right offset): center is to the RIGHT, arc is CCW (+π)
+  // - Side 'L' (end on left offset): center is to the LEFT, arc is CW (-π)
+  const centerBearingFromStart = side === 'R' ? rightPerp : leftPerp;
+  const center = calculateDestination(start, centerBearingFromStart, radiusMeters);
+
+  const radiusBearingStart = calculateBearing(center, start);
+  const step = Math.PI / numPoints;
+  const direction = side === 'R' ? 1 : -1;
+
+  const pts: Coordinate[] = [];
+  for (let i = 1; i <= numPoints; i++) {
+    const radiusBearing = radiusBearingStart + direction * step * i;
+    pts.push(calculateDestination(center, radiusBearing, radiusMeters));
+  }
+
+  return pts;
+}
+
 /**
  * Calculate parallel line to a given line segment
  * @param start Starting point of the line segment

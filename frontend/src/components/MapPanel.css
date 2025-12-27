@@ -50,6 +50,24 @@
   width: fit-content;
 }
 
+/* Compact icon-only control columns */
+.group-column-icons {
+  min-width: 0;
+  width: auto;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.controls-help {
+  font-size: 0.875rem;
+  color: #6b7280;
+  max-width: 520px;
+  line-height: 1.25rem;
+  flex-basis: 100%;
+}
+
 /* Legacy support - keep for backward compatibility */
 .group-buttons {
   display: flex;

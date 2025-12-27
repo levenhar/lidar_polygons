@@ -2,7 +2,41 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { ElevationPoint, Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
+import Tooltip from './Tooltip';
 import './ElevationProfile.css';
+
+const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    xmlns: 'http://www.w3.org/2000/svg'
+  };
+  const stroke = {
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const
+  };
+
+  if (type === 'png') {
+    return (
+      <svg {...common}>
+        <rect {...stroke} x="4" y="5" width="16" height="14" rx="2" />
+        <path {...stroke} d="M8 13l2-2 3 3 2-2 3 3" />
+        <circle {...stroke} cx="9" cy="10" r="1" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg {...common}>
+      <path {...stroke} d="M7 3h10v18H7z" />
+      <path {...stroke} d="M9 7h6" />
+      <path {...stroke} d="M9 11h6" />
+      <path {...stroke} d="M9 15h6" />
+    </svg>
+  );
+};
 
 interface ElevationProfileProps {
   elevationProfile: ElevationPoint[];
@@ -692,20 +726,30 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           <div className="control-group">
             <div className="group-title">Export</div>
             <div className="group-buttons">
-              <button 
-                onClick={exportPNG} 
-                disabled={elevationProfile.length === 0}
-                className="btn btn-secondary"
-              >
-                Export PNG
-              </button>
-              <button 
-                onClick={exportCSV} 
-                disabled={elevationProfile.length === 0}
-                className="btn btn-secondary"
-              >
-                Export CSV
-              </button>
+              <Tooltip tooltip={elevationProfile.length === 0 ? 'No profile to export yet.' : 'Export the elevation chart as PNG.'}>
+                <button
+                  onClick={exportPNG}
+                  disabled={elevationProfile.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="Export PNG"
+                  type="button"
+                >
+                  <ExportIcon type="png" />
+                  <span className="sr-only">Export PNG</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={elevationProfile.length === 0 ? 'No profile to export yet.' : 'Export the elevation data as CSV.'}>
+                <button
+                  onClick={exportCSV}
+                  disabled={elevationProfile.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="Export CSV"
+                  type="button"
+                >
+                  <ExportIcon type="csv" />
+                  <span className="sr-only">Export CSV</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>

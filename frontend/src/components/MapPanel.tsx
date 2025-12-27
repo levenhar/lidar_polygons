@@ -5,13 +5,144 @@ import 'leaflet/dist/leaflet.css';
 import proj4 from 'proj4';
 import { Coordinate, ElevationPoint } from '../App';
 import ContextMenu from './ContextMenu';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination } from '../utils/geometry';
+import Tooltip from './Tooltip';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide } from '../utils/geometry';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 
 
 type TileLayerOptionsWithAgent = TileLayerOptions & {
   httpsAgent?: any;
+};
+
+type IconName =
+  | 'upload'
+  | 'eject'
+  | 'trash'
+  | 'pencil'
+  | 'parallel'
+  | 'compass'
+  | 'crosshair'
+  | 'uturn'
+  | 'undo'
+  | 'redo'
+  | 'fit'
+  | 'home';
+
+const Icon: React.FC<{ name: IconName }> = ({ name }) => {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    xmlns: 'http://www.w3.org/2000/svg'
+  };
+  const stroke = {
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const
+  };
+
+  switch (name) {
+    case 'upload':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 16V4" />
+          <path {...stroke} d="M7 8l5-4 5 4" />
+          <path {...stroke} d="M4 20h16" />
+        </svg>
+      );
+    case 'eject':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M10 14l-2 2m0 0l2 2m-2-2h8" />
+          <path {...stroke} d="M14 10l2-2m0 0l-2-2m2 2H8" />
+        </svg>
+      );
+    case 'trash':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M3 6h18" />
+          <path {...stroke} d="M8 6V4h8v2" />
+          <path {...stroke} d="M19 6l-1 14H6L5 6" />
+          <path {...stroke} d="M10 11v6" />
+          <path {...stroke} d="M14 11v6" />
+        </svg>
+      );
+    case 'pencil':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 20h9" />
+          <path {...stroke} d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5z" />
+        </svg>
+      );
+    case 'parallel':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M6 4l12 16" />
+          <path {...stroke} d="M10 4l12 16" />
+        </svg>
+      );
+    case 'compass':
+      return (
+        <svg {...common}>
+          <circle {...stroke} cx="12" cy="12" r="9" />
+          <path {...stroke} d="M14.5 9.5l-2 5-5 2 2-5 5-2z" />
+        </svg>
+      );
+    case 'crosshair':
+      return (
+        <svg {...common}>
+          <circle {...stroke} cx="12" cy="12" r="6" />
+          <path {...stroke} d="M12 2v4" />
+          <path {...stroke} d="M12 18v4" />
+          <path {...stroke} d="M2 12h4" />
+          <path {...stroke} d="M18 12h4" />
+        </svg>
+      );
+    case 'uturn':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M16 7V6a4 4 0 0 0-8 0v10" />
+          <path {...stroke} d="M8 16l-3-3m3 3l3-3" />
+        </svg>
+      );
+    case 'undo':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M9 14l-4-4 4-4" />
+          <path {...stroke} d="M5 10h8a6 6 0 0 1 6 6v2" />
+        </svg>
+      );
+    case 'redo':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M15 6l4 4-4 4" />
+          <path {...stroke} d="M19 10H11a6 6 0 0 0-6 6v2" />
+        </svg>
+      );
+    case 'fit':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M4 9V4h5" />
+          <path {...stroke} d="M20 9V4h-5" />
+          <path {...stroke} d="M4 15v5h5" />
+          <path {...stroke} d="M20 15v5h-5" />
+        </svg>
+      );
+    case 'home':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M3 11l9-8 9 8" />
+          <path {...stroke} d="M5 10v10h14V10" />
+        </svg>
+      );
+    default:
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 12h0" />
+        </svg>
+      );
+  }
 };
 
 interface BaseMapConfig {
@@ -1418,6 +1549,56 @@ const MapPanel: React.FC<MapPanelProps> = ({
     onAddPoint(newPoint);
   };
 
+  const handleAddUTurn = () => {
+    if (!dtmLoaded) {
+      alert('Please load a DTM first.');
+      return;
+    }
+
+    if (flightPath.length < 2) {
+      alert('Please add at least two points first (so the U-turn can follow your current direction).');
+      return;
+    }
+
+    const radiusInput = prompt('Enter U-turn radius in meters (positive = right, negative = left):', '50');
+    if (radiusInput === null) return;
+
+    const radius = parseFloat(radiusInput);
+    if (isNaN(radius) || radius === 0) {
+      alert('Invalid radius. Please enter a non-zero number.');
+      return;
+    }
+
+    const side: UTurnSide = radius > 0 ? 'R' : 'L';
+    const radiusMeters = Math.abs(radius);
+
+    const prev = flightPath[flightPath.length - 2];
+    const start = flightPath[flightPath.length - 1];
+
+    const pts = generateUTurnPoints(prev, start, radiusMeters, 5, side);
+
+    if (pts.length !== 5) {
+      alert('Failed to generate U-turn points.');
+      return;
+    }
+
+    // Validate bounds (all points must be inside DTM extent)
+    const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
+    if (outOfBounds) {
+      alert('U-turn points fall outside the DTM bounding box. Try a smaller radius.');
+      return;
+    }
+
+    const startHeight = start.height;
+    const uTurnPoints: Coordinate[] =
+      startHeight !== undefined
+        ? pts.map(p => ({ ...p, height: startHeight }))
+        : pts;
+
+    // Add all points in one undoable action
+    onAddPoints(uTurnPoints);
+  };
+
   const currentBaseIndex = baseMaps.findIndex((entry) => entry.id === activeBaseMapId);
   const nextBaseMap = baseMaps.length > 1
     ? baseMaps[(Math.max(currentBaseIndex, 0) + 1) % baseMaps.length]
@@ -1454,7 +1635,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         <div className="control-group">
           <div className="group-title">Data Management</div>
           <div className="group-columns">
-            <div className="group-column">
+            <div className="group-column group-column-icons">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1464,32 +1645,43 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 style={{ display: 'none' }}
                 disabled={dtmLoaded}
               />
-              <label 
-                htmlFor="dtm-upload" 
-                className={`btn btn-secondary ${dtmLoaded ? 'disabled' : ''}`}
-                style={dtmLoaded ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
-                title={dtmLoaded ? 'A DTM is already loaded. Unload it first to load a new one.' : 'Load a Digital Terrain Model file'}
-              >
-                Load DTM
-              </label>
-              <button
-                onClick={onDtmUnload}
-                className="btn btn-destructive"
-                disabled={!dtmSource || !dtmLoaded}
-                title={!dtmSource || !dtmLoaded ? 'No DTM loaded' : 'Unload DTM from map'}
-              >
-                Unload DTM
-              </button>
+              <Tooltip tooltip={dtmLoaded ? 'DTM already loaded. Unload it before loading another.' : 'Load a Digital Terrain Model (GeoTIFF) to enable planning.'}>
+                <label
+                  htmlFor="dtm-upload"
+                  className={`btn btn-secondary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
+                  style={dtmLoaded ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
+                  aria-label="Load DTM"
+                >
+                  <Icon name="upload" />
+                  <span className="sr-only">Load DTM</span>
+                </label>
+              </Tooltip>
+              <Tooltip tooltip={!dtmSource || !dtmLoaded ? 'No DTM loaded.' : 'Unload the current DTM from the map.'}>
+                <button
+                  onClick={onDtmUnload}
+                  className="btn btn-destructive btn-icon"
+                  disabled={!dtmSource || !dtmLoaded}
+                  aria-label="Unload DTM"
+                  type="button"
+                >
+                  <Icon name="eject" />
+                  <span className="sr-only">Unload DTM</span>
+                </button>
+              </Tooltip>
             </div>
-            <div className="group-column">
-              <button
-                onClick={handleDeleteAllPoints}
-                className="btn btn-destructive"
-                disabled={flightPath.length === 0}
-                title={flightPath.length === 0 ? 'No points to delete' : 'Delete all flight path points'}
-              >
-                Delete All Points
-              </button>
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={flightPath.length === 0 ? 'No points to delete.' : 'Delete all flight path points (clears the route).'}>
+                <button
+                  onClick={handleDeleteAllPoints}
+                  className="btn btn-destructive btn-icon"
+                  disabled={flightPath.length === 0}
+                  aria-label="Delete all points"
+                  type="button"
+                >
+                  <Icon name="trash" />
+                  <span className="sr-only">Delete All Points</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
@@ -1497,71 +1689,109 @@ const MapPanel: React.FC<MapPanelProps> = ({
         <div className="control-group">
           <div className="group-title">Planning Options</div>
           <div className="group-columns">
-            <div className="group-column">
-              <button
-                onClick={() => {
-                  setIsDrawing(!isDrawing);
-                  setEditingPointIndex(null);
-                  if (onEditPointIndexChange) {
-                    onEditPointIndexChange(null);
-                  }
-                  setIsParallelLineMode(false);
-                }}
-                className={`btn btn-primary ${isDrawing ? 'active' : ''}`}
-                disabled={!dtmLoaded}
-                title={!dtmLoaded ? 'Load a DTM first to enable drawing' : 'Click on the map to add points to your flight path'}
-              >
-                {isDrawing ? 'Stop Drawing' : 'Draw Path'}
-              </button>
-              <button
-                onClick={() => {
-                  setIsParallelLineMode(!isParallelLineMode);
-                  setIsDrawing(false);
-                  setEditingPointIndex(null);
-                  if (onEditPointIndexChange) {
-                    onEditPointIndexChange(null);
-                  }
-                }}
-                className={`btn btn-secondary ${isParallelLineMode ? 'active' : ''}`}
-                disabled={!dtmLoaded || flightPath.length < 2}
-                title={
-                  !dtmLoaded 
-                    ? 'Load a DTM first to enable parallel line creation'
-                    : flightPath.length < 2 
-                      ? 'Flight path must have at least 2 points' 
-                      : 'Create a parallel line to an existing segment'
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first to enable drawing.' : isDrawing ? 'Stop drawing (exit click-to-add mode).' : 'Draw path: click on the map to add points.'}>
+                <button
+                  onClick={() => {
+                    setIsDrawing(!isDrawing);
+                    setEditingPointIndex(null);
+                    if (onEditPointIndexChange) {
+                      onEditPointIndexChange(null);
+                    }
+                    setIsParallelLineMode(false);
+                  }}
+                  className={`btn btn-primary btn-icon ${isDrawing ? 'active' : ''}`}
+                  disabled={!dtmLoaded}
+                  aria-label={isDrawing ? 'Stop drawing' : 'Draw path'}
+                  type="button"
+                >
+                  <Icon name="pencil" />
+                  <span className="sr-only">{isDrawing ? 'Stop Drawing' : 'Draw Path'}</span>
+                </button>
+              </Tooltip>
+              <Tooltip
+                tooltip={
+                  !dtmLoaded
+                    ? 'Load a DTM first to enable parallel line creation.'
+                    : flightPath.length < 2
+                      ? 'Add at least 2 points first.'
+                      : isParallelLineMode
+                        ? 'Cancel parallel line mode.'
+                        : 'Create a parallel line: click a segment, then enter offset (meters).'
                 }
               >
-                {isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}
-              </button>
+                <button
+                  onClick={() => {
+                    setIsParallelLineMode(!isParallelLineMode);
+                    setIsDrawing(false);
+                    setEditingPointIndex(null);
+                    if (onEditPointIndexChange) {
+                      onEditPointIndexChange(null);
+                    }
+                  }}
+                  className={`btn btn-secondary btn-icon ${isParallelLineMode ? 'active' : ''}`}
+                  disabled={!dtmLoaded || flightPath.length < 2}
+                  aria-label={isParallelLineMode ? 'Cancel parallel line' : 'Create parallel line'}
+                  type="button"
+                >
+                  <Icon name="parallel" />
+                  <span className="sr-only">{isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}</span>
+                </button>
+              </Tooltip>
             </div>
-            <div className="group-column">
-              <button
-                onClick={handleCreatePointFromAzimuthDistance}
-                className="btn btn-secondary"
-                disabled={!dtmLoaded || flightPath.length === 0}
-                title={
-                  !dtmLoaded 
-                    ? 'Load a DTM first to enable azimuth/distance point creation'
-                    : flightPath.length === 0 
-                      ? 'Add at least one point first' 
-                      : 'Create a new point from the last point using azimuth and distance'
+            <div className="group-column group-column-icons">
+              <Tooltip
+                tooltip={
+                  !dtmLoaded
+                    ? 'Load a DTM first.'
+                    : flightPath.length === 0
+                      ? 'Add at least 1 point first.'
+                      : 'Add a point from the last point using azimuth (deg) and distance (m).'
                 }
               >
-                Azimuth + Distance
-              </button>
-              <button
-                onClick={handleCreatePointFromCoordinates}
-                className="btn btn-secondary"
-                disabled={!dtmLoaded}
-                title={
-                  !dtmLoaded 
-                    ? 'Load a DTM first to enable coordinate-based point creation'
-                    : 'Add a new point by entering coordinates (UTM or Geographic)'
+                <button
+                  onClick={handleCreatePointFromAzimuthDistance}
+                  className="btn btn-secondary btn-icon"
+                  disabled={!dtmLoaded || flightPath.length === 0}
+                  aria-label="Add point by azimuth and distance"
+                  type="button"
+                >
+                  <Icon name="compass" />
+                  <span className="sr-only">Azimuth + Distance</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Add a point by entering coordinates (Geographic or UTM).'}>
+                <button
+                  onClick={handleCreatePointFromCoordinates}
+                  className="btn btn-secondary btn-icon"
+                  disabled={!dtmLoaded}
+                  aria-label="Add point by coordinate"
+                  type="button"
+                >
+                  <Icon name="crosshair" />
+                  <span className="sr-only">Point by Coordinate</span>
+                </button>
+              </Tooltip>
+              <Tooltip
+                tooltip={
+                  !dtmLoaded
+                    ? 'Load a DTM first.'
+                    : flightPath.length < 2
+                      ? 'Add at least 2 points first.'
+                      : 'Add a U-turn (adds 5 points) using a radius in meters.'
                 }
               >
-                Point by Coordinate
-              </button>
+                <button
+                  onClick={handleAddUTurn}
+                  className="btn btn-secondary btn-icon"
+                  disabled={!dtmLoaded || flightPath.length < 2}
+                  aria-label="Add U-turn"
+                  type="button"
+                >
+                  <Icon name="uturn" />
+                  <span className="sr-only">U-turn</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
@@ -1569,23 +1799,31 @@ const MapPanel: React.FC<MapPanelProps> = ({
         <div className="control-group">
           <div className="group-title">History</div>
           <div className="group-columns">
-            <div className="group-column">
-              <button
-                onClick={onUndo}
-                disabled={!canUndo || flightPath.length === 0}
-                className="btn btn-secondary"
-                title={flightPath.length === 0 ? 'Draw points first to enable undo' : 'Undo last action (Ctrl+Z)'}
-              >
-                Undo
-              </button>
-              <button
-                onClick={onRedo}
-                disabled={!canRedo || flightPath.length === 0}
-                className="btn btn-secondary"
-                title={flightPath.length === 0 ? 'Draw points first to enable redo' : 'Redo last action (Ctrl+Y or Ctrl+Shift+Z)'}
-              >
-                Redo
-              </button>
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Undo last action (Ctrl+Z).'}>
+                <button
+                  onClick={onUndo}
+                  disabled={!canUndo || flightPath.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="Undo"
+                  type="button"
+                >
+                  <Icon name="undo" />
+                  <span className="sr-only">Undo</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Redo last action (Ctrl+Y or Ctrl+Shift+Z).'}>
+                <button
+                  onClick={onRedo}
+                  disabled={!canRedo || flightPath.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="Redo"
+                  type="button"
+                >
+                  <Icon name="redo" />
+                  <span className="sr-only">Redo</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
@@ -1593,22 +1831,30 @@ const MapPanel: React.FC<MapPanelProps> = ({
         <div className="control-group">
           <div className="group-title">View Controls</div>
           <div className="group-columns">
-            <div className="group-column">
-              <button
-                onClick={handleFitToDTM}
-                className="btn btn-tertiary"
-                disabled={!dtmLoaded}
-                title={!dtmLoaded ? 'Load a DTM first to fit to its extent' : 'Fit map to DTM extent'}
-              >
-                Fit to DTM
-              </button>
-              <button
-                onClick={handleResetView}
-                className="btn btn-tertiary"
-                title="Reset map view to default extent"
-              >
-                Reset View
-              </button>
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Fit map view to the DTM bounding box.'}>
+                <button
+                  onClick={handleFitToDTM}
+                  className="btn btn-tertiary btn-icon"
+                  disabled={!dtmLoaded}
+                  aria-label="Fit to DTM"
+                  type="button"
+                >
+                  <Icon name="fit" />
+                  <span className="sr-only">Fit to DTM</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip="Reset map view to the default extent.">
+                <button
+                  onClick={handleResetView}
+                  className="btn btn-tertiary btn-icon"
+                  aria-label="Reset view"
+                  type="button"
+                >
+                  <Icon name="home" />
+                  <span className="sr-only">Reset View</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>

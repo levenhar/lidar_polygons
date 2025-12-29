@@ -20,6 +20,15 @@ const MAPS_TOKEN = process.env.MAPS_TOKEN;
 const MAPS_URL = process.env.MAPS_URL;
 const MAPS_URL_ALT = process.env.MAPS_URL_ALT;
 const MAPS_CRS = process.env.MAPS_CRS;
+const MAPS_PREVIEW_ZOOM_DEFAULT = process.env.MAPS_PREVIEW_ZOOM_DEFAULT;
+const MAPS_PREVIEW_X_DEFAULT = process.env.MAPS_PREVIEW_X_DEFAULT;
+const MAPS_PREVIEW_Y_DEFAULT = process.env.MAPS_PREVIEW_Y_DEFAULT;
+const MAPS_PREVIEW_ZOOM_PRIMARY = process.env.MAPS_PREVIEW_ZOOM_PRIMARY;
+const MAPS_PREVIEW_X_PRIMARY = process.env.MAPS_PREVIEW_X_PRIMARY;
+const MAPS_PREVIEW_Y_PRIMARY = process.env.MAPS_PREVIEW_Y_PRIMARY;
+const MAPS_PREVIEW_ZOOM_ALTERNATE = process.env.MAPS_PREVIEW_ZOOM_ALTERNATE;
+const MAPS_PREVIEW_X_ALTERNATE = process.env.MAPS_PREVIEW_X_ALTERNATE;
+const MAPS_PREVIEW_Y_ALTERNATE = process.env.MAPS_PREVIEW_Y_ALTERNATE;
 
 //Middleware
 app.use((req, res, next) => {
@@ -32,6 +41,40 @@ app.use(cors());
 app.use(express.json());
 
 const uploadsDir = join(__dirname, 'uploads');
+
+// Helpers for preview values
+const clampZoom = (value) => Math.min(22, Math.max(0, value));
+const parseNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const getPreviewConfig = () => {
+  const defaults = {
+    zoom: clampZoom(parseNumber(MAPS_PREVIEW_ZOOM_DEFAULT, 0)),
+    x: parseNumber(MAPS_PREVIEW_X_DEFAULT, 0),
+    y: parseNumber(MAPS_PREVIEW_Y_DEFAULT, 0)
+  };
+
+  const overrides = {};
+
+  const assignIfDefined = (id, key, envValue, clampFn = (v) => v) => {
+    if (envValue !== undefined) {
+      if (!overrides[id]) overrides[id] = {};
+      overrides[id][key] = clampFn(parseNumber(envValue, defaults[key]));
+    }
+  };
+
+  assignIfDefined('primary', 'zoom', MAPS_PREVIEW_ZOOM_PRIMARY, clampZoom);
+  assignIfDefined('primary', 'x', MAPS_PREVIEW_X_PRIMARY);
+  assignIfDefined('primary', 'y', MAPS_PREVIEW_Y_PRIMARY);
+
+  assignIfDefined('alternate', 'zoom', MAPS_PREVIEW_ZOOM_ALTERNATE, clampZoom);
+  assignIfDefined('alternate', 'x', MAPS_PREVIEW_X_ALTERNATE);
+  assignIfDefined('alternate', 'y', MAPS_PREVIEW_Y_ALTERNATE);
+
+  return { defaults, overrides };
+};
 
 // Clear cached uploads on restart to avoid serving stale files
 const clearUploadsDirectory = () => {
@@ -95,6 +138,11 @@ app.get('/api/url', (req, res) => {
     url: MAPS_URL,
     altUrl: MAPS_URL_ALT || null
   })
+})
+
+// map preview config endpoint
+app.get('/api/map-preview', (req, res) => {
+  res.json(getPreviewConfig());
 })
 
 // crs endpoint

@@ -152,6 +152,21 @@ interface BaseMapConfig {
   url: string;
 }
 
+interface BaseMapPreviewConfig {
+  zoom?: number;
+  x?: number;
+  y?: number;
+}
+
+interface BaseMapPreviewResponse {
+  defaults: {
+    zoom: number;
+    x: number;
+    y: number;
+  };
+  overrides: Record<string, BaseMapPreviewConfig>;
+}
+
 // Fix for default marker icons in Leaflet with webpack/vite
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
@@ -249,6 +264,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [isDtmProcessing, setIsDtmProcessing] = useState<boolean>(false);
   const [baseMaps, setBaseMaps] = useState<BaseMapConfig[]>([]);
   const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
+  const [previewConfig, setPreviewConfig] = useState<BaseMapPreviewResponse | null>(null);
   const passiveRouteLinesRef = useRef<Record<string, L.Polyline>>({});
   const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
@@ -266,13 +282,31 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
   }, [dtmBounds]);
 
+  // Helper to read numeric preview values per basemap from backend-provided config
+  const getPreviewNumericValue = useCallback((baseMapId: string, key: 'ZOOM' | 'X' | 'Y'): number => {
+    const keyLower = key.toLowerCase() as 'zoom' | 'x' | 'y';
+    const defaultValue = previewConfig?.defaults?.[keyLower] ?? 0;
+    const overrideValue = previewConfig?.overrides?.[baseMapId]?.[keyLower];
+    const rawValue = overrideValue ?? defaultValue;
+    const parsed = Number(rawValue);
+    const safeValue = Number.isFinite(parsed) ? parsed : 0;
+    if (key === 'ZOOM') {
+      // Clamp zoom to a sane Leaflet zoom range
+      return Math.min(22, Math.max(0, safeValue));
+    }
+    return safeValue;
+  }, [previewConfig]);
+
   // Helper function to get preview tile URL (0/0/0 tile)
-  const getPreviewTileUrl = useCallback((baseUrl: string): string => {
-    // Replace Leaflet tile placeholders with 0/0/0
-    let previewUrl = baseUrl
-      .replace('{z}', '0')
-      .replace('{x}', '0')
-      .replace('{y}', '0')
+  const getPreviewTileUrl = useCallback((baseMap: BaseMapConfig): string => {
+    const previewZoom = getPreviewNumericValue(baseMap.id, 'ZOOM').toString();
+    const previewX = getPreviewNumericValue(baseMap.id, 'X').toString();
+    const previewY = getPreviewNumericValue(baseMap.id, 'Y').toString();
+    // Replace Leaflet tile placeholders with preview zoom/coords
+    let previewUrl = baseMap.url
+      .replace('{z}', previewZoom)
+      .replace('{x}', previewX)
+      .replace('{y}', previewY)
       .replace('{s}', 'a'); // Use 'a' subdomain for OSM-style tiles
     
     // Add token if available
@@ -282,7 +316,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
     
     return previewUrl;
-  }, []);
+  }, [getPreviewNumericValue]);
 
   const switchBaseMap = useCallback((nextBaseMapId: string) => {
     if (!map.current || !tileLayerOptionsRef.current) {
@@ -420,6 +454,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const raw_url = await response_url.json();
       const primaryUrl = raw_url?.url;
       const alternateUrl = raw_url?.altUrl;
+
+      const response_preview = await fetch('/api/map-preview');
+      if (!response_preview.ok) {
+        const errorData = await response_preview.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Failed to get preview configuration for maps');
+      }
+      const previewData: BaseMapPreviewResponse = await response_preview.json();
+      setPreviewConfig(previewData);
 
       console.log('🗺️ Map URLs received:', { primaryUrl, alternateUrl });
 
@@ -2179,7 +2221,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             <div 
               className="basemap-preview" 
               style={{
-                backgroundImage: `url(${getPreviewTileUrl(nextBaseMap.url)})`
+                backgroundImage: `url(${getPreviewTileUrl(nextBaseMap)})`
               }}
             ></div>
           </button>

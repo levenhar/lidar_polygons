@@ -108,6 +108,10 @@
   border-radius: 10px;
   background: linear-gradient(135deg, #f9fafb 0%, #ffffff 100%);
   transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  width: 100%;
+  max-width: 100%;
+  position: relative;
+  overflow: hidden;
 }
 
 .route-row:hover {
@@ -121,12 +125,18 @@
   box-shadow: 0 8px 18px rgba(14, 165, 233, 0.16);
 }
 
+.route-row.editing {
+  overflow: visible;
+}
+
 .route-main {
   display: flex;
   align-items: center;
   gap: 0.55rem;
   font-weight: 600;
   color: #0f172a;
+  flex: 1;
+  min-width: 0;
 }
 
 .route-radio {
@@ -140,6 +150,7 @@
   align-items: baseline;
   gap: 0.35rem;
   flex: 1;
+  min-width: 0;
 }
 
 .route-index {
@@ -165,6 +176,18 @@
   min-width: 120px;
   background: #ffffff;
   transition: border-color 120ms ease, box-shadow 120ms ease;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.route-row.editing .route-name-input {
+  position: absolute;
+  left: 0.65rem;
+  right: 0.65rem;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
 }
 
 .route-name-input:focus {
@@ -183,6 +206,10 @@
   color: #0f172a;
   cursor: text;
   text-align: left;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .route-name-button:hover {
@@ -193,6 +220,15 @@
   outline: 2px solid #0ea5e9;
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+.route-name-text {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .route-visibility {
@@ -217,6 +253,12 @@
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.route-row.editing .route-actions {
+  pointer-events: none;
+  opacity: 0.35;
 }
 
 .switch-slider {
@@ -287,6 +329,50 @@
   flex: 1;
   width: 100%;
   position: relative;
+}
+
+.dtm-drop-overlay {
+  position: absolute;
+  inset: 0;
+  border: 2px dashed #0ea5e9;
+  background: rgba(14, 165, 233, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1500;
+  pointer-events: none;
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.dtm-drop-content {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  box-shadow: 0 10px 25px -8px rgba(0, 0, 0, 0.3);
+  color: #0f172a;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.dtm-drop-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.dtm-drop-title {
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.dtm-drop-subtitle {
+  font-size: 0.875rem;
+  color: #4b5563;
+  font-weight: 500;
+  line-height: 1.2;
 }
 
 .flight-point-marker-container {

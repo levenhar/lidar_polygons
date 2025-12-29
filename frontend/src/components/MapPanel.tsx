@@ -261,6 +261,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [editingPointIndex, setEditingPointIndex] = useState<number | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [isDtmProcessing, setIsDtmProcessing] = useState<boolean>(false);
   const [baseMaps, setBaseMaps] = useState<BaseMapConfig[]>([]);
   const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
@@ -1338,28 +1339,42 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     loadDTM();
   }, [dtmSource]);
+  const resetFileInput = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const uploadDtmFile = async (file: File) => {
+    const allowedExtensions = ['.tif', '.tiff', '.geotiff'];
+    const lowerName = file.name.toLowerCase();
+    const hasValidExtension = allowedExtensions.some((ext) => lowerName.endsWith(ext));
+
+    if (!hasValidExtension) {
+      alert('Please upload a GeoTIFF file (.tif, .tiff, .geotiff).');
+      resetFileInput();
+      return;
+    }
+
+    if (isUploading) {
+      alert('A DTM upload is already in progress. Please wait for it to finish.');
+      resetFileInput();
+      return;
+    }
 
     // Check file size (199 MB = 199 * 1024 * 1024 bytes)
     const maxSizeBytes = 199 * 1024 * 1024; // 199 MB
     if (file.size > maxSizeBytes) {
       const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
       alert(`File size (${fileSizeMB} MB) exceeds the maximum allowed size of 199 MB. Please use a smaller DTM file.`);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      resetFileInput();
       return;
     }
 
     // Prevent uploading if a DTM is already loaded
     if (dtmLoaded) {
       alert('A DTM is already loaded. Please unload it first before loading a new one.');
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      resetFileInput();
       return;
     }
 
@@ -1404,16 +1419,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
             throw new Error(`Upload failed with status ${xhr.status}`);
           }
         }
+      });
+
+      const handleUploadComplete = () => {
         setIsUploading(false);
         setUploadProgress(0);
-      });
+        resetFileInput();
+        setIsDragOver(false);
+      };
 
       // Handle errors
       xhr.addEventListener('error', () => {
         console.error('Error uploading DTM:', xhr.statusText);
         alert('Failed to upload DTM file');
-        setIsUploading(false);
-        setUploadProgress(0);
       });
 
       // Handle abort
@@ -1421,6 +1439,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
         setIsUploading(false);
         setUploadProgress(0);
       });
+
+      xhr.addEventListener('loadend', handleUploadComplete);
 
       // Send request
       xhr.open('POST', '/api/upload-dtm');
@@ -1430,12 +1450,54 @@ const MapPanel: React.FC<MapPanelProps> = ({
       alert('Failed to upload DTM file');
       setIsUploading(false);
       setUploadProgress(0);
-    } finally {
-      // Reset file input so the same file can be selected again
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      resetFileInput();
+      setIsDragOver(false);
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    uploadDtmFile(file);
+  };
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dtmLoaded || isUploading) {
+      return;
+    }
+    setIsDragOver(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dtmLoaded || isUploading) {
+      e.dataTransfer.dropEffect = 'none';
+      return;
+    }
+    e.dataTransfer.dropEffect = 'copy';
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    if (isUploading) {
+      alert('A DTM upload is already in progress. Please wait for it to finish.');
+      return;
+    }
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    uploadDtmFile(file);
   };
 
   const handleFitToDTM = () => {
@@ -1794,7 +1856,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 {routes.map((route, idx) => (
                   <div
                     key={route.id}
-                    className={`route-row ${route.id === activeRouteId ? 'active' : ''}`}
+                    className={`route-row ${route.id === activeRouteId ? 'active' : ''} ${editingRouteId === route.id ? 'editing' : ''}`}
                   >
                     <div className="route-main" title="Select active route">
                       <label className="route-radio">
@@ -1849,9 +1911,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
                               setEditingRouteId(route.id);
                               setEditingRouteName(route.name);
                             }}
-                            title="Double-click to rename"
+                            title={`${route.name} (Double-click to rename)`}
                           >
-                            {route.name}
+                            <span className="route-name-text">{route.name}</span>
                           </button>
                         )}
                       </span>
@@ -2172,7 +2234,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
         </div>
       </div>
-      <div ref={mapContainer} className="map-container">
+      <div
+        ref={mapContainer}
+        className="map-container"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDragOver && !isUploading && !isDtmProcessing && (
+          <div className="dtm-drop-overlay">
+            <div className="dtm-drop-content">
+              <Icon name="upload" />
+              <div className="dtm-drop-text">
+                <div className="dtm-drop-title">Drop DTM GeoTIFF to upload</div>
+                <div className="dtm-drop-subtitle">.tif, .tiff, .geotiff • Max 199 MB</div>
+              </div>
+            </div>
+          </div>
+        )}
         {isUploading && (
           <div className="upload-progress-overlay">
             <div className="upload-progress-container">

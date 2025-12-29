@@ -46,13 +46,23 @@ function App() {
   
   // @ts-ignore
   const {
+    routes,
+    activeRouteId,
     flightPath,
+    addRoute,
+    setActiveRoute,
+    renameRoute,
+    toggleRouteVisibility,
+    deleteRoute,
+    showAllRoutes,
+    hideNonActiveRoutes,
     addPoint,
     addPoints,
     updatePoint,
     deletePoint,
     insertPoints,
     setFlightPath,
+    resetToSingleRoute,
     exportGeoJSON,
     importGeoJSON,
     undo,
@@ -146,9 +156,9 @@ function App() {
     }
     setDtmSource(null);
     setDtmInfo(null);
-    // Clear all flight path points when unloading DTM
-    setFlightPath([]);
-  }, [dtmSource, deleteDtmOnServer, setFlightPath]);
+    // Clear routes when unloading DTM (keep only the first route)
+    resetToSingleRoute();
+  }, [dtmSource, deleteDtmOnServer, resetToSingleRoute]);
 
   // Warn users that refreshing will clear points and unload the DTM; only clean up on confirmed unload.
   React.useEffect(() => {
@@ -335,6 +345,8 @@ function App() {
       <div className="app-panels">
         <MapPanel
           dtmSource={dtmSource}
+          routes={routes}
+          activeRouteId={activeRouteId}
           flightPath={flightPath}
           onPathPointHover={handlePathPointHover}
           onPathChange={setFlightPath}
@@ -343,6 +355,14 @@ function App() {
           onInsertPoints={insertPoints}
           onUpdatePoint={updatePoint}
           onDeletePoint={deletePoint}
+          onAddRoute={addRoute}
+          onActiveRouteChange={setActiveRoute}
+          onRenameRoute={renameRoute}
+          onToggleRouteVisibility={toggleRouteVisibility}
+          onDeleteRoute={deleteRoute}
+          onShowAllRoutes={showAllRoutes}
+          onHideNonActiveRoutes={hideNonActiveRoutes}
+          onResetToSingleRoute={resetToSingleRoute}
           onDtmLoad={handleDtmLoad}
           onDtmUnload={handleDtmUnload}
           nominalFlightHeight={nominalFlightHeight}

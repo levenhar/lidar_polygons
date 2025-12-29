@@ -4,6 +4,7 @@ import 'leaflet/dist/leaflet.css';
 // @ts-ignore - proj4 types may not be perfect
 import proj4 from 'proj4';
 import { Coordinate, ElevationPoint } from '../App';
+import { FlightRoute } from '../hooks/useFlightPath';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide } from '../utils/geometry';
@@ -161,6 +162,8 @@ L.Icon.Default.mergeOptions({
 
 interface MapPanelProps {
   dtmSource: string | null;
+  routes: FlightRoute[];
+  activeRouteId: string;
   flightPath: Coordinate[];
   onPathPointHover: (point: Coordinate | null) => void;
   onPathChange: (path: Coordinate[]) => void;
@@ -169,6 +172,14 @@ interface MapPanelProps {
   onInsertPoints: (index: number, points: Coordinate[]) => void;
   onUpdatePoint: (index: number, point: Coordinate) => void;
   onDeletePoint: (index: number) => void;
+  onAddRoute: () => void;
+  onActiveRouteChange: (routeId: string) => void;
+  onRenameRoute: (routeId: string, name: string) => void;
+  onToggleRouteVisibility: (routeId: string) => void;
+  onDeleteRoute: (routeId: string) => void;
+  onShowAllRoutes: () => void;
+  onHideNonActiveRoutes: () => void;
+  onResetToSingleRoute: () => void;
   onDtmLoad: (source: string, info?: any) => void;
   onDtmUnload: () => void;
   nominalFlightHeight: number;
@@ -183,6 +194,8 @@ interface MapPanelProps {
 
 const MapPanel: React.FC<MapPanelProps> = ({
   dtmSource,
+  routes,
+  activeRouteId,
   flightPath,
   onPathPointHover,
   onPathChange,
@@ -191,6 +204,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onInsertPoints,
   onUpdatePoint,
   onDeletePoint,
+  onAddRoute,
+  onActiveRouteChange,
+  onRenameRoute,
+  onToggleRouteVisibility,
+  onDeleteRoute,
+  onShowAllRoutes,
+  onHideNonActiveRoutes,
+  onResetToSingleRoute,
   onDtmLoad,
   onDtmUnload,
   nominalFlightHeight,
@@ -228,6 +249,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [isDtmProcessing, setIsDtmProcessing] = useState<boolean>(false);
   const [baseMaps, setBaseMaps] = useState<BaseMapConfig[]>([]);
   const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
+  const passiveRouteLinesRef = useRef<Record<string, L.Polyline>>({});
+  const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
+  const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
+  const [editingRouteName, setEditingRouteName] = useState<string>('');
+
+  const activeRoute = routes.find((route) => route.id === activeRouteId) || routes[0];
+  const activeRouteColor = activeRoute?.color || '#ff0000';
 
   // Helper function to check if a point is within DTM bounds
   const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
@@ -671,7 +699,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     // Add flight path line (will be on top)
     flightPathLineRef.current = L.polyline(latlngs, {
-      color: '#ff0000',
+      color: activeRouteColor,
       weight: 3,
       opacity: 0.8
     }).addTo(map.current);
@@ -687,6 +715,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       el.className = 'flight-point-marker';
       el.innerHTML = `${index + 1}`;
       el.style.cursor = 'pointer';
+      el.style.backgroundColor = activeRouteColor;
 
       const icon = L.divIcon({
         className: 'flight-point-marker-container',
@@ -847,8 +876,52 @@ const MapPanel: React.FC<MapPanelProps> = ({
     isParallelLineMode,
     nominalFlightHeight,
     editingPointIndex,
-    externalEditPointIndex
+    externalEditPointIndex,
+    activeRouteColor
   ]);
+
+  // Render passive polylines for non-active routes
+  useEffect(() => {
+    if (!map.current) return;
+
+    // Remove lines that should no longer exist
+    Object.entries(passiveRouteLinesRef.current).forEach(([routeId, polyline]) => {
+      const stillExists = routes.some(
+        (route) => route.id === routeId && route.visible && route.id !== activeRouteId
+      );
+      if (!stillExists) {
+        map.current?.removeLayer(polyline);
+        delete passiveRouteLinesRef.current[routeId];
+      }
+    });
+
+    routes.forEach((route) => {
+      if (route.id === activeRouteId || !route.visible || route.points.length === 0) {
+        return;
+      }
+
+      const latlngs = route.points.map((p) => [p.lat, p.lng] as [number, number]);
+      const existing = passiveRouteLinesRef.current[route.id];
+      if (existing) {
+        existing.setLatLngs(latlngs);
+        existing.setStyle({ color: route.color });
+      } else {
+        passiveRouteLinesRef.current[route.id] = L.polyline(latlngs, {
+          color: route.color,
+          weight: 3,
+          opacity: 0.6,
+          dashArray: '6 6'
+        }).addTo(map.current!);
+      }
+    });
+
+    return () => {
+      Object.values(passiveRouteLinesRef.current).forEach((polyline) => {
+        map.current?.removeLayer(polyline);
+      });
+      passiveRouteLinesRef.current = {};
+    };
+  }, [routes, activeRouteId]);
 
   // Update hovered elevation point marker
   useEffect(() => {
@@ -1661,6 +1734,169 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
       )}
       <div className="map-controls">
+        <div className={`control-group routes-panel ${isRoutesPanelOpen ? 'open' : 'closed'}`}>
+          <div className="routes-panel-header">
+            <span className="group-title">Routes</span>
+            <button
+              type="button"
+              className="btn btn-tertiary btn-compact"
+              onClick={() => setIsRoutesPanelOpen((prev) => !prev)}
+              aria-label={isRoutesPanelOpen ? 'Collapse routes panel' : 'Expand routes panel'}
+            >
+              {isRoutesPanelOpen ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          {isRoutesPanelOpen && (
+            <div className="group-columns">
+              <div className="group-column route-list">
+                {routes.map((route, idx) => (
+                  <div
+                    key={route.id}
+                    className={`route-row ${route.id === activeRouteId ? 'active' : ''}`}
+                  >
+                    <div className="route-main" title="Select active route">
+                      <label className="route-radio">
+                        <input
+                          type="radio"
+                          name="active-route"
+                          checked={route.id === activeRouteId}
+                          onChange={() => onActiveRouteChange(route.id)}
+                        />
+                        <span
+                          className="route-color-dot"
+                          style={{ backgroundColor: route.color }}
+                          aria-hidden
+                        />
+                      </label>
+                      <span className="route-name-block">
+                        <span className="route-index">#{idx + 1}</span>
+                        {editingRouteId === route.id ? (
+                          <input
+                            className="route-name-input"
+                            value={editingRouteName}
+                            autoFocus
+                            onChange={(e) => setEditingRouteName(e.target.value)}
+                            onBlur={() => {
+                              if (editingRouteId) {
+                                onRenameRoute(editingRouteId, editingRouteName);
+                              }
+                              setEditingRouteId(null);
+                              setEditingRouteName('');
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (editingRouteId) {
+                                  onRenameRoute(editingRouteId, editingRouteName);
+                                }
+                                setEditingRouteId(null);
+                                setEditingRouteName('');
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault();
+                                setEditingRouteId(null);
+                                setEditingRouteName('');
+                              }
+                            }}
+                            placeholder={`Route ${idx + 1}`}
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            className="route-name-button"
+                            onDoubleClick={() => {
+                              setEditingRouteId(route.id);
+                              setEditingRouteName(route.name);
+                            }}
+                            title="Double-click to rename"
+                          >
+                            {route.name}
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                    <div className="route-actions">
+                      <label
+                        className="route-visibility switch"
+                        title={
+                          route.id === activeRouteId
+                            ? 'Active route is always visible.'
+                            : route.visible
+                              ? 'Hide this route on the map'
+                              : 'Show this route on the map'
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          checked={route.visible}
+                          disabled={route.id === activeRouteId}
+                          onChange={() => onToggleRouteVisibility(route.id)}
+                        />
+                        <span className="switch-slider" aria-hidden />
+                      </label>
+                      <Tooltip tooltip={routes.length <= 1 ? 'At least one route is required.' : 'Delete this route.'}>
+                        <button
+                          type="button"
+                          className="btn btn-destructive btn-icon btn-compact"
+                          onClick={() => {
+                            if (routes.length <= 1) return;
+                            if (window.confirm(`Delete "${route.name}"? This cannot be undone.`)) {
+                              onDeleteRoute(route.id);
+                            }
+                          }}
+                          disabled={routes.length <= 1}
+                          aria-label={`Delete ${route.name}`}
+                        >
+                          <Icon name="trash" />
+                          <span className="sr-only">Delete route</span>
+                        </button>
+                      </Tooltip>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={onAddRoute}
+                  aria-label="Add new route"
+                >
+                  + New Route
+                </button>
+                <div className="route-bulk-actions">
+                  <button
+                    type="button"
+                    className="btn btn-tertiary"
+                    onClick={onShowAllRoutes}
+                    disabled={routes.length === 0}
+                    aria-label="Show all routes"
+                  >
+                    Show all
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-tertiary"
+                    onClick={onHideNonActiveRoutes}
+                    disabled={routes.length === 0}
+                    aria-label="Hide non-active routes"
+                  >
+                    Show active only
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-destructive"
+                    onClick={() => {
+                      if (window.confirm('Reset routes to a single empty route? This will remove all other routes and points.')) {
+                        onResetToSingleRoute();
+                      }
+                    }}
+                    aria-label="Reset to single route"
+                  >
+                    Reset routes
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
         <div className="control-group">
           <div className="group-title">Data Management</div>
           <div className="group-columns">
@@ -1685,16 +1921,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">Load DTM</span>
                 </label>
               </Tooltip>
-              <Tooltip tooltip={!dtmSource || !dtmLoaded ? 'No DTM loaded.' : 'Unload the current DTM from the map.'}>
+              <Tooltip
+                tooltip={
+                  !dtmSource || !dtmLoaded
+                    ? 'No DTM loaded.'
+                    : 'Unload DTM and clear all routes and points.'
+                }
+              >
                 <button
                   onClick={onDtmUnload}
                   className="btn btn-destructive btn-icon"
                   disabled={!dtmSource || !dtmLoaded}
-                  aria-label="Unload DTM"
+                  aria-label="Unload DTM and clear routes"
                   type="button"
                 >
                   <Icon name="eject" />
-                  <span className="sr-only">Unload DTM</span>
+                  <span className="sr-only">Unload DTM and clear routes</span>
                 </button>
               </Tooltip>
             </div>

@@ -11,7 +11,8 @@ export function useElevationProfile() {
     flightPath: Coordinate[],
     dtmSource: string,
     nominalFlightHeight: number,
-    searchRadius: number = 50
+    safetyRadius: number = 50,
+    resolutionRadius?: number
   ) => {
     if (flightPath.length < 2) {
       setElevationProfile([]);
@@ -46,12 +47,15 @@ export function useElevationProfile() {
         segmentDistances.push(segmentDist);
       }
       
-      console.log(`Calculating elevation profile with search radius: ${searchRadius}m`);
+      const safetyRadiusToUse = safetyRadius ?? 50;
+      const resolutionRadiusToUse = resolutionRadius ?? safetyRadiusToUse;
+      console.log(`Calculating elevation profile with safety radius ${safetyRadiusToUse}m and resolution radius ${resolutionRadiusToUse}m`);
       
       const response = await axios.post('/api/elevation-profile', {
         coordinates,
         dtmPath: dtmSource,
-        radiusMeters: searchRadius // User-configurable radius for min/max calculation
+        safetyRadiusMeters: safetyRadiusToUse, // User-configurable radius for min (safety)
+        resolutionRadiusMeters: resolutionRadiusToUse // User-configurable radius for max (resolution)
       });
 
       // Helper function to interpolate flight height for any point along the path

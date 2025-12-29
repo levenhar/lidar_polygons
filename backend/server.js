@@ -438,7 +438,7 @@ app.get('/api/dtm/:filename/raster', async (req, res) => {
 // This endpoint samples the DTM at points along the path, including interpolated points along line segments
 app.post('/api/elevation-profile', async (req, res) => {
   try {
-    const { coordinates, dtmPath, radiusMeters } = req.body;
+    const { coordinates, dtmPath, radiusMeters, resolutionRadiusMeters, safetyRadiusMeters } = req.body;
 
     if (!coordinates || !Array.isArray(coordinates) || coordinates.length < 2) {
       return res.status(400).json({ error: 'Invalid coordinates array' });
@@ -448,8 +448,9 @@ app.post('/api/elevation-profile', async (req, res) => {
       return res.status(400).json({ error: 'DTM path is required' });
     }
 
-    // Default radius is 50 meters if not specified
-    const radius = radiusMeters || 50;
+    // Default radii are 50 meters if not specified
+    const resolutionRadius = resolutionRadiusMeters ?? radiusMeters ?? 50; // max (resolution / highest point)
+    const safetyRadius = safetyRadiusMeters ?? radiusMeters ?? 50; // min (safety / lowest point)
 
     // Extract filename from path
     const filename = dtmPath.split('/').pop();
@@ -464,6 +465,7 @@ app.post('/api/elevation-profile', async (req, res) => {
 
     console.log(`Sampling elevation profile from DTM: ${filename}`);
     console.log(`Number of input coordinates: ${coordinates.length}`);
+    console.log(`Radii -> safety(min): ${safetyRadius}m, resolution(max): ${resolutionRadius}m`);
 
     // Load the GeoTIFF
     const tiff = await fromFile(filePath);
@@ -810,10 +812,16 @@ app.post('/api/elevation-profile', async (req, res) => {
       let maxElevation = undefined;
 
       try {
-        const result = getMinMaxElevationInRadius(lon, lat, radius);
-        if (result.min !== null && result.max !== null) {
-          minElevation = result.min;
-          maxElevation = result.max;
+        const minResult = getMinMaxElevationInRadius(lon, lat, safetyRadius);
+        const maxResult = resolutionRadius === safetyRadius
+          ? minResult
+          : getMinMaxElevationInRadius(lon, lat, resolutionRadius);
+
+        if (minResult && minResult.min !== null) {
+          minElevation = minResult.min;
+        }
+        if (maxResult && maxResult.max !== null) {
+          maxElevation = maxResult.max;
         }
       } catch (error) {
         console.error(`Error calculating min/max at point ${i}:`, error);

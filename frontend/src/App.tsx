@@ -38,7 +38,8 @@ function App() {
   const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(250);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
-  const [searchRadius, setSearchRadius] = useState<number>(50);
+  const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
+  const [resolutionSearchRadius, setResolutionSearchRadius] = useState<number>(50);
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
   const [editPointIndex, setEditPointIndex] = useState<number | null>(null);
   const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);
@@ -66,21 +67,26 @@ function App() {
   const lastProfileParamsRef = React.useRef<{
     flightPath: Coordinate[];
     dtmSource: string | null;
-    searchRadius: number;
+    safetySearchRadius: number;
+    resolutionSearchRadius: number;
     nominalFlightHeight: number;
   } | null>(null);
 
   React.useEffect(() => {
     const prev = lastProfileParamsRef.current;
-    const baseChanged = !prev || prev.flightPath !== flightPath || prev.dtmSource !== dtmSource || prev.searchRadius !== searchRadius;
+    const baseChanged = !prev 
+      || prev.flightPath !== flightPath 
+      || prev.dtmSource !== dtmSource 
+      || prev.safetySearchRadius !== safetySearchRadius
+      || prev.resolutionSearchRadius !== resolutionSearchRadius;
     const nominalChanged = !prev || prev.nominalFlightHeight !== nominalFlightHeight;
 
     if (baseChanged) {
       if (flightPath.length === 0) {
         // Clear profile when flight path is empty
-        calculateProfile([], dtmSource || '', nominalFlightHeight, searchRadius);
+        calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
       } else if (flightPath.length >= 2 && dtmSource) {
-        calculateProfile(flightPath, dtmSource, nominalFlightHeight, searchRadius);
+        calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
       }
     } else if (nominalChanged) {
       // Fast update: adjust flight heights without reloading elevations
@@ -90,10 +96,11 @@ function App() {
     lastProfileParamsRef.current = {
       flightPath,
       dtmSource,
-      searchRadius,
+      safetySearchRadius,
+      resolutionSearchRadius,
       nominalFlightHeight
     };
-  }, [flightPath, dtmSource, nominalFlightHeight, searchRadius, calculateProfile, refreshFlightHeights]);
+  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights]);
 
   const deleteDtmOnServer = useCallback(async (pathToDelete?: string, keepalive: boolean = false) => {
     const target = pathToDelete || dtmSource;
@@ -264,11 +271,22 @@ function App() {
                 />
               </label>
               <label>
-                <span className="input-label">Search Radius (m)</span>
+                <span className="input-label">Safety Radius (m)</span>
                 <input
                   type="number"
-                  value={searchRadius}
-                  onChange={(e) => setSearchRadius(Number(e.target.value))}
+                  value={safetySearchRadius}
+                  onChange={(e) => setSafetySearchRadius(Number(e.target.value))}
+                  min="1"
+                  step="5"
+                  className="modern-input"
+                />
+              </label>
+              <label>
+                <span className="input-label">Resolution Radius (m)</span>
+                <input
+                  type="number"
+                  value={resolutionSearchRadius}
+                  onChange={(e) => setResolutionSearchRadius(Number(e.target.value))}
                   min="1"
                   step="5"
                   className="modern-input"

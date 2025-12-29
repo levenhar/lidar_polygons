@@ -1585,9 +1585,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const prev = flightPath[flightPath.length - 2];
     const start = flightPath[flightPath.length - 1];
 
-    const pts = generateUTurnPoints(prev, start, radiusMeters, 5, side);
+    const numUTurnPoints = 10;
+    const maxStartEndDistance = radiusMeters * 2;
+    const distanceInput = prompt(
+      `Enter distance between U-turn start and end points in meters (max ${maxStartEndDistance.toFixed(2)}). End stays on the perpendicular line.`,
+      maxStartEndDistance.toString()
+    );
+    if (distanceInput === null) return;
 
-    if (pts.length !== 5) {
+    const startEndDistance = parseFloat(distanceInput);
+    if (isNaN(startEndDistance) || startEndDistance <= 0) {
+      alert('Invalid distance. Please enter a positive number.');
+      return;
+    }
+
+    const clampedDistance = Math.min(startEndDistance, maxStartEndDistance);
+    if (startEndDistance > maxStartEndDistance) {
+      alert(`Distance reduced to ${maxStartEndDistance} meters (must be <= 2 x radius).`);
+    }
+
+    const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
+
+    if (pts.length !== numUTurnPoints) {
       alert('Failed to generate U-turn points.');
       return;
     }
@@ -1788,7 +1807,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     ? 'Load a DTM first.'
                     : flightPath.length < 2
                       ? 'Add at least 2 points first.'
-                      : 'Add a U-turn (adds 5 points) using a radius in meters.'
+                      : 'Add a U-turn (adds 10 points) using radius + distance (end on perpendicular).'
                 }
               >
                 <button

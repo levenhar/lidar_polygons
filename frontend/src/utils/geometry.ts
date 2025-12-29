@@ -66,41 +66,93 @@ export function calculateDestination(
 
 export type UTurnSide = 'L' | 'R';
 
+function normalizeAngle(angle: number): number {
+  const twoPi = Math.PI * 2;
+  let a = angle % twoPi;
+  if (a <= -Math.PI) a += twoPi;
+  if (a > Math.PI) a -= twoPi;
+  return a;
+}
+
 /**
- * Generate a U-turn arc (semi-circle) starting at `start`, tangent-aligned to the inbound segment
- * defined by `prev -> start`.
- *
+ * Generate a U-turn arc where:
+ * - Start point is the current last point.
+ * - End point lies on the line perpendicular to the inbound leg, at the requested chord length
+ *   (clamped to 2R). This matches the user's sketch: both start/end on the perpendicular line.
  * - Returns `numPoints` points along the arc (does NOT include the start point).
- * - Side 'R' means the U-turn ends offset to the RIGHT of travel direction; 'L' ends to the LEFT.
+ * - Side 'R' means the arc turns to the RIGHT of travel; 'L' turns to the LEFT.
  */
 export function generateUTurnPoints(
   prev: Coordinate,
   start: Coordinate,
   radiusMeters: number,
+  startEndDistanceMeters: number,
   numPoints: number = 10,
   side: UTurnSide = 'R'
 ): Coordinate[] {
   if (numPoints <= 0) return [];
   if (!(radiusMeters > 0)) return [];
+  if (!(startEndDistanceMeters > 0)) return [];
 
+  // Clamp chord length to maximum of 2R
+  const chordLength = Math.min(startEndDistanceMeters, radiusMeters * 2);
+
+  // Bearings for inbound and its right-perpendicular (used to place the end point)
   const inboundBearing = calculateBearing(prev, start);
-  const rightPerp = inboundBearing + Math.PI / 2;
-  const leftPerp = inboundBearing - Math.PI / 2;
+  const rightPerpBearing = inboundBearing + Math.PI / 2;
+  const leftPerpBearing = inboundBearing - Math.PI / 2;
 
-  // To keep the start tangent aligned with inboundBearing:
-  // - Side 'R' (end on right offset): center is to the RIGHT, arc is CCW (+π)
-  // - Side 'L' (end on left offset): center is to the LEFT, arc is CW (-π)
-  const centerBearingFromStart = side === 'R' ? rightPerp : leftPerp;
-  const center = calculateDestination(start, centerBearingFromStart, radiusMeters);
+  // Place end point along the perpendicular line (direction depends on side)
+  const perpBearing = side === 'R' ? rightPerpBearing : leftPerpBearing;
+  const endPoint = calculateDestination(start, perpBearing, chordLength);
 
-  const radiusBearingStart = calculateBearing(center, start);
-  const step = Math.PI / numPoints;
-  const direction = side === 'R' ? 1 : -1;
+  // Chord midpoint
+  const midPoint = calculateDestination(start, perpBearing, chordLength / 2);
+
+  // Circle geometry from chord
+  const halfChord = chordLength / 2;
+  const height = Math.sqrt(Math.max(0, radiusMeters * radiusMeters - halfChord * halfChord));
+
+  // Two possible centers: offset from midpoint by ± normal to the chord
+  const chordNormalBearing1 = perpBearing + Math.PI / 2;
+  const chordNormalBearing2 = perpBearing - Math.PI / 2;
+  const center1 = calculateDestination(midPoint, chordNormalBearing1, height);
+  const center2 = calculateDestination(midPoint, chordNormalBearing2, height);
+
+  // Pick center on the intended turning side (dot with right vector)
+  const rightVectorBearing = rightPerpBearing;
+  const bearingStartToC1 = calculateBearing(start, center1);
+  const bearingStartToC2 = calculateBearing(start, center2);
+  const diff1 = Math.abs(normalizeAngle(bearingStartToC1 - rightVectorBearing));
+  const diff2 = Math.abs(normalizeAngle(bearingStartToC2 - rightVectorBearing));
+
+  const center =
+    side === 'R'
+      ? (diff1 <= diff2 ? center1 : center2)
+      : (diff1 >= diff2 ? center1 : center2);
+
+  // Bearings from center to start/end
+  const startAngle = calculateBearing(center, start);
+  const endAngle = calculateBearing(center, endPoint);
+
+  // Determine sweep direction consistent with side (R = CCW long way, L = CW long way)
+  let delta = normalizeAngle(endAngle - startAngle);
+  const direction = side === 'R' ? 1 : -1; // flipped to take the other long direction
+  if (direction === -1 && delta > 0) delta -= Math.PI * 2;
+  if (direction === 1 && delta < 0) delta += Math.PI * 2;
+
+  // Use the long arc (major arc) instead of the short one
+  const theta = Math.abs(delta);
+  if (theta < Math.PI) {
+    delta = direction === -1 ? -(2 * Math.PI - theta) : (2 * Math.PI - theta);
+  }
+
+  const step = delta / numPoints;
 
   const pts: Coordinate[] = [];
   for (let i = 1; i <= numPoints; i++) {
-    const radiusBearing = radiusBearingStart + direction * step * i;
-    pts.push(calculateDestination(center, radiusBearing, radiusMeters));
+    const angle = startAngle + step * i;
+    pts.push(calculateDestination(center, angle, radiusMeters));
   }
 
   return pts;

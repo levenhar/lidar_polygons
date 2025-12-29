@@ -225,6 +225,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [editingPointIndex, setEditingPointIndex] = useState<number | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [isDtmProcessing, setIsDtmProcessing] = useState<boolean>(false);
   const [baseMaps, setBaseMaps] = useState<BaseMapConfig[]>([]);
   const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
 
@@ -954,16 +955,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
       setDtmLoaded(false);
       setDtmBounds(null);
+      setIsDtmProcessing(false);
       // Keep opacity setting - don't reset it so user preference persists
       return;
     }
 
     const loadDTM = async () => {
       setDtmLoaded(false); // Reset loading state when starting to load
+      setIsDtmProcessing(true);
       try {
         // Extract filename from path
         const filename = dtmSource.split('/').pop();
-        if (!filename) return;
+        if (!filename) {
+          setIsDtmProcessing(false);
+          return;
+        }
 
         // Fetch raster data
         const response = await fetch(`/api/dtm/${filename}/raster`);
@@ -1151,6 +1157,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             console.log('DTM layer added successfully');
             setDtmLoaded(true);
             setDtmBounds(bounds); // Store bounds for the "Fit to DTM" button
+            setIsDtmProcessing(false);
 
             // Fit map to DTM bounds (now in WGS84)
             console.log('Fitting map to DTM bounds (WGS84):', bounds);
@@ -1172,6 +1179,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             console.error('Error adding DTM source/layer:', sourceError);
             console.error('Error details:', sourceError);
             setDtmLoaded(false);
+            setIsDtmProcessing(false);
             alert(`Failed to add DTM to map: ${sourceError instanceof Error ? sourceError.message : 'Unknown error'}\n\nCheck browser console for details.`);
           }
         };
@@ -1194,6 +1202,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         img.onerror = (error) => {
           console.error('Error loading DTM image:', error);
           setDtmLoaded(false);
+          setIsDtmProcessing(false);
           alert('Failed to create DTM image from canvas. Check console for details.');
         };
 
@@ -1207,6 +1216,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         console.error('Error loading DTM:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         setDtmLoaded(false);
+        setIsDtmProcessing(false);
         alert(`Failed to load DTM: ${errorMessage}\n\nPlease ensure the file is a valid GeoTIFF with elevation data.`);
       }
     };
@@ -1871,6 +1881,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 />
               </div>
             </div>
+          </div>
+        )}
+        {isDtmProcessing && !isUploading && (
+          <div className="upload-progress-overlay">
+            <div className="loading-spinner" />
           </div>
         )}
         {dtmLoaded && (

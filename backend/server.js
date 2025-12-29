@@ -2,8 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { readFile } from 'fs/promises';
+import { dirname, join, basename } from 'path';
+import { readFile, unlink } from 'fs/promises';
 import { existsSync, mkdirSync } from 'fs';
 import { fromFile } from 'geotiff';
 import proj4 from 'proj4';
@@ -179,6 +179,31 @@ app.post('/api/upload-dtm', upload.single('dtm'), async (req, res) => {
       size: req.file.size,
       error: 'Could not parse GeoTIFF metadata'
     });
+  }
+});
+
+// Delete a cached DTM file (used when clients unload/close)
+app.post('/api/dtm/cleanup', async (req, res) => {
+  try {
+    const { path: dtmPath, filename } = req.body || {};
+    const rawName = filename || (typeof dtmPath === 'string' ? dtmPath.split('/').pop() : null);
+
+    if (!rawName) {
+      return res.status(400).json({ success: false, error: 'No filename provided' });
+    }
+
+    const safeFilename = basename(rawName);
+    const filePath = join(uploadsDir, safeFilename);
+
+    if (!existsSync(filePath)) {
+      return res.json({ success: true, deleted: false, message: 'File not found' });
+    }
+
+    await unlink(filePath);
+    res.json({ success: true, deleted: true, filename: safeFilename });
+  } catch (error) {
+    console.error('Error deleting DTM file:', error);
+    res.status(500).json({ success: false, error: 'Failed to delete DTM file' });
   }
 });
 

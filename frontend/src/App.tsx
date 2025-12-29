@@ -95,6 +95,24 @@ function App() {
     };
   }, [flightPath, dtmSource, nominalFlightHeight, searchRadius, calculateProfile, refreshFlightHeights]);
 
+  const deleteDtmOnServer = useCallback(async (pathToDelete?: string, keepalive: boolean = false) => {
+    const target = pathToDelete || dtmSource;
+    if (!target) return;
+
+    try {
+      await fetch('/api/dtm/cleanup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ path: target }),
+        keepalive
+      });
+    } catch (error) {
+      console.error('Failed to delete DTM on server:', error);
+    }
+  }, [dtmSource]);
+
   const handlePathPointHover = useCallback((point: Coordinate | null) => {
     setSelectedPoint(point);
   }, []);
@@ -114,11 +132,44 @@ function App() {
   }, []);
 
   const handleDtmUnload = useCallback(() => {
+    if (dtmSource) {
+      deleteDtmOnServer(dtmSource).catch((error) => {
+        console.error('Failed to clean up DTM cache:', error);
+      });
+    }
     setDtmSource(null);
     setDtmInfo(null);
     // Clear all flight path points when unloading DTM
     setFlightPath([]);
-  }, [setFlightPath]);
+  }, [dtmSource, deleteDtmOnServer, setFlightPath]);
+
+  // Warn users that refreshing will clear points and unload the DTM; only clean up on confirmed unload.
+  React.useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dtmSource && flightPath.length === 0) return;
+
+      const warning = 'Refreshing will delete all points and unload the DTM. Continue?';
+      event.preventDefault();
+      event.returnValue = warning;
+      return warning;
+    };
+
+    const handlePageHide = (event: PageTransitionEvent) => {
+      if (event.persisted) return;
+      if (!dtmSource) return;
+
+      const payload = JSON.stringify({ path: dtmSource });
+      const blob = new Blob([payload], { type: 'application/json' });
+      navigator.sendBeacon('/api/dtm/cleanup', blob);
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [dtmSource, flightPath.length]);
 
   const handleSetFlightHeight = useCallback((pointIndex: number) => {
     if (pointIndex < 0 || pointIndex >= flightPath.length) return;

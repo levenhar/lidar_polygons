@@ -4,7 +4,7 @@ import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { dirname, join, basename } from 'path';
 import { readFile, unlink } from 'fs/promises';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, rmSync } from 'fs';
 import { fromFile } from 'geotiff';
 import proj4 from 'proj4';
 import dotenv from 'dotenv';
@@ -31,11 +31,24 @@ app.use((req, res, next) => {
 app.use(cors());
 app.use(express.json());
 
-// Create uploads directory if it doesn't exist
 const uploadsDir = join(__dirname, 'uploads');
-if (!existsSync(uploadsDir)) {
-  mkdirSync(uploadsDir, { recursive: true });
-}
+
+// Clear cached uploads on restart to avoid serving stale files
+const clearUploadsDirectory = () => {
+  try {
+    rmSync(uploadsDir, { recursive: true, force: true });
+    mkdirSync(uploadsDir, { recursive: true });
+    console.log('Uploads cache cleared on startup');
+  } catch (error) {
+    console.error('Failed to clear uploads cache on startup:', error);
+    // Ensure directory still exists so uploads do not fail
+    if (!existsSync(uploadsDir)) {
+      mkdirSync(uploadsDir, { recursive: true });
+    }
+  }
+};
+
+clearUploadsDirectory();
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({

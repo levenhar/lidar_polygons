@@ -48,6 +48,89 @@ code {
   pointer-events: none;
 }
 
+/* Icon Button - Compact, icon-only */
+.btn-icon {
+  width: auto;
+  min-height: 34px;
+  height: 34px;
+  padding: 0.5rem;
+  border-radius: 10px;
+  line-height: 1;
+}
+
+.btn-icon svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+/* Accessible screen-reader-only text */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Tooltip wrapper - works even when a child button is disabled */
+.tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+  width: fit-content;
+}
+
+.tooltip-bubble {
+  position: absolute;
+  left: var(--tt-left, 50%);
+  bottom: calc(100% + 10px);
+  transform: translateY(2px);
+  background: rgba(17, 24, 39, 0.96);
+  color: #ffffff;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  padding: 0.4rem 0.55rem;
+  border-radius: 8px;
+  white-space: nowrap;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
+  z-index: 3000;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.tooltip-bubble::after {
+  content: '';
+  position: absolute;
+  left: var(--tt-arrow-left, 50%);
+  bottom: -6px;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid rgba(17, 24, 39, 0.96);
+}
+
+.tooltip-wrap:hover .tooltip-bubble,
+.tooltip-wrap:focus-within .tooltip-bubble,
+.tooltip-wrap[data-open='true'] .tooltip-bubble {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip-bubble {
+    transition: none;
+  }
+}
+
 /* Primary Button - Filled, Bold */
 .btn-primary {
   background: #0EA5E9;
@@ -68,12 +151,14 @@ code {
 }
 
 .btn-primary.active {
-  background: #0EA5E9;
-  border: 2px solid #0284C7;
+  /* Active/toggled-on state (used by Draw mode icon button) */
+  background: #16a34a; /* green = active mode */
+  border: 2px solid #15803d;
+  color: #ffffff;
 }
 
 .btn-primary.active:hover {
-  background: #0284C7;
+  background: #15803d;
 }
 
 /* Secondary Button - Outlined */

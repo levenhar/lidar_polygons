@@ -11,7 +11,8 @@ export function useElevationProfile() {
     flightPath: Coordinate[],
     dtmSource: string,
     nominalFlightHeight: number,
-    searchRadius: number = 50
+    safetyRadius: number = 50,
+    resolutionRadius?: number
   ) => {
     if (flightPath.length < 2) {
       setElevationProfile([]);
@@ -46,12 +47,15 @@ export function useElevationProfile() {
         segmentDistances.push(segmentDist);
       }
       
-      console.log(`Calculating elevation profile with search radius: ${searchRadius}m`);
+      const safetyRadiusToUse = safetyRadius ?? 50;
+      const resolutionRadiusToUse = resolutionRadius ?? safetyRadiusToUse;
+      console.log(`Calculating elevation profile with safety radius ${safetyRadiusToUse}m and resolution radius ${resolutionRadiusToUse}m`);
       
       const response = await axios.post('/api/elevation-profile', {
         coordinates,
         dtmPath: dtmSource,
-        radiusMeters: searchRadius // User-configurable radius for min/max calculation
+        safetyRadiusMeters: safetyRadiusToUse, // User-configurable radius for min (safety)
+        resolutionRadiusMeters: resolutionRadiusToUse // User-configurable radius for max (resolution)
       });
 
       // Helper function to interpolate flight height for any point along the path
@@ -196,10 +200,79 @@ export function useElevationProfile() {
     }
   }, []);
 
+  const refreshFlightHeights = useCallback((flightPath: Coordinate[], nominalFlightHeight: number) => {
+    if (flightPath.length < 1) {
+      return;
+    }
+
+    // Recompute cumulative distances along the current path
+    const calculateDistance = (coord1: Coordinate, coord2: Coordinate): number => {
+      const R = 6371000; // Earth radius in meters
+      const dLat = (coord2.lat - coord1.lat) * Math.PI / 180;
+      const dLon = (coord2.lng - coord1.lng) * Math.PI / 180;
+      const a = 
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(coord1.lat * Math.PI / 180) * Math.cos(coord2.lat * Math.PI / 180) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    };
+
+    let cumulativeDistance = 0;
+    const distances = [0];
+    for (let i = 1; i < flightPath.length; i++) {
+      const segmentDist = calculateDistance(flightPath[i - 1], flightPath[i]);
+      cumulativeDistance += segmentDist;
+      distances.push(cumulativeDistance);
+    }
+
+    // Interpolate with the new nominal height without re-fetching elevations
+    const interpolateFlightHeight = (distance: number): number => {
+      if (distance <= 0) {
+        return flightPath[0].height ?? nominalFlightHeight;
+      }
+      
+      if (distance >= distances[distances.length - 1]) {
+        return flightPath[flightPath.length - 1].height ?? nominalFlightHeight;
+      }
+      
+      for (let i = 0; i < distances.length - 1; i++) {
+        if (distance >= distances[i] && distance <= distances[i + 1]) {
+          const startHeight = flightPath[i].height ?? nominalFlightHeight;
+          const endHeight = flightPath[i + 1].height ?? nominalFlightHeight;
+          
+          if (startHeight === endHeight) {
+            return startHeight;
+          }
+          
+          const segmentStartDist = distances[i];
+          const segmentLength = distances[i + 1] - segmentStartDist;
+          const distanceInSegment = distance - segmentStartDist;
+          const t = segmentLength > 0 ? distanceInSegment / segmentLength : 0;
+          return startHeight + (endHeight - startHeight) * t;
+        }
+      }
+      
+      return nominalFlightHeight;
+    };
+
+    setElevationProfile(prevProfile => {
+      if (prevProfile.length === 0) {
+        return prevProfile;
+      }
+
+      return prevProfile.map(point => ({
+        ...point,
+        flightHeight: interpolateFlightHeight(point.distance)
+      }));
+    });
+  }, []);
+
   return {
     elevationProfile,
     loading,
-    calculateProfile
+    calculateProfile,
+    refreshFlightHeights
   };
 }
 

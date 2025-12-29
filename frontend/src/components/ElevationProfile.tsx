@@ -1,7 +1,42 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { ElevationPoint, Coordinate } from '../App';
+import ContextMenu from './ContextMenu';
+import Tooltip from './Tooltip';
 import './ElevationProfile.css';
+
+const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    xmlns: 'http://www.w3.org/2000/svg'
+  };
+  const stroke = {
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const
+  };
+
+  if (type === 'png') {
+    return (
+      <svg {...common}>
+        <rect {...stroke} x="4" y="5" width="16" height="14" rx="2" />
+        <path {...stroke} d="M8 13l2-2 3 3 2-2 3 3" />
+        <circle {...stroke} cx="9" cy="10" r="1" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg {...common}>
+      <path {...stroke} d="M7 3h10v18H7z" />
+      <path {...stroke} d="M9 7h6" />
+      <path {...stroke} d="M9 11h6" />
+      <path {...stroke} d="M9 15h6" />
+    </svg>
+  );
+};
 
 interface ElevationProfileProps {
   elevationProfile: ElevationPoint[];
@@ -11,6 +46,11 @@ interface ElevationProfileProps {
   resolutionHeight: number;
   selectedPoint: Coordinate | null;
   flightPath: Coordinate[];
+  onDeletePoint: (index: number) => void;
+  onUpdatePoint: (index: number, point: Coordinate) => void;
+  onSetFlightHeight: (index: number) => void;
+  onEditPointRequest: (index: number) => void;
+  onElevationPointHover?: (point: ElevationPoint | null) => void;
 }
 
 const ElevationProfile: React.FC<ElevationProfileProps> = ({
@@ -20,10 +60,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   safetyHeight,
   resolutionHeight,
   selectedPoint,
-  flightPath
+  flightPath,
+  onDeletePoint,
+  onUpdatePoint,
+  onSetFlightHeight,
+  onEditPointRequest,
+  onElevationPointHover
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const clipPathIdRef = useRef(`elevation-clip-${Math.random().toString(36).slice(2, 8)}`);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current || elevationProfile.length === 0) {
@@ -44,11 +91,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     svg.attr('width', width + margin.left + margin.right + legendWidth)
        .attr('height', height + margin.top + margin.bottom);
 
-    const g = svg.append('g')
+    const g: d3.Selection<SVGGElement, unknown, null, undefined> = svg.append('g')
       .attr('transform', `translate(${margin.left},${margin.top})`);
 
+    // Clip area to avoid drawing outside the plot when zooming/panning
+    svg.append('defs')
+      .append('clipPath')
+      .attr('id', clipPathIdRef.current)
+      .append('rect')
+      .attr('x', 0)
+      .attr('y', 0)
+      .attr('width', width)
+      .attr('height', height);
+
+    const chartArea: d3.Selection<SVGGElement, unknown, null, undefined> = g.append('g')
+      .attr('clip-path', `url(#${clipPathIdRef.current})`);
+
     // Create scales
-    const xScale = d3.scaleLinear()
+    const baseXScale = d3.scaleLinear()
       .domain(d3.extent(elevationProfile, d => d.distance) as [number, number])
       .range([0, width]);
 
@@ -82,17 +142,27 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       ...(allMinElevations.length > 0 ? allMinElevations : [Infinity])
     );
 
-    const yScale = d3.scaleLinear()
+    const baseYScale = d3.scaleLinear()
       .domain([minElevation - 20, maxElevation + 20])
       .range([height, 0]);
 
+    let currentXScale = baseXScale;
+    let currentYScale = baseYScale;
+
+    // Selections we need to update on zoom/pan
+    let rangeBars: d3.Selection<SVGLineElement, ElevationPoint, any, any> | null = null;
+    let minMarkers: d3.Selection<SVGCircleElement, ElevationPoint, any, any> | null = null;
+    let maxMarkers: d3.Selection<SVGCircleElement, ElevationPoint, any, any> | null = null;
+    let selectedDistanceLine: d3.Selection<SVGLineElement, unknown, any, any> | null = null;
+    let selectedDistance: number | null = null;
+
     // Draw ground elevation line
     const groundLine = d3.line<ElevationPoint>()
-      .x(d => xScale(d.distance))
-      .y(d => yScale(d.elevation))
+      .x(d => currentXScale(d.distance))
+      .y(d => currentYScale(d.elevation))
       .curve(d3.curveMonotoneX);
 
-    g.append('path')
+    const groundPath = chartArea.append('path')
       .datum(elevationProfile)
       .attr('fill', 'none')
       .attr('stroke', '#8B4513')
@@ -101,11 +171,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Draw flight altitude line
     const flightLine = d3.line<ElevationPoint>()
-      .x(d => xScale(d.distance))
-      .y(d => yScale(d.elevation + (d.flightHeight ?? nominalFlightHeight)))
+      .x(d => currentXScale(d.distance))
+      .y(d => currentYScale(d.elevation + (d.flightHeight ?? nominalFlightHeight)))
       .curve(d3.curveMonotoneX);
 
-    g.append('path')
+    const flightPathLine = chartArea.append('path')
       .datum(elevationProfile)
       .attr('fill', 'none')
       .attr('stroke', '#1E90FF')
@@ -116,14 +186,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // Draw safety line (yellow) - safetyHeight meters above max elevation
     // Use maxElevation if available, otherwise use regular elevation
     const safetyLine = d3.line<ElevationPoint>()
-      .x(d => xScale(d.distance))
+      .x(d => currentXScale(d.distance))
       .y(d => {
         const maxElev = d.maxElevation !== undefined ? d.maxElevation : d.elevation;
-        return yScale(maxElev + safetyHeight);
+        return currentYScale(maxElev + safetyHeight);
       })
       .curve(d3.curveMonotoneX);
 
-    g.append('path')
+    const safetyPath = chartArea.append('path')
       .datum(elevationProfile)
       .attr('fill', 'none')
       .attr('stroke', '#FFD700')
@@ -134,14 +204,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // Draw resolution line (green) - resolutionHeight meters above min elevation
     // Use minElevation if available, otherwise use regular elevation
     const resolutionLine = d3.line<ElevationPoint>()
-      .x(d => xScale(d.distance))
+      .x(d => currentXScale(d.distance))
       .y(d => {
         const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
-        return yScale(minElev + resolutionHeight);
+        return currentYScale(minElev + resolutionHeight);
       })
       .curve(d3.curveMonotoneX);
 
-    g.append('path')
+    const resolutionPath = chartArea.append('path')
       .datum(elevationProfile)
       .attr('fill', 'none')
       .attr('stroke', '#32CD32')
@@ -150,24 +220,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('d', resolutionLine);
 
     // Add grid lines
-    const xAxisGrid = d3.axisBottom(xScale)
+    const xAxisGrid = d3.axisBottom(currentXScale)
       .ticks(10)
       .tickSize(-height)
       .tickFormat(() => '');
 
-    const yAxisGrid = d3.axisLeft(yScale)
+    const yAxisGrid = d3.axisLeft(currentYScale)
       .ticks(10)
       .tickSize(-width)
       .tickFormat(() => '');
 
-    g.append('g')
+    const xGridGroup = g.append('g')
       .attr('class', 'grid')
       .attr('stroke', '#ddd')
       .attr('stroke-width', 0.5)
       .attr('stroke-dasharray', '3,3')
       .call(xAxisGrid);
 
-    g.append('g')
+    const yGridGroup = g.append('g')
       .attr('class', 'grid')
       .attr('stroke', '#ddd')
       .attr('stroke-width', 0.5)
@@ -185,39 +255,39 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       console.log(`Drawing min/max range bars for ${pointsWithMinMax.length} points`);
       
       // Draw vertical range bars for min/max elevation - make them more visible
-      g.selectAll('.elevation-range-bar')
+      rangeBars = chartArea.selectAll<SVGLineElement, ElevationPoint>('.elevation-range-bar')
         .data(pointsWithMinMax)
         .enter()
         .append('line')
         .attr('class', 'elevation-range-bar')
-        .attr('x1', d => xScale(d.distance))
-        .attr('x2', d => xScale(d.distance))
-        .attr('y1', d => yScale(d.minElevation!))
-        .attr('y2', d => yScale(d.maxElevation!))
+        .attr('x1', d => currentXScale(d.distance))
+        .attr('x2', d => currentXScale(d.distance))
+        .attr('y1', d => currentYScale(d.minElevation!))
+        .attr('y2', d => currentYScale(d.maxElevation!))
         .attr('stroke', '#FF6B6B')
         .attr('stroke-width', 2)
         .attr('opacity', 0.6);
 
       // Draw min elevation markers
-      g.selectAll('.min-elevation-marker')
+      minMarkers = chartArea.selectAll<SVGCircleElement, ElevationPoint>('.min-elevation-marker')
         .data(pointsWithMinMax)
         .enter()
         .append('circle')
         .attr('class', 'min-elevation-marker')
-        .attr('cx', d => xScale(d.distance))
-        .attr('cy', d => yScale(d.minElevation!))
+        .attr('cx', d => currentXScale(d.distance))
+        .attr('cy', d => currentYScale(d.minElevation!))
         .attr('r', 2.5)
         .attr('fill', '#FF6B6B')
         .attr('opacity', 0.8);
 
       // Draw max elevation markers
-      g.selectAll('.max-elevation-marker')
+      maxMarkers = chartArea.selectAll<SVGCircleElement, ElevationPoint>('.max-elevation-marker')
         .data(pointsWithMinMax)
         .enter()
         .append('circle')
         .attr('class', 'max-elevation-marker')
-        .attr('cx', d => xScale(d.distance))
-        .attr('cy', d => yScale(d.maxElevation!))
+        .attr('cx', d => currentXScale(d.distance))
+        .attr('cy', d => currentYScale(d.maxElevation!))
         .attr('r', 2.5)
         .attr('fill', '#FF6B6B')
         .attr('opacity', 0.8);
@@ -226,35 +296,40 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       g.selectAll('.elevation-range-bar').remove();
       g.selectAll('.min-elevation-marker').remove();
       g.selectAll('.max-elevation-marker').remove();
+      rangeBars = null;
+      minMarkers = null;
+      maxMarkers = null;
     }
 
     // Fill area under ground
-    g.append('path')
+    const groundAreaGenerator = d3.area<ElevationPoint>()
+      .x(d => currentXScale(d.distance))
+      .y0(height)
+      .y1(d => currentYScale(d.elevation))
+      .curve(d3.curveMonotoneX);
+
+    const groundArea = chartArea.append('path')
       .datum(elevationProfile)
       .attr('fill', '#8B4513')
       .attr('fill-opacity', 0.3)
-      .attr('d', d3.area<ElevationPoint>()
-        .x(d => xScale(d.distance))
-        .y0(height)
-        .y1(d => yScale(d.elevation))
-        .curve(d3.curveMonotoneX)
-      );
+      .attr('d', groundAreaGenerator);
 
     // Fill area between ground and flight altitude
-    g.append('path')
+    const flightAreaGenerator = d3.area<ElevationPoint>()
+      .x(d => currentXScale(d.distance))
+      .y0(d => currentYScale(d.elevation))
+      .y1(d => currentYScale(d.elevation + (d.flightHeight ?? nominalFlightHeight)))
+      .curve(d3.curveMonotoneX);
+
+    const flightArea = chartArea.append('path')
       .datum(elevationProfile)
       .attr('fill', '#87CEEB')
       .attr('fill-opacity', 0.3)
-      .attr('d', d3.area<ElevationPoint>()
-        .x(d => xScale(d.distance))
-        .y0(d => yScale(d.elevation))
-        .y1(d => yScale(d.elevation + (d.flightHeight ?? nominalFlightHeight)))
-        .curve(d3.curveMonotoneX)
-      );
+      .attr('d', flightAreaGenerator);
 
     // Find original flight path vertices in the elevation profile
     // Match by coordinates (with small tolerance for floating point precision)
-    const originalVertices = flightPath.map((vertex, vertexIndex) => {
+    const originalVertices = flightPath.map((vertex: Coordinate, vertexIndex: number) => {
       // Find the closest elevation point to this vertex
       let closestPoint = elevationProfile[0];
       let closestDistance = Infinity;
@@ -274,34 +349,64 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     });
 
     // Add data points only for original flight path vertices
-    g.selectAll('.ground-point')
+    const groundPoints = chartArea.selectAll<SVGCircleElement, { point: ElevationPoint; index: number }>('.ground-point')
       .data(originalVertices)
       .enter()
       .append('circle')
       .attr('class', 'ground-point')
-      .attr('cx', d => xScale(d.point.distance))
-      .attr('cy', d => yScale(d.point.elevation))
+      .attr('cx', d => currentXScale(d.point.distance))
+      .attr('cy', d => currentYScale(d.point.elevation))
       .attr('r', 3)
-      .attr('fill', '#8B4513');
+      .attr('fill', '#8B4513')
+      .style('cursor', 'pointer');
 
-    g.selectAll('.flight-point')
+    // Add right-click handler for ground points
+    groundPoints.on('contextmenu', function(event: any, d: { point: ElevationPoint; index: number }) {
+      event.preventDefault();
+      event.stopPropagation();
+      // Get the click position in screen coordinates
+      const clickX = event.clientX || (event as MouseEvent).clientX;
+      const clickY = event.clientY || (event as MouseEvent).clientY;
+      setContextMenu({
+        x: clickX,
+        y: clickY,
+        pointIndex: d.index
+      });
+    });
+
+    const flightPoints = chartArea.selectAll<SVGCircleElement, { point: ElevationPoint; index: number }>('.flight-point')
       .data(originalVertices)
       .enter()
       .append('circle')
       .attr('class', 'flight-point')
-      .attr('cx', d => xScale(d.point.distance))
-      .attr('cy', d => yScale(d.point.elevation + (d.point.flightHeight ?? nominalFlightHeight)))
+      .attr('cx', d => currentXScale(d.point.distance))
+      .attr('cy', d => currentYScale(d.point.elevation + (d.point.flightHeight ?? nominalFlightHeight)))
       .attr('r', 3)
-      .attr('fill', '#1E90FF');
+      .attr('fill', '#1E90FF')
+      .style('cursor', 'pointer');
+
+    // Add right-click handler for flight points
+    flightPoints.on('contextmenu', function(event: any, d: { point: ElevationPoint; index: number }) {
+      event.preventDefault();
+      event.stopPropagation();
+      // Get the click position in screen coordinates
+      const clickX = event.clientX || (event as MouseEvent).clientX;
+      const clickY = event.clientY || (event as MouseEvent).clientY;
+      setContextMenu({
+        x: clickX,
+        y: clickY,
+        pointIndex: d.index
+      });
+    });
 
     // Add point number labels only for original vertices
-    g.selectAll('.point-label')
+    const pointLabels = chartArea.selectAll<SVGTextElement, { point: ElevationPoint; index: number }>('.point-label')
       .data(originalVertices)
       .enter()
       .append('text')
       .attr('class', 'point-label')
-      .attr('x', d => xScale(d.point.distance))
-      .attr('y', d => yScale(d.point.elevation) - 8)
+      .attr('x', d => currentXScale(d.point.distance))
+      .attr('y', d => currentYScale(d.point.elevation) - 8)
       .attr('text-anchor', 'middle')
       .attr('fill', '#666')
       .style('font-size', '12px')
@@ -309,11 +414,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .text(d => d.index + 1);
 
     // Add axes
-    const xAxis = d3.axisBottom(xScale)
+    const xAxis = d3.axisBottom(currentXScale)
       .ticks(10)
       .tickFormat(d => `${d}m`);
 
-    const yAxis = d3.axisLeft(yScale)
+    const yAxis = d3.axisLeft(currentYScale)
       .ticks(10)
       .tickFormat(d => `${d}m`);
 
@@ -324,21 +429,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     xAxisGroup.selectAll('text')
       .style('font-size', '12px');
     
-    xAxisGroup.append('text')
-      .attr('x', width / 2)
-      .attr('y', 50)
-      .attr('fill', 'black')
-      .style('text-anchor', 'middle')
-      .style('font-size', '14px')
-      .text('Distance (meters)');
-
     const yAxisGroup = g.append('g')
       .call(yAxis);
     
     yAxisGroup.selectAll('text')
       .style('font-size', '12px');
     
-    yAxisGroup.append('text')
+    // Axis labels (outside axis groups to avoid being cleared on zoom redraw)
+    g.append('text')
+      .attr('class', 'x-axis-label')
+      .attr('x', width / 2)
+      .attr('y', height + 50)
+      .attr('fill', 'black')
+      .style('text-anchor', 'middle')
+      .style('font-size', '14px')
+      .text('Distance (meters)');
+
+    g.append('text')
+      .attr('class', 'y-axis-label')
       .attr('transform', 'rotate(-90)')
       .attr('y', -60)
       .attr('x', -height / 2)
@@ -357,9 +465,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
       if (selectedVertex) {
         // Draw vertical line at selected point's distance
-        g.append('line')
-          .attr('x1', xScale(selectedVertex.point.distance))
-          .attr('x2', xScale(selectedVertex.point.distance))
+        selectedDistance = selectedVertex.point.distance;
+        selectedDistanceLine = chartArea.append('line')
+          .attr('x1', currentXScale(selectedVertex.point.distance))
+          .attr('x2', currentXScale(selectedVertex.point.distance))
           .attr('y1', 0)
           .attr('y2', height)
           .attr('stroke', '#ff0000')
@@ -431,7 +540,183 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .text(item.label);
     });
 
-  }, [elevationProfile, nominalFlightHeight, safetyHeight, resolutionHeight, selectedPoint, flightPath]);
+    // Interaction overlay captures zoom/pan and hover without showing a visible layer
+    const overlay = g.append('rect')
+      .attr('x', 0)
+      .attr('y', 0)
+      .attr('width', width)
+      .attr('height', height)
+      .attr('fill', 'transparent')
+      .style('cursor', 'crosshair')
+      .style('pointer-events', 'all');
+
+    const zoomBehavior = d3.zoom<SVGRectElement, unknown>()
+      .scaleExtent([1, 12])
+      .translateExtent([[0, 0], [width, height]])
+      .extent([[0, 0], [width, height]])
+      .on('zoom', (event) => {
+        const newXScale = event.transform.rescaleX(baseXScale);
+        const newYScale = event.transform.rescaleY(baseYScale);
+
+        currentXScale = newXScale;
+        currentYScale = newYScale;
+
+        xAxis.scale(currentXScale);
+        yAxis.scale(currentYScale);
+        xAxisGrid.scale(currentXScale);
+        yAxisGrid.scale(currentYScale);
+
+        xGridGroup.call(xAxisGrid);
+        yGridGroup.call(yAxisGrid);
+        xAxisGroup.call(xAxis);
+        yAxisGroup.call(yAxis);
+        xAxisGroup.selectAll('text').style('font-size', '12px');
+        yAxisGroup.selectAll('text').style('font-size', '12px');
+
+        groundPath.attr('d', groundLine);
+        flightPathLine.attr('d', flightLine);
+        safetyPath.attr('d', safetyLine);
+        resolutionPath.attr('d', resolutionLine);
+        groundArea.attr('d', groundAreaGenerator);
+        flightArea.attr('d', flightAreaGenerator);
+
+        if (rangeBars) {
+          rangeBars
+            .attr('x1', d => currentXScale(d.distance))
+            .attr('x2', d => currentXScale(d.distance))
+            .attr('y1', d => currentYScale(d.minElevation!))
+            .attr('y2', d => currentYScale(d.maxElevation!));
+        }
+        if (minMarkers) {
+          minMarkers
+            .attr('cx', d => currentXScale(d.distance))
+            .attr('cy', d => currentYScale(d.minElevation!));
+        }
+        if (maxMarkers) {
+          maxMarkers
+            .attr('cx', d => currentXScale(d.distance))
+            .attr('cy', d => currentYScale(d.maxElevation!));
+        }
+
+        groundPoints
+          .attr('cx', d => currentXScale(d.point.distance))
+          .attr('cy', d => currentYScale(d.point.elevation));
+
+        flightPoints
+          .attr('cx', d => currentXScale(d.point.distance))
+          .attr('cy', d => currentYScale(d.point.elevation + (d.point.flightHeight ?? nominalFlightHeight)));
+
+        pointLabels
+          .attr('x', d => currentXScale(d.point.distance))
+          .attr('y', d => currentYScale(d.point.elevation) - 8);
+
+        if (selectedDistanceLine && selectedDistance !== null) {
+          selectedDistanceLine
+            .attr('x1', currentXScale(selectedDistance))
+            .attr('x2', currentXScale(selectedDistance));
+        }
+      });
+
+    overlay.call(zoomBehavior as any);
+
+    // Allow right-click to open the existing point context menu even with the overlay present
+    overlay.on('contextmenu', function(event: MouseEvent) {
+      // Check if we're clicking on an input point
+      const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+      let clickedInputPoint: { point: ElevationPoint; index: number; isFlight: boolean } | null = null;
+      
+      if (originalVertices.length > 0) {
+        for (const vertex of originalVertices) {
+          const pointX = currentXScale(vertex.point.distance);
+          const groundY = currentYScale(vertex.point.elevation);
+          const flightY = currentYScale(vertex.point.elevation + (vertex.point.flightHeight ?? nominalFlightHeight));
+          
+          // Check if click is within 10 pixels of ground or flight point
+          const distToGround = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(groundY - mouseY, 2));
+          const distToFlight = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(flightY - mouseY, 2));
+          
+          if (distToGround < 10) {
+            clickedInputPoint = { point: vertex.point, index: vertex.index, isFlight: false };
+            break;
+          } else if (distToFlight < 10) {
+            clickedInputPoint = { point: vertex.point, index: vertex.index, isFlight: true };
+            break;
+          }
+        }
+      }
+      
+      // If clicking on an input point, trigger the context menu for that point
+      if (clickedInputPoint) {
+        event.preventDefault();
+        event.stopPropagation();
+        const clickX = event.clientX || (event as MouseEvent).clientX;
+        const clickY = event.clientY || (event as MouseEvent).clientY;
+        setContextMenu({
+          x: clickX,
+          y: clickY,
+          pointIndex: clickedInputPoint.index
+        });
+      } else {
+        // If not clicking on an input point, prevent default to avoid browser context menu
+        event.preventDefault();
+      }
+    });
+
+    // Hover interactions reuse the same overlay
+    if (onElevationPointHover) {
+      overlay.on('mousemove', function(event: MouseEvent) {
+        const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+        
+        // Check if we're near any input point (ground or flight points)
+        // If so, don't interfere with their right-click events
+        let isNearInputPoint = false;
+        if (originalVertices.length > 0) {
+          for (const vertex of originalVertices) {
+            const pointX = currentXScale(vertex.point.distance);
+            const groundY = currentYScale(vertex.point.elevation);
+            const flightY = currentYScale(vertex.point.elevation + (vertex.point.flightHeight ?? nominalFlightHeight));
+            
+            // Check if mouse is within 10 pixels of ground or flight point
+            const distToGround = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(groundY - mouseY, 2));
+            const distToFlight = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(flightY - mouseY, 2));
+            
+            if (distToGround < 10 || distToFlight < 10) {
+              isNearInputPoint = true;
+              break;
+            }
+          }
+        }
+        
+        // Only update hover if not near an input point
+        if (!isNearInputPoint) {
+          // Find the closest point based on distance (x-coordinate)
+          let closestPoint: ElevationPoint | null = null;
+          let closestDistance = Infinity;
+          
+          for (const point of elevationProfile) {
+            const pointX = currentXScale(point.distance);
+            const distance = Math.abs(pointX - mouseX);
+            
+            if (distance < closestDistance) {
+              closestDistance = distance;
+              closestPoint = point;
+            }
+          }
+          
+          if (closestPoint) {
+            onElevationPointHover(closestPoint);
+          }
+        }
+      });
+
+      overlay.on('mouseleave', () => {
+        if (onElevationPointHover) {
+          onElevationPointHover(null);
+        }
+      });
+    }
+
+  }, [elevationProfile, nominalFlightHeight, safetyHeight, resolutionHeight, selectedPoint, flightPath, onDeletePoint, onUpdatePoint, onSetFlightHeight, onEditPointRequest, onElevationPointHover]);
 
   const exportPNG = () => {
     if (!svgRef.current) return;
@@ -511,35 +796,71 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const handleSetFlightHeight = (pointIndex: number) => {
+    onSetFlightHeight(pointIndex);
+  };
+
   return (
     <div className="elevation-panel">
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onDelete={() => {
+            onDeletePoint(contextMenu.pointIndex);
+            setContextMenu(null);
+          }}
+          onEdit={() => {
+            onEditPointRequest(contextMenu.pointIndex);
+            setContextMenu(null);
+          }}
+          onSetHeight={() => {
+            handleSetFlightHeight(contextMenu.pointIndex);
+            setContextMenu(null);
+          }}
+        />
+      )}
       <div className="elevation-header">
         <h2>Elevation Profile</h2>
         <div className="elevation-controls">
           <div className="control-group">
             <div className="group-title">Export</div>
             <div className="group-buttons">
-              <button 
-                onClick={exportPNG} 
-                disabled={elevationProfile.length === 0}
-                className="btn btn-secondary"
-              >
-                Export PNG
-              </button>
-              <button 
-                onClick={exportCSV} 
-                disabled={elevationProfile.length === 0}
-                className="btn btn-secondary"
-              >
-                Export CSV
-              </button>
+              <Tooltip tooltip={elevationProfile.length === 0 ? 'No profile to export yet.' : 'Export the elevation chart as PNG.'}>
+                <button
+                  onClick={exportPNG}
+                  disabled={elevationProfile.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="Export PNG"
+                  type="button"
+                >
+                  <ExportIcon type="png" />
+                  <span className="sr-only">Export PNG</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={elevationProfile.length === 0 ? 'No profile to export yet.' : 'Export the elevation data as CSV.'}>
+                <button
+                  onClick={exportCSV}
+                  disabled={elevationProfile.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="Export CSV"
+                  type="button"
+                >
+                  <ExportIcon type="csv" />
+                  <span className="sr-only">Export CSV</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
       </div>
       <div ref={containerRef} className="elevation-chart-container">
         {loading ? (
-          <div className="loading">Calculating elevation profile...</div>
+          <div className="loading">
+            <div className="loading-spinner"></div>
+            <div className="loading-text">Calculating elevation profile...</div>
+          </div>
         ) : elevationProfile.length === 0 ? (
           <div className="no-data">
             Draw a flight path on the map to see the elevation profile

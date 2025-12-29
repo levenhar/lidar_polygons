@@ -3,9 +3,11 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 // @ts-ignore - proj4 types may not be perfect
 import proj4 from 'proj4';
-import { Coordinate } from '../App';
+import { Coordinate, ElevationPoint } from '../App';
+import { FlightRoute } from '../hooks/useFlightPath';
 import ContextMenu from './ContextMenu';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination } from '../utils/geometry';
+import Tooltip from './Tooltip';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide } from '../utils/geometry';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 
@@ -13,6 +15,157 @@ import { TileLayerOptions } from 'leaflet';
 type TileLayerOptionsWithAgent = TileLayerOptions & {
   httpsAgent?: any;
 };
+
+type IconName =
+  | 'upload'
+  | 'eject'
+  | 'trash'
+  | 'pencil'
+  | 'parallel'
+  | 'compass'
+  | 'crosshair'
+  | 'uturn'
+  | 'undo'
+  | 'redo'
+  | 'fit'
+  | 'home';
+
+const Icon: React.FC<{ name: IconName }> = ({ name }) => {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    xmlns: 'http://www.w3.org/2000/svg'
+  };
+  const stroke = {
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const
+  };
+
+  switch (name) {
+    case 'upload':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 16V4" />
+          <path {...stroke} d="M7 8l5-4 5 4" />
+          <path {...stroke} d="M4 20h16" />
+        </svg>
+      );
+    case 'eject':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M10 14l-2 2m0 0l2 2m-2-2h8" />
+          <path {...stroke} d="M14 10l2-2m0 0l-2-2m2 2H8" />
+        </svg>
+      );
+    case 'trash':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M3 6h18" />
+          <path {...stroke} d="M8 6V4h8v2" />
+          <path {...stroke} d="M19 6l-1 14H6L5 6" />
+          <path {...stroke} d="M10 11v6" />
+          <path {...stroke} d="M14 11v6" />
+        </svg>
+      );
+    case 'pencil':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 20h9" />
+          <path {...stroke} d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5z" />
+        </svg>
+      );
+    case 'parallel':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M6 4l12 16" />
+          <path {...stroke} d="M10 4l12 16" />
+        </svg>
+      );
+    case 'compass':
+      return (
+        <svg {...common}>
+          <circle {...stroke} cx="12" cy="12" r="9" />
+          <path {...stroke} d="M14.5 9.5l-2 5-5 2 2-5 5-2z" />
+        </svg>
+      );
+    case 'crosshair':
+      return (
+        <svg {...common}>
+          <circle {...stroke} cx="12" cy="12" r="6" />
+          <path {...stroke} d="M12 2v4" />
+          <path {...stroke} d="M12 18v4" />
+          <path {...stroke} d="M2 12h4" />
+          <path {...stroke} d="M18 12h4" />
+        </svg>
+      );
+    case 'uturn':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M16 7V6a4 4 0 0 0-8 0v10" />
+          <path {...stroke} d="M8 16l-3-3m3 3l3-3" />
+        </svg>
+      );
+    case 'undo':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M9 14l-4-4 4-4" />
+          <path {...stroke} d="M5 10h8a6 6 0 0 1 6 6v2" />
+        </svg>
+      );
+    case 'redo':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M15 6l4 4-4 4" />
+          <path {...stroke} d="M19 10H11a6 6 0 0 0-6 6v2" />
+        </svg>
+      );
+    case 'fit':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M4 9V4h5" />
+          <path {...stroke} d="M20 9V4h-5" />
+          <path {...stroke} d="M4 15v5h5" />
+          <path {...stroke} d="M20 15v5h-5" />
+        </svg>
+      );
+    case 'home':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M3 11l9-8 9 8" />
+          <path {...stroke} d="M5 10v10h14V10" />
+        </svg>
+      );
+    default:
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 12h0" />
+        </svg>
+      );
+  }
+};
+
+interface BaseMapConfig {
+  id: string;
+  name: string;
+  url: string;
+}
+
+interface BaseMapPreviewConfig {
+  zoom?: number;
+  x?: number;
+  y?: number;
+}
+
+interface BaseMapPreviewResponse {
+  defaults: {
+    zoom: number;
+    x: number;
+    y: number;
+  };
+  overrides: Record<string, BaseMapPreviewConfig>;
+}
 
 // Fix for default marker icons in Leaflet with webpack/vite
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -24,13 +177,24 @@ L.Icon.Default.mergeOptions({
 
 interface MapPanelProps {
   dtmSource: string | null;
+  routes: FlightRoute[];
+  activeRouteId: string;
   flightPath: Coordinate[];
   onPathPointHover: (point: Coordinate | null) => void;
   onPathChange: (path: Coordinate[]) => void;
   onAddPoint: (point: Coordinate) => void;
   onAddPoints: (points: Coordinate[]) => void;
+  onInsertPoints: (index: number, points: Coordinate[]) => void;
   onUpdatePoint: (index: number, point: Coordinate) => void;
   onDeletePoint: (index: number) => void;
+  onAddRoute: () => void;
+  onActiveRouteChange: (routeId: string) => void;
+  onRenameRoute: (routeId: string, name: string) => void;
+  onToggleRouteVisibility: (routeId: string) => void;
+  onDeleteRoute: (routeId: string) => void;
+  onShowAllRoutes: () => void;
+  onHideNonActiveRoutes: () => void;
+  onResetToSingleRoute: () => void;
   onDtmLoad: (source: string, info?: any) => void;
   onDtmUnload: () => void;
   nominalFlightHeight: number;
@@ -38,27 +202,47 @@ interface MapPanelProps {
   onRedo: () => void;
   canUndo: boolean;
   canRedo: boolean;
+  editPointIndex?: number | null;
+  onEditPointIndexChange?: (index: number | null) => void;
+  hoveredElevationPoint?: ElevationPoint | null;
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
   dtmSource,
+  routes,
+  activeRouteId,
   flightPath,
   onPathPointHover,
   onPathChange,
   onAddPoint,
   onAddPoints,
+  onInsertPoints,
   onUpdatePoint,
   onDeletePoint,
+  onAddRoute,
+  onActiveRouteChange,
+  onRenameRoute,
+  onToggleRouteVisibility,
+  onDeleteRoute,
+  onShowAllRoutes,
+  onHideNonActiveRoutes,
+  onResetToSingleRoute,
   onDtmLoad,
   onDtmUnload,
   nominalFlightHeight,
   onUndo,
   onRedo,
   canUndo,
-  canRedo
+  canRedo,
+  editPointIndex: externalEditPointIndex,
+  onEditPointIndexChange,
+  hoveredElevationPoint
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
+  const baseLayerRef = useRef<L.TileLayer | null>(null);
+  const tileLayerOptionsRef = useRef<TileLayerOptionsWithAgent | null>(null);
+  const mapTokenRef = useRef<string | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [isParallelLineMode, setIsParallelLineMode] = useState(false);
   const [dtmLoaded, setDtmLoaded] = useState(false);
@@ -72,10 +256,23 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const dtmTransparencyControlRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const hoveredElevationMarkerRef = useRef<L.Marker | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [editingPointIndex, setEditingPointIndex] = useState<number | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
+  const [isDtmProcessing, setIsDtmProcessing] = useState<boolean>(false);
+  const [baseMaps, setBaseMaps] = useState<BaseMapConfig[]>([]);
+  const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
+  const [previewConfig, setPreviewConfig] = useState<BaseMapPreviewResponse | null>(null);
+  const passiveRouteLinesRef = useRef<Record<string, L.Polyline>>({});
+  const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
+  const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
+  const [editingRouteName, setEditingRouteName] = useState<string>('');
+
+  const activeRoute = routes.find((route) => route.id === activeRouteId) || routes[0];
+  const activeRouteColor = activeRoute?.color || '#ff0000';
 
   // Helper function to check if a point is within DTM bounds
   const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
@@ -85,6 +282,90 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const [minLng, minLat, maxLng, maxLat] = dtmBounds;
     return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
   }, [dtmBounds]);
+
+  // Helper to read numeric preview values per basemap from backend-provided config
+  const getPreviewNumericValue = useCallback((baseMapId: string, key: 'ZOOM' | 'X' | 'Y'): number => {
+    const keyLower = key.toLowerCase() as 'zoom' | 'x' | 'y';
+    const defaultValue = previewConfig?.defaults?.[keyLower] ?? 0;
+    const overrideValue = previewConfig?.overrides?.[baseMapId]?.[keyLower];
+    const rawValue = overrideValue ?? defaultValue;
+    const parsed = Number(rawValue);
+    const safeValue = Number.isFinite(parsed) ? parsed : 0;
+    if (key === 'ZOOM') {
+      // Clamp zoom to a sane Leaflet zoom range
+      return Math.min(22, Math.max(0, safeValue));
+    }
+    return safeValue;
+  }, [previewConfig]);
+
+  // Helper function to get preview tile URL (0/0/0 tile)
+  const getPreviewTileUrl = useCallback((baseMap: BaseMapConfig): string => {
+    const previewZoom = getPreviewNumericValue(baseMap.id, 'ZOOM').toString();
+    const previewX = getPreviewNumericValue(baseMap.id, 'X').toString();
+    const previewY = getPreviewNumericValue(baseMap.id, 'Y').toString();
+    // Replace Leaflet tile placeholders with preview zoom/coords
+    let previewUrl = baseMap.url
+      .replace('{z}', previewZoom)
+      .replace('{x}', previewX)
+      .replace('{y}', previewY)
+      .replace('{s}', 'a'); // Use 'a' subdomain for OSM-style tiles
+    
+    // Add token if available
+    if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
+      const separator = previewUrl.includes('?') ? '&' : '?';
+      previewUrl = `${previewUrl}${separator}token=${mapTokenRef.current}`;
+    }
+    
+    return previewUrl;
+  }, [getPreviewNumericValue]);
+
+  const switchBaseMap = useCallback((nextBaseMapId: string) => {
+    if (!map.current || !tileLayerOptionsRef.current) {
+      console.warn('⚠️ Cannot switch basemap - missing dependencies');
+      return;
+    }
+    const nextBaseMap = baseMaps.find((entry) => entry.id === nextBaseMapId);
+    if (!nextBaseMap) {
+      console.warn('⚠️ Basemap not found:', nextBaseMapId);
+      return;
+    }
+    if (nextBaseMap.id === activeBaseMapId) {
+      console.log('ℹ️ Already on basemap:', nextBaseMapId);
+      return;
+    }
+
+    console.log('🔄 Switching basemap to:', nextBaseMap.name);
+
+    if (baseLayerRef.current) {
+      baseLayerRef.current.remove();
+    }
+
+    let urlWithToken = nextBaseMap.url;
+    
+    // Only append token if it's not empty
+    if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
+      const separator = nextBaseMap.url.includes('?') ? '&' : '?';
+      urlWithToken = `${nextBaseMap.url}${separator}token=${mapTokenRef.current}`;
+    }
+    
+    console.log('🗺️ New basemap URL:', urlWithToken);
+    baseLayerRef.current = L.tileLayer(urlWithToken, tileLayerOptionsRef.current).addTo(map.current);
+    setActiveBaseMapId(nextBaseMap.id);
+    console.log('✅ Basemap switched successfully');
+  }, [activeBaseMapId, baseMaps]);
+
+  const handleCycleBaseMap = useCallback(() => {
+    if (baseMaps.length < 2) return;
+    const currentIndex = baseMaps.findIndex((entry) => entry.id === activeBaseMapId);
+    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % baseMaps.length : 0;
+    switchBaseMap(baseMaps[nextIndex].id);
+  }, [activeBaseMapId, baseMaps, switchBaseMap]);
+
+  const handleBaseMapButtonClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    handleCycleBaseMap();
+  }, [handleCycleBaseMap]);
 
   // Initialize map
   useEffect(() => {
@@ -109,10 +390,40 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (!mapContainer.current || map.current) return;
 
     initializeHttpAgent().then(async(httpsAgent_f) => {
+      const response_crs = await fetch('/api/crs')
+
+      if (!response_crs.ok){
+        const errorData = await response_crs.json().catch(() => ({error: 'Unknown error'}));
+        throw new Error(errorData.error || 'Failed to get CRS for maps ${response.status}');
+      }
+      const crsResponse = await response_crs.json();
+      const crsString = crsResponse.crs;
+
+      // Map CRS string from env to Leaflet CRS object
+      let leafletCrs: L.CRS;
+      if (!crsString) {
+        // Default to EPSG3857 if not specified
+        leafletCrs = L.CRS.EPSG3857;
+      } else {
+        // Normalize the CRS string (handle both "EPSG4326" and "EPSG:4326" formats)
+        const normalizedCrs = crsString.replace(':', '').toUpperCase();
+        
+        // Map common CRS strings to Leaflet CRS objects
+        // Use type assertion to access CRS dynamically, with fallback
+        const crsKey = normalizedCrs as keyof typeof L.CRS;
+        if (L.CRS[crsKey]) {
+          leafletCrs = L.CRS[crsKey];
+        } else {
+          console.warn(`Unknown CRS: ${crsString}. Defaulting to EPSG3857.`);
+          leafletCrs = L.CRS.EPSG3857;
+        }
+      }
+
       if (mapContainer.current) {
         map.current = L.map(mapContainer.current, {
           center: [31.50, 35.02], // israel defulat
           zoom: 7 ,
+          crs: leafletCrs
           // crs: L.CRS.EPSG4326
         });
       }
@@ -120,8 +431,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Create option *after* httpsAgent_f is define
       const options: TileLayerOptionsWithAgent = {
         maxZoom:19,
-        httpsAgent:httpsAgent_f
+        httpsAgent:httpsAgent_f,
+        noWrap: true // prevent repeated world copies when zoomed out
       };
+      tileLayerOptionsRef.current = options;
 
       const response_token = await fetch('/api/token')
 
@@ -130,6 +443,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
       const MAPS_TOKEN = await response_token.json();
+      mapTokenRef.current = MAPS_TOKEN.token || '';
 
 
       const response_url = await fetch('/api/url')
@@ -139,11 +453,63 @@ const MapPanel: React.FC<MapPanelProps> = ({
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
       const raw_url = await response_url.json();
-      const url = `${raw_url.url}?token=${MAPS_TOKEN.token}`;
-      
-      if (map.current) {
-        L.tileLayer(url,options).addTo(map.current)
+      const primaryUrl = raw_url?.url;
+      const alternateUrl = raw_url?.altUrl;
+
+      const response_preview = await fetch('/api/map-preview');
+      if (!response_preview.ok) {
+        const errorData = await response_preview.json().catch(() => ({ error: 'Unknown error' }));
+        throw new Error(errorData.error || 'Failed to get preview configuration for maps');
       }
+      const previewData: BaseMapPreviewResponse = await response_preview.json();
+      setPreviewConfig(previewData);
+
+      console.log('🗺️ Map URLs received:', { primaryUrl, alternateUrl });
+
+      const availableBaseMaps: BaseMapConfig[] = [];
+      if (primaryUrl) {
+        availableBaseMaps.push({
+          id: 'primary',
+          name: 'OSM',
+          url: primaryUrl
+        });
+      }
+      if (alternateUrl) {
+        availableBaseMaps.push({
+          id: 'alternate',
+          name: 'Satellite',
+          url: alternateUrl
+        });
+      }
+
+      console.log('🗺️ Available basemaps:', availableBaseMaps);
+      
+      console.log('🔍 Checking dependencies:', {
+        mapExists: !!map.current,
+        baseMapsCount: availableBaseMaps.length,
+        tileOptionsExists: !!tileLayerOptionsRef.current,
+        token: mapTokenRef.current || '(empty)'
+      });
+
+      if (map.current && availableBaseMaps.length > 0 && tileLayerOptionsRef.current) {
+        const initialBaseMap = availableBaseMaps[0];
+        let initialUrl = initialBaseMap.url;
+        
+        // Only append token if it's not empty
+        if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
+          const separator = initialBaseMap.url.includes('?') ? '&' : '?';
+          initialUrl = `${initialBaseMap.url}${separator}token=${mapTokenRef.current}`;
+        }
+        
+        console.log('🗺️ Initializing basemap:', { id: initialBaseMap.id, url: initialUrl });
+        baseLayerRef.current = L.tileLayer(initialUrl, tileLayerOptionsRef.current).addTo(map.current);
+        setActiveBaseMapId(initialBaseMap.id);
+        console.log('✅ Basemap layer added to map');
+      } else {
+        console.error('❌ Cannot add basemap - missing dependencies');
+      }
+      
+      setBaseMaps(availableBaseMaps);
     });
 
     return () => {
@@ -151,6 +517,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current.remove();
         map.current = null;
       }
+      baseLayerRef.current = null;
+      tileLayerOptionsRef.current = null;
+      mapTokenRef.current = null;
     };
   }, []);
 
@@ -160,7 +529,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     const handleClick = (e: L.LeafletMouseEvent) => {
       // If editing a point, move it to the new location
-      if (editingPointIndex !== null && dtmLoaded) {
+      const currentEditingIndex = externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
+      if (currentEditingIndex !== null && dtmLoaded) {
         const lng = e.latlng.lng;
         const lat = e.latlng.lat;
         
@@ -170,13 +540,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
           return;
         }
         
-        const currentPoint = flightPath[editingPointIndex];
-        onUpdatePoint(editingPointIndex, {
+        const currentPoint = flightPath[currentEditingIndex];
+        onUpdatePoint(currentEditingIndex, {
           lng,
           lat,
           height: currentPoint.height // Preserve height
         });
         setEditingPointIndex(null);
+        if (onEditPointIndexChange) {
+          onEditPointIndexChange(null);
+        }
         return;
       }
 
@@ -302,9 +675,74 @@ const MapPanel: React.FC<MapPanelProps> = ({
       interactive: true
     }).addTo(map.current);
 
+    // Allow inserting a new vertex by clicking on a line segment.
+    // This works even in drawing mode, and stops propagation to avoid double-adding points.
+    const handleClickableLineClick = (e: L.LeafletMouseEvent) => {
+      const originalEvent = e.originalEvent as MouseEvent | undefined;
+      if (originalEvent && originalEvent.button !== 0) return; // left-click only
+      if (!dtmLoaded) return;
+      if (isParallelLineMode) return;
+
+      // If editing a point via "click to move", don't insert
+      const currentEditingIndex =
+        externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
+      if (currentEditingIndex !== null) return;
+
+      if (flightPath.length < 2) return;
+
+      const clickPoint = { lng: e.latlng.lng, lat: e.latlng.lat };
+      let closestSegmentIndex = -1;
+      let closestDistance = Infinity;
+      let closestT = 0;
+
+      for (let i = 0; i < flightPath.length - 1; i++) {
+        const result = findClosestPointOnLine(clickPoint, flightPath[i], flightPath[i + 1]);
+        if (result.distance < 100 && result.distance < closestDistance) {
+          closestDistance = result.distance;
+          closestSegmentIndex = i;
+          closestT = result.t;
+        }
+      }
+
+      if (closestSegmentIndex < 0) return;
+
+      // Avoid inserting directly on an existing vertex
+      if (closestT <= 1e-4 || closestT >= 1 - 1e-4) return;
+
+      const start = flightPath[closestSegmentIndex];
+      const end = flightPath[closestSegmentIndex + 1];
+
+      const lng = start.lng + closestT * (end.lng - start.lng);
+      const lat = start.lat + closestT * (end.lat - start.lat);
+
+      if (!isPointWithinBounds(lng, lat)) {
+        alert('Cannot add point outside DTM bounding box. Please select a point within the DTM extent.');
+        return;
+      }
+
+      const startHasHeight = start.height !== undefined;
+      const endHasHeight = end.height !== undefined;
+      const shouldSetHeight = startHasHeight || endHasHeight;
+      const startHeight = start.height ?? nominalFlightHeight;
+      const endHeight = end.height ?? nominalFlightHeight;
+
+      const newPoint: Coordinate = {
+        lng,
+        lat,
+        ...(shouldSetHeight ? { height: startHeight + (endHeight - startHeight) * closestT } : {})
+      };
+
+      onInsertPoints(closestSegmentIndex + 1, [newPoint]);
+
+      // Prevent map click handler from also firing (especially in drawing mode)
+      L.DomEvent.stop(e);
+    };
+
+    flightPathClickableLineRef.current.on('click', handleClickableLineClick);
+
     // Add flight path line (will be on top)
     flightPathLineRef.current = L.polyline(latlngs, {
-      color: '#ff0000',
+      color: activeRouteColor,
       weight: 3,
       opacity: 0.8
     }).addTo(map.current);
@@ -320,6 +758,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       el.className = 'flight-point-marker';
       el.innerHTML = `${index + 1}`;
       el.style.cursor = 'pointer';
+      el.style.backgroundColor = activeRouteColor;
 
       const icon = L.divIcon({
         className: 'flight-point-marker-container',
@@ -330,51 +769,40 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       const marker = L.marker([point.lat, point.lng], {
         icon: icon,
-        draggable: true
+        draggable: false // Disable default dragging
       }).addTo(map.current!);
 
       // Store the last valid position for this marker
       let lastValidPosition: [number, number] = [point.lat, point.lng];
+      let isDraggingWithLeftClick = false;
 
-      // Handle drag start - store initial position
-      marker.on('dragstart', () => {
+      // Handle marker left-click to start dragging
+      el.addEventListener('mousedown', (e) => {
+        // Only handle left mouse button (button 0)
+        if (e.button !== 0) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Start left-click drag mode
+        isDraggingWithLeftClick = true;
         lastValidPosition = [point.lat, point.lng];
-      });
-
-      // Handle marker drag
-      marker.on('drag', (e: L.LeafletEvent) => {
-        const latlng = e.target.getLatLng();
-        const lng = latlng.lng;
-        const lat = latlng.lat;
+        el.style.cursor = 'grabbing';
+        el.classList.add('is-dragging');
+        marker.setZIndexOffset(1000);
         
-        // Check if point is within DTM bounds
-        if (!isPointWithinBounds(lng, lat)) {
-          // Reset marker to last valid position
-          marker.setLatLng(lastValidPosition);
-          return;
-        }
-        
-        // Update last valid position and state
-        lastValidPosition = [lat, lng];
-        onUpdatePoint(index, { lng, lat });
-      });
-      
-      // Handle drag end to show message if dragged outside bounds
-      marker.on('dragend', (e: L.LeafletEvent) => {
-        const latlng = e.target.getLatLng();
-        const lng = latlng.lng;
-        const lat = latlng.lat;
-        
-        // Check if final position is within bounds
-        if (!isPointWithinBounds(lng, lat)) {
-          // Reset to last valid position
-          marker.setLatLng(lastValidPosition);
-          onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
-          alert('Cannot move point outside DTM bounding box. Point has been reset to the previous valid position.');
+        // Prevent all map interactions while dragging
+        if (map.current) {
+          map.current.dragging.disable();
+          map.current.touchZoom.disable();
+          map.current.doubleClickZoom.disable();
+          map.current.scrollWheelZoom.disable();
+          map.current.boxZoom.disable();
+          map.current.keyboard.disable();
         }
       });
 
-      // Handle marker right-click for context menu
+      // Re-add context menu for right-click
       el.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         const rect = el.getBoundingClientRect();
@@ -383,6 +811,85 @@ const MapPanel: React.FC<MapPanelProps> = ({
           y: rect.top + rect.height / 2,
           pointIndex: index
         });
+      });
+
+      // Handle mouse move to update marker position during drag
+      const handleMouseMove = (e: MouseEvent) => {
+        if (!isDraggingWithLeftClick || !map.current) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+
+        // Use Leaflet's helper to convert the mouse event to map coordinates
+        const latlng = map.current.mouseEventToLatLng(e as any);
+        const lng = latlng.lng;
+        const lat = latlng.lat;
+        
+        // Check if point is within DTM bounds
+        if (!isPointWithinBounds(lng, lat)) {
+          return; // Don't update if outside bounds
+        }
+        
+        // Update marker position
+        marker.setLatLng([lat, lng]);
+        lastValidPosition = [lat, lng];
+      };
+
+      // Handle mouse up to end drag
+      const handleMouseUp = (e: MouseEvent) => {
+        if (!isDraggingWithLeftClick) return;
+        
+        e.preventDefault();
+        e.stopPropagation();
+
+        // On release, ALWAYS drop the point exactly where the mouse was released
+        // (even if there were few/no mousemove events).
+        if (map.current) {
+          const dropLatLng = map.current.mouseEventToLatLng(e as any);
+          const dropLng = dropLatLng.lng;
+          const dropLat = dropLatLng.lat;
+
+          if (isPointWithinBounds(dropLng, dropLat)) {
+            marker.setLatLng([dropLat, dropLng]);
+            lastValidPosition = [dropLat, dropLng];
+            // Update React state ONCE at the end to avoid re-rendering/remounting markers mid-drag
+            onUpdatePoint(index, { lng: dropLng, lat: dropLat, height: point.height });
+          }
+        }
+        
+        isDraggingWithLeftClick = false;
+        el.style.cursor = 'pointer';
+        el.classList.remove('is-dragging');
+        marker.setZIndexOffset(0);
+        
+        // Re-enable all map interactions
+        if (map.current) {
+          map.current.dragging.enable();
+          map.current.touchZoom.enable();
+          map.current.doubleClickZoom.enable();
+          map.current.scrollWheelZoom.enable();
+          map.current.boxZoom.enable();
+          map.current.keyboard.enable();
+        }
+        
+        // Validate final position
+        const finalLatLng = marker.getLatLng();
+        if (!isPointWithinBounds(finalLatLng.lng, finalLatLng.lat)) {
+          // Reset to last valid position if outside bounds
+          marker.setLatLng(lastValidPosition);
+          onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
+          alert('Cannot move point outside DTM bounding box. Point has been reset to the previous valid position.');
+        }
+      };
+
+      // Add event listeners to document for mouse move and up
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      
+      // Store cleanup function
+      marker.on('remove', () => {
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
       });
 
       el.addEventListener('mouseenter', () => {
@@ -400,7 +907,90 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     // Don't auto-fit bounds while drawing - let user control the view
     // Map view will remain fixed during drawing
-  }, [flightPath, onUpdatePoint, onDeletePoint, onPathPointHover, isPointWithinBounds, isParallelLineMode]);
+  }, [
+    flightPath,
+    onInsertPoints,
+    onUpdatePoint,
+    onDeletePoint,
+    onPathPointHover,
+    isPointWithinBounds,
+    dtmLoaded,
+    isDrawing,
+    isParallelLineMode,
+    nominalFlightHeight,
+    editingPointIndex,
+    externalEditPointIndex,
+    activeRouteColor
+  ]);
+
+  // Render passive polylines for non-active routes
+  useEffect(() => {
+    if (!map.current) return;
+
+    // Remove lines that should no longer exist
+    Object.entries(passiveRouteLinesRef.current).forEach(([routeId, polyline]) => {
+      const stillExists = routes.some(
+        (route) => route.id === routeId && route.visible && route.id !== activeRouteId
+      );
+      if (!stillExists) {
+        map.current?.removeLayer(polyline);
+        delete passiveRouteLinesRef.current[routeId];
+      }
+    });
+
+    routes.forEach((route) => {
+      if (route.id === activeRouteId || !route.visible || route.points.length === 0) {
+        return;
+      }
+
+      const latlngs = route.points.map((p) => [p.lat, p.lng] as [number, number]);
+      const existing = passiveRouteLinesRef.current[route.id];
+      if (existing) {
+        existing.setLatLngs(latlngs);
+        existing.setStyle({ color: route.color });
+      } else {
+        passiveRouteLinesRef.current[route.id] = L.polyline(latlngs, {
+          color: route.color,
+          weight: 3,
+          opacity: 0.6,
+          dashArray: '6 6'
+        }).addTo(map.current!);
+      }
+    });
+
+    return () => {
+      Object.values(passiveRouteLinesRef.current).forEach((polyline) => {
+        map.current?.removeLayer(polyline);
+      });
+      passiveRouteLinesRef.current = {};
+    };
+  }, [routes, activeRouteId]);
+
+  // Update hovered elevation point marker
+  useEffect(() => {
+    if (!map.current) return;
+
+    // Remove existing hovered elevation marker
+    if (hoveredElevationMarkerRef.current) {
+      map.current.removeLayer(hoveredElevationMarkerRef.current);
+      hoveredElevationMarkerRef.current = null;
+    }
+
+    // Add new marker if there's a hovered elevation point
+    if (hoveredElevationPoint) {
+      const icon = L.divIcon({
+        className: 'hovered-elevation-marker',
+        html: '<div style="background-color: #9B59B6; width: 14px; height: 14px; border-radius: 50%; border: 2px solid black; box-shadow: 0 0 6px rgba(155,89,182,0.8);"></div>',
+        iconSize: [14, 14],
+        iconAnchor: [7, 7]
+      });
+
+      hoveredElevationMarkerRef.current = L.marker(
+        [hoveredElevationPoint.latitude, hoveredElevationPoint.longitude],
+        { icon }
+      ).addTo(map.current);
+    }
+  }, [hoveredElevationPoint]);
 
   // Exit drawing mode if DTM is unloaded
   useEffect(() => {
@@ -412,15 +1002,23 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [dtmLoaded, isDrawing, isParallelLineMode]);
 
+  // Sync external edit point index with internal state
+  useEffect(() => {
+    if (externalEditPointIndex !== undefined && externalEditPointIndex !== editingPointIndex) {
+      setEditingPointIndex(externalEditPointIndex);
+    }
+  }, [externalEditPointIndex]);
+
   // Update cursor when parallel line mode changes
   useEffect(() => {
     if (!map.current) return;
+    const currentEditingIndex = externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
     if (isParallelLineMode) {
       map.current.getContainer().style.cursor = 'crosshair';
-    } else if (!isDrawing && editingPointIndex === null) {
+    } else if (!isDrawing && currentEditingIndex === null) {
       map.current.getContainer().style.cursor = '';
     }
-  }, [isParallelLineMode, isDrawing, editingPointIndex]);
+  }, [isParallelLineMode, isDrawing, editingPointIndex, externalEditPointIndex]);
 
   // Prevent map dragging when interacting with DTM transparency slider
   useEffect(() => {
@@ -473,16 +1071,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
       setDtmLoaded(false);
       setDtmBounds(null);
+      setIsDtmProcessing(false);
       // Keep opacity setting - don't reset it so user preference persists
       return;
     }
 
     const loadDTM = async () => {
       setDtmLoaded(false); // Reset loading state when starting to load
+      setIsDtmProcessing(true);
       try {
         // Extract filename from path
         const filename = dtmSource.split('/').pop();
-        if (!filename) return;
+        if (!filename) {
+          setIsDtmProcessing(false);
+          return;
+        }
 
         // Fetch raster data
         const response = await fetch(`/api/dtm/${filename}/raster`);
@@ -670,6 +1273,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             console.log('DTM layer added successfully');
             setDtmLoaded(true);
             setDtmBounds(bounds); // Store bounds for the "Fit to DTM" button
+            setIsDtmProcessing(false);
 
             // Fit map to DTM bounds (now in WGS84)
             console.log('Fitting map to DTM bounds (WGS84):', bounds);
@@ -691,6 +1295,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             console.error('Error adding DTM source/layer:', sourceError);
             console.error('Error details:', sourceError);
             setDtmLoaded(false);
+            setIsDtmProcessing(false);
             alert(`Failed to add DTM to map: ${sourceError instanceof Error ? sourceError.message : 'Unknown error'}\n\nCheck browser console for details.`);
           }
         };
@@ -713,6 +1318,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         img.onerror = (error) => {
           console.error('Error loading DTM image:', error);
           setDtmLoaded(false);
+          setIsDtmProcessing(false);
           alert('Failed to create DTM image from canvas. Check console for details.');
         };
 
@@ -726,23 +1332,49 @@ const MapPanel: React.FC<MapPanelProps> = ({
         console.error('Error loading DTM:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         setDtmLoaded(false);
+        setIsDtmProcessing(false);
         alert(`Failed to load DTM: ${errorMessage}\n\nPlease ensure the file is a valid GeoTIFF with elevation data.`);
       }
     };
 
     loadDTM();
   }, [dtmSource]);
+  const resetFileInput = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const uploadDtmFile = async (file: File) => {
+    const allowedExtensions = ['.tif', '.tiff', '.geotiff'];
+    const lowerName = file.name.toLowerCase();
+    const hasValidExtension = allowedExtensions.some((ext) => lowerName.endsWith(ext));
+
+    if (!hasValidExtension) {
+      alert('Please upload a GeoTIFF file (.tif, .tiff, .geotiff).');
+      resetFileInput();
+      return;
+    }
+
+    if (isUploading) {
+      alert('A DTM upload is already in progress. Please wait for it to finish.');
+      resetFileInput();
+      return;
+    }
+
+    // Check file size (199 MB = 199 * 1024 * 1024 bytes)
+    const maxSizeBytes = 199 * 1024 * 1024; // 199 MB
+    if (file.size > maxSizeBytes) {
+      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+      alert(`File size (${fileSizeMB} MB) exceeds the maximum allowed size of 199 MB. Please use a smaller DTM file.`);
+      resetFileInput();
+      return;
+    }
 
     // Prevent uploading if a DTM is already loaded
     if (dtmLoaded) {
       alert('A DTM is already loaded. Please unload it first before loading a new one.');
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      resetFileInput();
       return;
     }
 
@@ -787,16 +1419,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
             throw new Error(`Upload failed with status ${xhr.status}`);
           }
         }
+      });
+
+      const handleUploadComplete = () => {
         setIsUploading(false);
         setUploadProgress(0);
-      });
+        resetFileInput();
+        setIsDragOver(false);
+      };
 
       // Handle errors
       xhr.addEventListener('error', () => {
         console.error('Error uploading DTM:', xhr.statusText);
         alert('Failed to upload DTM file');
-        setIsUploading(false);
-        setUploadProgress(0);
       });
 
       // Handle abort
@@ -804,6 +1439,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
         setIsUploading(false);
         setUploadProgress(0);
       });
+
+      xhr.addEventListener('loadend', handleUploadComplete);
 
       // Send request
       xhr.open('POST', '/api/upload-dtm');
@@ -813,12 +1450,54 @@ const MapPanel: React.FC<MapPanelProps> = ({
       alert('Failed to upload DTM file');
       setIsUploading(false);
       setUploadProgress(0);
-    } finally {
-      // Reset file input so the same file can be selected again
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      resetFileInput();
+      setIsDragOver(false);
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    uploadDtmFile(file);
+  };
+
+  const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dtmLoaded || isUploading) {
+      return;
+    }
+    setIsDragOver(true);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (dtmLoaded || isUploading) {
+      e.dataTransfer.dropEffect = 'none';
+      return;
+    }
+    e.dataTransfer.dropEffect = 'copy';
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    if (isUploading) {
+      alert('A DTM upload is already in progress. Please wait for it to finish.');
+      return;
+    }
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    uploadDtmFile(file);
   };
 
   const handleFitToDTM = () => {
@@ -1057,6 +1736,80 @@ const MapPanel: React.FC<MapPanelProps> = ({
     onAddPoint(newPoint);
   };
 
+  const handleAddUTurn = () => {
+    if (!dtmLoaded) {
+      alert('Please load a DTM first.');
+      return;
+    }
+
+    if (flightPath.length < 2) {
+      alert('Please add at least two points first (so the U-turn can follow your current direction).');
+      return;
+    }
+
+    const radiusInput = prompt('Enter U-turn radius in meters (positive = right, negative = left):', '50');
+    if (radiusInput === null) return;
+
+    const radius = parseFloat(radiusInput);
+    if (isNaN(radius) || radius === 0) {
+      alert('Invalid radius. Please enter a non-zero number.');
+      return;
+    }
+
+    const side: UTurnSide = radius > 0 ? 'R' : 'L';
+    const radiusMeters = Math.abs(radius);
+
+    const prev = flightPath[flightPath.length - 2];
+    const start = flightPath[flightPath.length - 1];
+
+    const numUTurnPoints = 10;
+    const maxStartEndDistance = radiusMeters * 2;
+    const distanceInput = prompt(
+      `Enter distance between U-turn start and end points in meters (max ${maxStartEndDistance.toFixed(2)}). End stays on the perpendicular line.`,
+      maxStartEndDistance.toString()
+    );
+    if (distanceInput === null) return;
+
+    const startEndDistance = parseFloat(distanceInput);
+    if (isNaN(startEndDistance) || startEndDistance <= 0) {
+      alert('Invalid distance. Please enter a positive number.');
+      return;
+    }
+
+    const clampedDistance = Math.min(startEndDistance, maxStartEndDistance);
+    if (startEndDistance > maxStartEndDistance) {
+      alert(`Distance reduced to ${maxStartEndDistance} meters (must be <= 2 x radius).`);
+    }
+
+    const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
+
+    if (pts.length !== numUTurnPoints) {
+      alert('Failed to generate U-turn points.');
+      return;
+    }
+
+    // Validate bounds (all points must be inside DTM extent)
+    const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
+    if (outOfBounds) {
+      alert('U-turn points fall outside the DTM bounding box. Try a smaller radius.');
+      return;
+    }
+
+    const startHeight = start.height;
+    const uTurnPoints: Coordinate[] =
+      startHeight !== undefined
+        ? pts.map(p => ({ ...p, height: startHeight }))
+        : pts;
+
+    // Add all points in one undoable action
+    onAddPoints(uTurnPoints);
+  };
+
+  const currentBaseIndex = baseMaps.findIndex((entry) => entry.id === activeBaseMapId);
+  const nextBaseMap = baseMaps.length > 1
+    ? baseMaps[(Math.max(currentBaseIndex, 0) + 1) % baseMaps.length]
+    : null;
+
   return (
     <div className="map-panel">
       {contextMenu && (
@@ -1068,20 +1821,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
             onDeletePoint(contextMenu.pointIndex);
             setContextMenu(null);
           }}
-          onEdit={() => {
-            setEditingPointIndex(contextMenu.pointIndex);
-            setContextMenu(null);
-            alert(`Edit mode enabled for point ${contextMenu.pointIndex + 1}. Click on the map to move the point.`);
-          }}
           onSetHeight={() => {
             handleSetFlightHeight(contextMenu.pointIndex);
             setContextMenu(null);
           }}
         />
       )}
-      {editingPointIndex !== null && (
+      {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex) !== null && (
         <div className="edit-mode-indicator">
-          Edit mode: Click on the map to move point {editingPointIndex + 1}
+          Edit mode: Click on the map to move point {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex)! + 1}
         </div>
       )}
       {isParallelLineMode && (
@@ -1090,10 +1838,173 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
       )}
       <div className="map-controls">
+        <div className={`control-group routes-panel ${isRoutesPanelOpen ? 'open' : 'closed'}`}>
+          <div className="routes-panel-header">
+            <span className="group-title">Routes</span>
+            <button
+              type="button"
+              className="btn btn-tertiary btn-compact"
+              onClick={() => setIsRoutesPanelOpen((prev) => !prev)}
+              aria-label={isRoutesPanelOpen ? 'Collapse routes panel' : 'Expand routes panel'}
+            >
+              {isRoutesPanelOpen ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          {isRoutesPanelOpen && (
+            <div className="group-columns">
+              <div className="group-column route-list">
+                {routes.map((route, idx) => (
+                  <div
+                    key={route.id}
+                    className={`route-row ${route.id === activeRouteId ? 'active' : ''} ${editingRouteId === route.id ? 'editing' : ''}`}
+                  >
+                    <div className="route-main" title="Select active route">
+                      <label className="route-radio">
+                        <input
+                          type="radio"
+                          name="active-route"
+                          checked={route.id === activeRouteId}
+                          onChange={() => onActiveRouteChange(route.id)}
+                        />
+                        <span
+                          className="route-color-dot"
+                          style={{ backgroundColor: route.color }}
+                          aria-hidden
+                        />
+                      </label>
+                      <span className="route-name-block">
+                        <span className="route-index">#{idx + 1}</span>
+                        {editingRouteId === route.id ? (
+                          <input
+                            className="route-name-input"
+                            value={editingRouteName}
+                            autoFocus
+                            onChange={(e) => setEditingRouteName(e.target.value)}
+                            onBlur={() => {
+                              if (editingRouteId) {
+                                onRenameRoute(editingRouteId, editingRouteName);
+                              }
+                              setEditingRouteId(null);
+                              setEditingRouteName('');
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (editingRouteId) {
+                                  onRenameRoute(editingRouteId, editingRouteName);
+                                }
+                                setEditingRouteId(null);
+                                setEditingRouteName('');
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault();
+                                setEditingRouteId(null);
+                                setEditingRouteName('');
+                              }
+                            }}
+                            placeholder={`Route ${idx + 1}`}
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            className="route-name-button"
+                            onDoubleClick={() => {
+                              setEditingRouteId(route.id);
+                              setEditingRouteName(route.name);
+                            }}
+                            title={`${route.name} (Double-click to rename)`}
+                          >
+                            <span className="route-name-text">{route.name}</span>
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                    <div className="route-actions">
+                      <label
+                        className="route-visibility switch"
+                        title={
+                          route.id === activeRouteId
+                            ? 'Active route is always visible.'
+                            : route.visible
+                              ? 'Hide this route on the map'
+                              : 'Show this route on the map'
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          checked={route.visible}
+                          disabled={route.id === activeRouteId}
+                          onChange={() => onToggleRouteVisibility(route.id)}
+                        />
+                        <span className="switch-slider" aria-hidden />
+                      </label>
+                      <Tooltip tooltip={routes.length <= 1 ? 'At least one route is required.' : 'Delete this route.'}>
+                        <button
+                          type="button"
+                          className="btn btn-destructive btn-icon btn-compact"
+                          onClick={() => {
+                            if (routes.length <= 1) return;
+                            if (window.confirm(`Delete "${route.name}"? This cannot be undone.`)) {
+                              onDeleteRoute(route.id);
+                            }
+                          }}
+                          disabled={routes.length <= 1}
+                          aria-label={`Delete ${route.name}`}
+                        >
+                          <Icon name="trash" />
+                          <span className="sr-only">Delete route</span>
+                        </button>
+                      </Tooltip>
+                    </div>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={onAddRoute}
+                  aria-label="Add new route"
+                >
+                  + New Route
+                </button>
+                <div className="route-bulk-actions">
+                  <button
+                    type="button"
+                    className="btn btn-tertiary"
+                    onClick={onShowAllRoutes}
+                    disabled={routes.length === 0}
+                    aria-label="Show all routes"
+                  >
+                    Show all
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-tertiary"
+                    onClick={onHideNonActiveRoutes}
+                    disabled={routes.length === 0}
+                    aria-label="Hide non-active routes"
+                  >
+                    Show active only
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-destructive"
+                    onClick={() => {
+                      if (window.confirm('Reset routes to a single empty route? This will remove all other routes and points.')) {
+                        onResetToSingleRoute();
+                      }
+                    }}
+                    aria-label="Reset to single route"
+                  >
+                    Reset routes
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
         <div className="control-group">
           <div className="group-title">Data Management</div>
           <div className="group-columns">
-            <div className="group-column">
+            <div className="group-column group-column-icons">
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1103,32 +2014,49 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 style={{ display: 'none' }}
                 disabled={dtmLoaded}
               />
-              <label 
-                htmlFor="dtm-upload" 
-                className={`btn btn-secondary ${dtmLoaded ? 'disabled' : ''}`}
-                style={dtmLoaded ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
-                title={dtmLoaded ? 'A DTM is already loaded. Unload it first to load a new one.' : 'Load a Digital Terrain Model file'}
+              <Tooltip tooltip={dtmLoaded ? 'DTM already loaded. Unload it before loading another.' : 'Load a Digital Terrain Model (GeoTIFF) to enable planning.'}>
+                <label
+                  htmlFor="dtm-upload"
+                  className={`btn btn-secondary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
+                  style={dtmLoaded ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
+                  aria-label="Load DTM"
+                >
+                  <Icon name="upload" />
+                  <span className="sr-only">Load DTM</span>
+                </label>
+              </Tooltip>
+              <Tooltip
+                tooltip={
+                  !dtmSource || !dtmLoaded
+                    ? 'No DTM loaded.'
+                    : 'Unload DTM and clear all routes and points.'
+                }
               >
-                Load DTM
-              </label>
-              <button
-                onClick={onDtmUnload}
-                className="btn btn-destructive"
-                disabled={!dtmSource || !dtmLoaded}
-                title={!dtmSource || !dtmLoaded ? 'No DTM loaded' : 'Unload DTM from map'}
-              >
-                Unload DTM
-              </button>
+                <button
+                  onClick={onDtmUnload}
+                  className="btn btn-destructive btn-icon"
+                  disabled={!dtmSource || !dtmLoaded}
+                  aria-label="Unload DTM and clear routes"
+                  type="button"
+                >
+                  <Icon name="eject" />
+                  <span className="sr-only">Unload DTM and clear routes</span>
+                </button>
+              </Tooltip>
             </div>
-            <div className="group-column">
-              <button
-                onClick={handleDeleteAllPoints}
-                className="btn btn-destructive"
-                disabled={flightPath.length === 0}
-                title={flightPath.length === 0 ? 'No points to delete' : 'Delete all flight path points'}
-              >
-                Delete All Points
-              </button>
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={flightPath.length === 0 ? 'No points to delete.' : 'Delete all flight path points (clears the route).'}>
+                <button
+                  onClick={handleDeleteAllPoints}
+                  className="btn btn-destructive btn-icon"
+                  disabled={flightPath.length === 0}
+                  aria-label="Delete all points"
+                  type="button"
+                >
+                  <Icon name="trash" />
+                  <span className="sr-only">Delete All Points</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
@@ -1136,65 +2064,109 @@ const MapPanel: React.FC<MapPanelProps> = ({
         <div className="control-group">
           <div className="group-title">Planning Options</div>
           <div className="group-columns">
-            <div className="group-column">
-              <button
-                onClick={() => {
-                  setIsDrawing(!isDrawing);
-                  setEditingPointIndex(null);
-                  setIsParallelLineMode(false);
-                }}
-                className={`btn btn-primary ${isDrawing ? 'active' : ''}`}
-                disabled={!dtmLoaded}
-                title={!dtmLoaded ? 'Load a DTM first to enable drawing' : 'Click on the map to add points to your flight path'}
-              >
-                {isDrawing ? 'Stop Drawing' : 'Draw Path'}
-              </button>
-              <button
-                onClick={() => {
-                  setIsParallelLineMode(!isParallelLineMode);
-                  setIsDrawing(false);
-                  setEditingPointIndex(null);
-                }}
-                className={`btn btn-secondary ${isParallelLineMode ? 'active' : ''}`}
-                disabled={!dtmLoaded || flightPath.length < 2}
-                title={
-                  !dtmLoaded 
-                    ? 'Load a DTM first to enable parallel line creation'
-                    : flightPath.length < 2 
-                      ? 'Flight path must have at least 2 points' 
-                      : 'Create a parallel line to an existing segment'
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first to enable drawing.' : isDrawing ? 'Stop drawing (exit click-to-add mode).' : 'Draw path: click on the map to add points.'}>
+                <button
+                  onClick={() => {
+                    setIsDrawing(!isDrawing);
+                    setEditingPointIndex(null);
+                    if (onEditPointIndexChange) {
+                      onEditPointIndexChange(null);
+                    }
+                    setIsParallelLineMode(false);
+                  }}
+                  className={`btn btn-primary btn-icon ${isDrawing ? 'active' : ''}`}
+                  disabled={!dtmLoaded}
+                  aria-label={isDrawing ? 'Stop drawing' : 'Draw path'}
+                  type="button"
+                >
+                  <Icon name="pencil" />
+                  <span className="sr-only">{isDrawing ? 'Stop Drawing' : 'Draw Path'}</span>
+                </button>
+              </Tooltip>
+              <Tooltip
+                tooltip={
+                  !dtmLoaded
+                    ? 'Load a DTM first to enable parallel line creation.'
+                    : flightPath.length < 2
+                      ? 'Add at least 2 points first.'
+                      : isParallelLineMode
+                        ? 'Cancel parallel line mode.'
+                        : 'Create a parallel line: click a segment, then enter offset (meters).'
                 }
               >
-                {isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}
-              </button>
+                <button
+                  onClick={() => {
+                    setIsParallelLineMode(!isParallelLineMode);
+                    setIsDrawing(false);
+                    setEditingPointIndex(null);
+                    if (onEditPointIndexChange) {
+                      onEditPointIndexChange(null);
+                    }
+                  }}
+                  className={`btn btn-secondary btn-icon ${isParallelLineMode ? 'active' : ''}`}
+                  disabled={!dtmLoaded || flightPath.length < 2}
+                  aria-label={isParallelLineMode ? 'Cancel parallel line' : 'Create parallel line'}
+                  type="button"
+                >
+                  <Icon name="parallel" />
+                  <span className="sr-only">{isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}</span>
+                </button>
+              </Tooltip>
             </div>
-            <div className="group-column">
-              <button
-                onClick={handleCreatePointFromAzimuthDistance}
-                className="btn btn-secondary"
-                disabled={!dtmLoaded || flightPath.length === 0}
-                title={
-                  !dtmLoaded 
-                    ? 'Load a DTM first to enable azimuth/distance point creation'
-                    : flightPath.length === 0 
-                      ? 'Add at least one point first' 
-                      : 'Create a new point from the last point using azimuth and distance'
+            <div className="group-column group-column-icons">
+              <Tooltip
+                tooltip={
+                  !dtmLoaded
+                    ? 'Load a DTM first.'
+                    : flightPath.length === 0
+                      ? 'Add at least 1 point first.'
+                      : 'Add a point from the last point using azimuth (deg) and distance (m).'
                 }
               >
-                Azimuth + Distance
-              </button>
-              <button
-                onClick={handleCreatePointFromCoordinates}
-                className="btn btn-secondary"
-                disabled={!dtmLoaded}
-                title={
-                  !dtmLoaded 
-                    ? 'Load a DTM first to enable coordinate-based point creation'
-                    : 'Add a new point by entering coordinates (UTM or Geographic)'
+                <button
+                  onClick={handleCreatePointFromAzimuthDistance}
+                  className="btn btn-secondary btn-icon"
+                  disabled={!dtmLoaded || flightPath.length === 0}
+                  aria-label="Add point by azimuth and distance"
+                  type="button"
+                >
+                  <Icon name="compass" />
+                  <span className="sr-only">Azimuth + Distance</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Add a point by entering coordinates (Geographic or UTM).'}>
+                <button
+                  onClick={handleCreatePointFromCoordinates}
+                  className="btn btn-secondary btn-icon"
+                  disabled={!dtmLoaded}
+                  aria-label="Add point by coordinate"
+                  type="button"
+                >
+                  <Icon name="crosshair" />
+                  <span className="sr-only">Point by Coordinate</span>
+                </button>
+              </Tooltip>
+              <Tooltip
+                tooltip={
+                  !dtmLoaded
+                    ? 'Load a DTM first.'
+                    : flightPath.length < 2
+                      ? 'Add at least 2 points first.'
+                      : 'Add a U-turn (adds 10 points) using radius + distance (end on perpendicular).'
                 }
               >
-                Point by Coordinate
-              </button>
+                <button
+                  onClick={handleAddUTurn}
+                  className="btn btn-secondary btn-icon"
+                  disabled={!dtmLoaded || flightPath.length < 2}
+                  aria-label="Add U-turn"
+                  type="button"
+                >
+                  <Icon name="uturn" />
+                  <span className="sr-only">U-turn</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
@@ -1202,23 +2174,31 @@ const MapPanel: React.FC<MapPanelProps> = ({
         <div className="control-group">
           <div className="group-title">History</div>
           <div className="group-columns">
-            <div className="group-column">
-              <button
-                onClick={onUndo}
-                disabled={!canUndo || flightPath.length === 0}
-                className="btn btn-secondary"
-                title={flightPath.length === 0 ? 'Draw points first to enable undo' : 'Undo last action (Ctrl+Z)'}
-              >
-                Undo
-              </button>
-              <button
-                onClick={onRedo}
-                disabled={!canRedo || flightPath.length === 0}
-                className="btn btn-secondary"
-                title={flightPath.length === 0 ? 'Draw points first to enable redo' : 'Redo last action (Ctrl+Y or Ctrl+Shift+Z)'}
-              >
-                Redo
-              </button>
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Undo last action (Ctrl+Z).'}>
+                <button
+                  onClick={onUndo}
+                  disabled={!canUndo || flightPath.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="Undo"
+                  type="button"
+                >
+                  <Icon name="undo" />
+                  <span className="sr-only">Undo</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Redo last action (Ctrl+Y or Ctrl+Shift+Z).'}>
+                <button
+                  onClick={onRedo}
+                  disabled={!canRedo || flightPath.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="Redo"
+                  type="button"
+                >
+                  <Icon name="redo" />
+                  <span className="sr-only">Redo</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
@@ -1226,27 +2206,53 @@ const MapPanel: React.FC<MapPanelProps> = ({
         <div className="control-group">
           <div className="group-title">View Controls</div>
           <div className="group-columns">
-            <div className="group-column">
-              <button
-                onClick={handleFitToDTM}
-                className="btn btn-tertiary"
-                disabled={!dtmLoaded}
-                title={!dtmLoaded ? 'Load a DTM first to fit to its extent' : 'Fit map to DTM extent'}
-              >
-                Fit to DTM
-              </button>
-              <button
-                onClick={handleResetView}
-                className="btn btn-tertiary"
-                title="Reset map view to default extent"
-              >
-                Reset View
-              </button>
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Fit map view to the DTM bounding box.'}>
+                <button
+                  onClick={handleFitToDTM}
+                  className="btn btn-tertiary btn-icon"
+                  disabled={!dtmLoaded}
+                  aria-label="Fit to DTM"
+                  type="button"
+                >
+                  <Icon name="fit" />
+                  <span className="sr-only">Fit to DTM</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip="Reset map view to the default extent.">
+                <button
+                  onClick={handleResetView}
+                  className="btn btn-tertiary btn-icon"
+                  aria-label="Reset view"
+                  type="button"
+                >
+                  <Icon name="home" />
+                  <span className="sr-only">Reset View</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
         </div>
       </div>
-      <div ref={mapContainer} className="map-container">
+      <div
+        ref={mapContainer}
+        className="map-container"
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDragOver && !isUploading && !isDtmProcessing && (
+          <div className="dtm-drop-overlay">
+            <div className="dtm-drop-content">
+              <Icon name="upload" />
+              <div className="dtm-drop-text">
+                <div className="dtm-drop-title">Drop DTM GeoTIFF to upload</div>
+                <div className="dtm-drop-subtitle">.tif, .tiff, .geotiff • Max 199 MB</div>
+              </div>
+            </div>
+          </div>
+        )}
         {isUploading && (
           <div className="upload-progress-overlay">
             <div className="upload-progress-container">
@@ -1258,6 +2264,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 />
               </div>
             </div>
+          </div>
+        )}
+        {isDtmProcessing && !isUploading && (
+          <div className="upload-progress-overlay">
+            <div className="loading-spinner" />
           </div>
         )}
         {dtmLoaded && (
@@ -1279,6 +2290,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
               className="dtm-opacity-slider"
             />
           </div>
+        )}
+        {baseMaps.length > 1 && nextBaseMap && (
+          <button
+            type="button"
+            className="basemap-toggle"
+            onClick={handleBaseMapButtonClick}
+            title={`Switch to ${nextBaseMap.name}`}
+          >
+            <div 
+              className="basemap-preview" 
+              style={{
+                backgroundImage: `url(${getPreviewTileUrl(nextBaseMap)})`
+              }}
+            ></div>
+          </button>
         )}
       </div>
     </div>

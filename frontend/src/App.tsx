@@ -35,30 +35,107 @@ function App() {
   const [dtmSource, setDtmSource] = useState<string | null>(null);
   // @ts-ignore
   const [dtmInfo, setDtmInfo] = useState<DTMInfo | null>(null);
-  const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(200);
+  const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(250);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
-  const [searchRadius, setSearchRadius] = useState<number>(50);
+  const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
+  const [resolutionSearchRadius, setResolutionSearchRadius] = useState<number>(50);
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
+  const [editPointIndex, setEditPointIndex] = useState<number | null>(null);
+  const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);
   
   // @ts-ignore
-  const {flightPath, addPoint, addPoints,updatePoint, deletePoint, insertPoints, setFlightPath, exportGeoJSON,importGeoJSON,undo, redo, canUndo, canRedo
+  const {
+    routes,
+    activeRouteId,
+    flightPath,
+    addRoute,
+    setActiveRoute,
+    renameRoute,
+    toggleRouteVisibility,
+    deleteRoute,
+    showAllRoutes,
+    hideNonActiveRoutes,
+    addPoint,
+    addPoints,
+    updatePoint,
+    deletePoint,
+    insertPoints,
+    setFlightPath,
+    resetToSingleRoute,
+    exportGeoJSON,
+    importGeoJSON,
+    undo,
+    redo,
+    canUndo,
+    canRedo
   } = useFlightPath();
 
-  const { elevationProfile, loading, calculateProfile } = useElevationProfile();
+  const { elevationProfile, loading, calculateProfile, refreshFlightHeights } = useElevationProfile();
 
-  // Calculate elevation profile when flight path changes
+  // Track last inputs so we can avoid expensive recalculation when only nominal height changes
+  const lastProfileParamsRef = React.useRef<{
+    flightPath: Coordinate[];
+    dtmSource: string | null;
+    safetySearchRadius: number;
+    resolutionSearchRadius: number;
+    nominalFlightHeight: number;
+  } | null>(null);
+
   React.useEffect(() => {
-    if (flightPath.length === 0) {
-      // Clear profile when flight path is empty
-      calculateProfile([], dtmSource || '', nominalFlightHeight, searchRadius);
-    } else if (flightPath.length >= 2 && dtmSource) {
-      calculateProfile(flightPath, dtmSource, nominalFlightHeight, searchRadius);
+    const prev = lastProfileParamsRef.current;
+    const baseChanged = !prev 
+      || prev.flightPath !== flightPath 
+      || prev.dtmSource !== dtmSource 
+      || prev.safetySearchRadius !== safetySearchRadius
+      || prev.resolutionSearchRadius !== resolutionSearchRadius;
+    const nominalChanged = !prev || prev.nominalFlightHeight !== nominalFlightHeight;
+
+    if (baseChanged) {
+      if (flightPath.length === 0) {
+        // Clear profile when flight path is empty
+        calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
+      } else if (flightPath.length >= 2 && dtmSource) {
+        calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
+      }
+    } else if (nominalChanged) {
+      // Fast update: adjust flight heights without reloading elevations
+      refreshFlightHeights(flightPath, nominalFlightHeight);
     }
-  }, [flightPath, dtmSource, nominalFlightHeight, searchRadius, calculateProfile]);
+
+    lastProfileParamsRef.current = {
+      flightPath,
+      dtmSource,
+      safetySearchRadius,
+      resolutionSearchRadius,
+      nominalFlightHeight
+    };
+  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights]);
+
+  const deleteDtmOnServer = useCallback(async (pathToDelete?: string, keepalive: boolean = false) => {
+    const target = pathToDelete || dtmSource;
+    if (!target) return;
+
+    try {
+      await fetch('/api/dtm/cleanup', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ path: target }),
+        keepalive
+      });
+    } catch (error) {
+      console.error('Failed to delete DTM on server:', error);
+    }
+  }, [dtmSource]);
 
   const handlePathPointHover = useCallback((point: Coordinate | null) => {
     setSelectedPoint(point);
+  }, []);
+
+  const handleElevationPointHover = useCallback((point: ElevationPoint | null) => {
+    setHoveredElevationPoint(point);
   }, []);
 
   const handleDtmLoad = useCallback((source: string, info?: any) => {
@@ -72,11 +149,68 @@ function App() {
   }, []);
 
   const handleDtmUnload = useCallback(() => {
+    if (dtmSource) {
+      deleteDtmOnServer(dtmSource).catch((error) => {
+        console.error('Failed to clean up DTM cache:', error);
+      });
+    }
     setDtmSource(null);
     setDtmInfo(null);
-    // Clear all flight path points when unloading DTM
-    setFlightPath([]);
-  }, [setFlightPath]);
+    // Clear routes when unloading DTM (keep only the first route)
+    resetToSingleRoute();
+  }, [dtmSource, deleteDtmOnServer, resetToSingleRoute]);
+
+  // Warn users that refreshing will clear points and unload the DTM; only clean up on confirmed unload.
+  React.useEffect(() => {
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!dtmSource && flightPath.length === 0) return;
+
+      const warning = 'Refreshing will delete all points and unload the DTM. Continue?';
+      event.preventDefault();
+      event.returnValue = warning;
+      return warning;
+    };
+
+    const handlePageHide = (event: PageTransitionEvent) => {
+      if (event.persisted) return;
+      if (!dtmSource) return;
+
+      const payload = JSON.stringify({ path: dtmSource });
+      const blob = new Blob([payload], { type: 'application/json' });
+      navigator.sendBeacon('/api/dtm/cleanup', blob);
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [dtmSource, flightPath.length]);
+
+  const handleSetFlightHeight = useCallback((pointIndex: number) => {
+    if (pointIndex < 0 || pointIndex >= flightPath.length) return;
+    const currentPoint = flightPath[pointIndex];
+    const currentHeight = currentPoint.height ?? nominalFlightHeight;
+    const heightInput = prompt(`Enter flight height (AGL in meters) for point ${pointIndex + 1}:`, currentHeight.toString());
+    
+    if (heightInput !== null) {
+      const height = parseFloat(heightInput);
+      if (!isNaN(height) && height >= 0) {
+        updatePoint(pointIndex, {
+          ...currentPoint,
+          height
+        });
+      } else {
+        alert('Invalid height. Please enter a positive number.');
+      }
+    }
+  }, [flightPath, nominalFlightHeight, updatePoint]);
+
+  const handleEditPointRequest = useCallback((pointIndex: number) => {
+    setEditPointIndex(pointIndex);
+    alert(`Edit mode enabled for point ${pointIndex + 1}. Click on the map to move the point.`);
+  }, []);
 
   // Handle keyboard shortcuts for undo/redo
   React.useEffect(() => {
@@ -147,11 +281,22 @@ function App() {
                 />
               </label>
               <label>
-                <span className="input-label">Search Radius (m)</span>
+                <span className="input-label">Safety Radius (m)</span>
                 <input
                   type="number"
-                  value={searchRadius}
-                  onChange={(e) => setSearchRadius(Number(e.target.value))}
+                  value={safetySearchRadius}
+                  onChange={(e) => setSafetySearchRadius(Number(e.target.value))}
+                  min="1"
+                  step="5"
+                  className="modern-input"
+                />
+              </label>
+              <label>
+                <span className="input-label">Resolution Radius (m)</span>
+                <input
+                  type="number"
+                  value={resolutionSearchRadius}
+                  onChange={(e) => setResolutionSearchRadius(Number(e.target.value))}
                   min="1"
                   step="5"
                   className="modern-input"
@@ -200,13 +345,24 @@ function App() {
       <div className="app-panels">
         <MapPanel
           dtmSource={dtmSource}
+          routes={routes}
+          activeRouteId={activeRouteId}
           flightPath={flightPath}
           onPathPointHover={handlePathPointHover}
           onPathChange={setFlightPath}
           onAddPoint={addPoint}
           onAddPoints={addPoints}
+          onInsertPoints={insertPoints}
           onUpdatePoint={updatePoint}
           onDeletePoint={deletePoint}
+          onAddRoute={addRoute}
+          onActiveRouteChange={setActiveRoute}
+          onRenameRoute={renameRoute}
+          onToggleRouteVisibility={toggleRouteVisibility}
+          onDeleteRoute={deleteRoute}
+          onShowAllRoutes={showAllRoutes}
+          onHideNonActiveRoutes={hideNonActiveRoutes}
+          onResetToSingleRoute={resetToSingleRoute}
           onDtmLoad={handleDtmLoad}
           onDtmUnload={handleDtmUnload}
           nominalFlightHeight={nominalFlightHeight}
@@ -214,6 +370,9 @@ function App() {
           onRedo={redo}
           canUndo={canUndo}
           canRedo={canRedo}
+          editPointIndex={editPointIndex}
+          onEditPointIndexChange={setEditPointIndex}
+          hoveredElevationPoint={hoveredElevationPoint}
         />
         <ElevationProfile
           elevationProfile={elevationProfile}
@@ -223,6 +382,11 @@ function App() {
           resolutionHeight={resolutionHeight}
           selectedPoint={selectedPoint}
           flightPath={flightPath}
+          onDeletePoint={deletePoint}
+          onUpdatePoint={updatePoint}
+          onSetFlightHeight={handleSetFlightHeight}
+          onEditPointRequest={handleEditPointRequest}
+          onElevationPointHover={handleElevationPointHover}
         />
       </div>
     </div>

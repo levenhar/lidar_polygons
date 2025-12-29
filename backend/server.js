@@ -2,9 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { readFile } from 'fs/promises';
-import { existsSync, mkdirSync } from 'fs';
+import { dirname, join, basename } from 'path';
+import { readFile, unlink } from 'fs/promises';
+import { existsSync, mkdirSync, rmSync } from 'fs';
 import { fromFile } from 'geotiff';
 import proj4 from 'proj4';
 import dotenv from 'dotenv';
@@ -18,6 +18,17 @@ const app = express();
 const PORT = process.env.BACKEND_PORT;
 const MAPS_TOKEN = process.env.MAPS_TOKEN;
 const MAPS_URL = process.env.MAPS_URL;
+const MAPS_URL_ALT = process.env.MAPS_URL_ALT;
+const MAPS_CRS = process.env.MAPS_CRS;
+const MAPS_PREVIEW_ZOOM_DEFAULT = process.env.MAPS_PREVIEW_ZOOM_DEFAULT;
+const MAPS_PREVIEW_X_DEFAULT = process.env.MAPS_PREVIEW_X_DEFAULT;
+const MAPS_PREVIEW_Y_DEFAULT = process.env.MAPS_PREVIEW_Y_DEFAULT;
+const MAPS_PREVIEW_ZOOM_PRIMARY = process.env.MAPS_PREVIEW_ZOOM_PRIMARY;
+const MAPS_PREVIEW_X_PRIMARY = process.env.MAPS_PREVIEW_X_PRIMARY;
+const MAPS_PREVIEW_Y_PRIMARY = process.env.MAPS_PREVIEW_Y_PRIMARY;
+const MAPS_PREVIEW_ZOOM_ALTERNATE = process.env.MAPS_PREVIEW_ZOOM_ALTERNATE;
+const MAPS_PREVIEW_X_ALTERNATE = process.env.MAPS_PREVIEW_X_ALTERNATE;
+const MAPS_PREVIEW_Y_ALTERNATE = process.env.MAPS_PREVIEW_Y_ALTERNATE;
 
 //Middleware
 app.use((req, res, next) => {
@@ -29,11 +40,58 @@ app.use((req, res, next) => {
 app.use(cors());
 app.use(express.json());
 
-// Create uploads directory if it doesn't exist
 const uploadsDir = join(__dirname, 'uploads');
-if (!existsSync(uploadsDir)) {
-  mkdirSync(uploadsDir, { recursive: true });
-}
+
+// Helpers for preview values
+const clampZoom = (value) => Math.min(22, Math.max(0, value));
+const parseNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const getPreviewConfig = () => {
+  const defaults = {
+    zoom: clampZoom(parseNumber(MAPS_PREVIEW_ZOOM_DEFAULT, 0)),
+    x: parseNumber(MAPS_PREVIEW_X_DEFAULT, 0),
+    y: parseNumber(MAPS_PREVIEW_Y_DEFAULT, 0)
+  };
+
+  const overrides = {};
+
+  const assignIfDefined = (id, key, envValue, clampFn = (v) => v) => {
+    if (envValue !== undefined) {
+      if (!overrides[id]) overrides[id] = {};
+      overrides[id][key] = clampFn(parseNumber(envValue, defaults[key]));
+    }
+  };
+
+  assignIfDefined('primary', 'zoom', MAPS_PREVIEW_ZOOM_PRIMARY, clampZoom);
+  assignIfDefined('primary', 'x', MAPS_PREVIEW_X_PRIMARY);
+  assignIfDefined('primary', 'y', MAPS_PREVIEW_Y_PRIMARY);
+
+  assignIfDefined('alternate', 'zoom', MAPS_PREVIEW_ZOOM_ALTERNATE, clampZoom);
+  assignIfDefined('alternate', 'x', MAPS_PREVIEW_X_ALTERNATE);
+  assignIfDefined('alternate', 'y', MAPS_PREVIEW_Y_ALTERNATE);
+
+  return { defaults, overrides };
+};
+
+// Clear cached uploads on restart to avoid serving stale files
+const clearUploadsDirectory = () => {
+  try {
+    rmSync(uploadsDir, { recursive: true, force: true });
+    mkdirSync(uploadsDir, { recursive: true });
+    console.log('Uploads cache cleared on startup');
+  } catch (error) {
+    console.error('Failed to clear uploads cache on startup:', error);
+    // Ensure directory still exists so uploads do not fail
+    if (!existsSync(uploadsDir)) {
+      mkdirSync(uploadsDir, { recursive: true });
+    }
+  }
+};
+
+clearUploadsDirectory();
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -76,7 +134,20 @@ app.get('/api/token', (req, res) => {
 
 // url endpoint
 app.get('/api/url', (req, res) => {
-  res.json({ url: MAPS_URL})
+  res.json({
+    url: MAPS_URL,
+    altUrl: MAPS_URL_ALT || null
+  })
+})
+
+// map preview config endpoint
+app.get('/api/map-preview', (req, res) => {
+  res.json(getPreviewConfig());
+})
+
+// crs endpoint
+app.get('/api/crs', (req, res) => {
+  res.json({ crs: MAPS_CRS})
 })
 
 
@@ -169,6 +240,31 @@ app.post('/api/upload-dtm', upload.single('dtm'), async (req, res) => {
       size: req.file.size,
       error: 'Could not parse GeoTIFF metadata'
     });
+  }
+});
+
+// Delete a cached DTM file (used when clients unload/close)
+app.post('/api/dtm/cleanup', async (req, res) => {
+  try {
+    const { path: dtmPath, filename } = req.body || {};
+    const rawName = filename || (typeof dtmPath === 'string' ? dtmPath.split('/').pop() : null);
+
+    if (!rawName) {
+      return res.status(400).json({ success: false, error: 'No filename provided' });
+    }
+
+    const safeFilename = basename(rawName);
+    const filePath = join(uploadsDir, safeFilename);
+
+    if (!existsSync(filePath)) {
+      return res.json({ success: true, deleted: false, message: 'File not found' });
+    }
+
+    await unlink(filePath);
+    res.json({ success: true, deleted: true, filename: safeFilename });
+  } catch (error) {
+    console.error('Error deleting DTM file:', error);
+    res.status(500).json({ success: false, error: 'Failed to delete DTM file' });
   }
 });
 
@@ -390,7 +486,7 @@ app.get('/api/dtm/:filename/raster', async (req, res) => {
 // This endpoint samples the DTM at points along the path, including interpolated points along line segments
 app.post('/api/elevation-profile', async (req, res) => {
   try {
-    const { coordinates, dtmPath, radiusMeters } = req.body;
+    const { coordinates, dtmPath, radiusMeters, resolutionRadiusMeters, safetyRadiusMeters } = req.body;
 
     if (!coordinates || !Array.isArray(coordinates) || coordinates.length < 2) {
       return res.status(400).json({ error: 'Invalid coordinates array' });
@@ -400,8 +496,9 @@ app.post('/api/elevation-profile', async (req, res) => {
       return res.status(400).json({ error: 'DTM path is required' });
     }
 
-    // Default radius is 50 meters if not specified
-    const radius = radiusMeters || 50;
+    // Default radii are 50 meters if not specified
+    const resolutionRadius = resolutionRadiusMeters ?? radiusMeters ?? 50; // max (resolution / highest point)
+    const safetyRadius = safetyRadiusMeters ?? radiusMeters ?? 50; // min (safety / lowest point)
 
     // Extract filename from path
     const filename = dtmPath.split('/').pop();
@@ -416,6 +513,7 @@ app.post('/api/elevation-profile', async (req, res) => {
 
     console.log(`Sampling elevation profile from DTM: ${filename}`);
     console.log(`Number of input coordinates: ${coordinates.length}`);
+    console.log(`Radii -> safety(min): ${safetyRadius}m, resolution(max): ${resolutionRadius}m`);
 
     // Load the GeoTIFF
     const tiff = await fromFile(filePath);
@@ -762,10 +860,16 @@ app.post('/api/elevation-profile', async (req, res) => {
       let maxElevation = undefined;
 
       try {
-        const result = getMinMaxElevationInRadius(lon, lat, radius);
-        if (result.min !== null && result.max !== null) {
-          minElevation = result.min;
-          maxElevation = result.max;
+        const minResult = getMinMaxElevationInRadius(lon, lat, safetyRadius);
+        const maxResult = resolutionRadius === safetyRadius
+          ? minResult
+          : getMinMaxElevationInRadius(lon, lat, resolutionRadius);
+
+        if (minResult && minResult.min !== null) {
+          minElevation = minResult.min;
+        }
+        if (maxResult && maxResult.max !== null) {
+          maxElevation = maxResult.max;
         }
       } catch (error) {
         console.error(`Error calculating min/max at point ${i}:`, error);

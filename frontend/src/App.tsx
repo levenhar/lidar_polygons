@@ -40,6 +40,8 @@ function App() {
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
   const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
   const [resolutionSearchRadius, setResolutionSearchRadius] = useState<number>(50);
+  const [overlapPercentage, setOverlapPercentage] = useState<number>(50);
+  const [fovDegrees, setFovDegrees] = useState<number>(100);
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
   const [editPointIndex, setEditPointIndex] = useState<number | null>(null);
   const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);
@@ -305,6 +307,35 @@ function App() {
             </div>
           </div>
           <div className="header-group">
+            <div className="group-title">Mission Parameters</div>
+            <div className="group-inputs">
+              <label>
+                <span className="input-label">Overlap (%)</span>
+                <input
+                  type="number"
+                  value={overlapPercentage}
+                  onChange={(e) => setOverlapPercentage(Number(e.target.value))}
+                  min="0"
+                  max="99.9"
+                  step="1"
+                  className="modern-input"
+                />
+              </label>
+              <label>
+                <span className="input-label">FOV (°)</span>
+                <input
+                  type="number"
+                  value={fovDegrees}
+                  onChange={(e) => setFovDegrees(Number(e.target.value))}
+                  min="1"
+                  max="179"
+                  step="1"
+                  className="modern-input"
+                />
+              </label>
+            </div>
+          </div>
+          <div className="header-group">
             <div className="group-title">Data Export</div>
             <div className="group-columns">
               <div className="group-column">
@@ -366,6 +397,8 @@ function App() {
           onDtmLoad={handleDtmLoad}
           onDtmUnload={handleDtmUnload}
           nominalFlightHeight={nominalFlightHeight}
+          overlapPercentage={overlapPercentage}
+          fovDegrees={fovDegrees}
           onUndo={undo}
           onRedo={redo}
           canUndo={canUndo}

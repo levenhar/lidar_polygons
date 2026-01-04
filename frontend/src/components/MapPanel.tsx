@@ -198,6 +198,8 @@ interface MapPanelProps {
   onDtmLoad: (source: string, info?: any) => void;
   onDtmUnload: () => void;
   nominalFlightHeight: number;
+  overlapPercentage: number;
+  fovDegrees: number;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -230,6 +232,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onDtmLoad,
   onDtmUnload,
   nominalFlightHeight,
+  overlapPercentage,
+  fovDegrees,
   onUndo,
   onRedo,
   canUndo,
@@ -267,6 +271,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
   const [previewConfig, setPreviewConfig] = useState<BaseMapPreviewResponse | null>(null);
   const passiveRouteLinesRef = useRef<Record<string, L.Polyline>>({});
+  const suggestedLinesRef = useRef<L.Polyline[]>([]);
   const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
   const [editingRouteName, setEditingRouteName] = useState<string>('');
@@ -906,6 +911,65 @@ const MapPanel: React.FC<MapPanelProps> = ({
     externalEditPointIndex,
     activeRouteColor
   ]);
+
+  // Render suggested parallel lines based on mission parameters
+  useEffect(() => {
+    if (!map.current) return;
+
+    // Clear previous suggestion overlays
+    suggestedLinesRef.current.forEach((line) => {
+      map.current?.removeLayer(line);
+    });
+    suggestedLinesRef.current = [];
+
+    if (flightPath.length < 2) return;
+
+    const safeOverlap = Math.max(0, Math.min(overlapPercentage, 99.9));
+    const overlapFraction = safeOverlap / 100;
+    const safeFov = Math.max(1, Math.min(fovDegrees, 179.9));
+    const fovRadians = (safeFov * Math.PI) / 180;
+    const spacingFactor = 1 - overlapFraction;
+
+    if (!(spacingFactor > 0) || !(fovRadians > 0)) return;
+
+    for (let i = 0; i < flightPath.length - 1; i++) {
+      const start = flightPath[i];
+      const end = flightPath[i + 1];
+      const startHeight = start.height ?? nominalFlightHeight;
+      const endHeight = end.height ?? nominalFlightHeight;
+      const avgHeight = (startHeight + endHeight) / 2;
+
+      const swathWidth = 2 * avgHeight * Math.tan(fovRadians / 2);
+      const spacing = swathWidth * spacingFactor;
+
+      if (!Number.isFinite(spacing) || spacing <= 0) continue;
+
+      [spacing, -spacing].forEach((offset) => {
+        const [parallelStart, parallelEnd] = calculateParallelLine(start, end, offset);
+        const suggestion = L.polyline(
+          [
+            [parallelStart.lat, parallelStart.lng],
+            [parallelEnd.lat, parallelEnd.lng]
+          ],
+          {
+            color: activeRouteColor,
+            weight: 2,
+            opacity: 0.25,
+            dashArray: '4 8',
+            interactive: false
+          }
+        ).addTo(map.current!);
+
+        suggestedLinesRef.current.push(suggestion);
+      });
+    }
+    return () => {
+      suggestedLinesRef.current.forEach((line) => {
+        map.current?.removeLayer(line);
+      });
+      suggestedLinesRef.current = [];
+    };
+  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight, activeRouteColor]);
 
   // Render passive polylines for non-active routes
   useEffect(() => {

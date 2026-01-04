@@ -7,7 +7,7 @@ import { Coordinate, ElevationPoint } from '../App';
 import { FlightRoute } from '../hooks/useFlightPath';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide } from '../utils/geometry';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing } from '../utils/geometry';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 
@@ -255,6 +255,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const markersRef = useRef<L.Marker[]>([]);
   const flightPathLineRef = useRef<L.Polyline | null>(null);
   const flightPathClickableLineRef = useRef<L.Polyline | null>(null);
+  const segmentLengthLabelsRef = useRef<L.Marker[]>([]);
   const hoveredPointRef = useRef<number | null>(null);
   const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
@@ -290,6 +291,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const activeRoute = routes.find((route) => route.id === activeRouteId) || routes[0];
   const activeRouteColor = activeRoute?.color || '#ff0000';
+
+  const formatSegmentLength = (meters: number): string => {
+    if (!Number.isFinite(meters)) return '—';
+    if (meters >= 1000) {
+      return `${(meters / 1000).toFixed(2)} km`;
+    }
+    if (meters >= 100) {
+      return `${meters.toFixed(0)} m`;
+    }
+    return `${meters.toFixed(1)} m`;
+  };
 
   // Helper function to check if a point is within DTM bounds
   const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
@@ -651,6 +663,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
       flightPathClickableLineRef.current = null;
     }
 
+    // Remove existing segment length labels
+    segmentLengthLabelsRef.current.forEach((label) => label.remove());
+    segmentLengthLabelsRef.current = [];
+
     if (flightPath.length === 0) return;
 
     // Convert coordinates to Leaflet format (lat, lng)
@@ -735,6 +751,32 @@ const MapPanel: React.FC<MapPanelProps> = ({
       weight: 3,
       opacity: 0.8
     }).addTo(map.current);
+
+    // Add segment length labels at midpoints
+    for (let i = 0; i < flightPath.length - 1; i++) {
+      const start = flightPath[i];
+      const end = flightPath[i + 1];
+      const distanceMeters = calculateDistance(start, end);
+      const midpointLat = (start.lat + end.lat) / 2;
+      const midpointLng = (start.lng + end.lng) / 2;
+
+      const bearingDeg = (calculateBearing(start, end) * 180) / Math.PI;
+      const normalizedBearing = ((bearingDeg % 360) + 360) % 360;
+      const displayAngle = normalizedBearing <= 270 ? bearingDeg - 90 : bearingDeg + 90;
+
+      const labelIcon = L.divIcon({
+        className: 'segment-length-label',
+        html: `<span style="transform: translate(-50%, -50%) rotate(${displayAngle}deg);">${formatSegmentLength(distanceMeters)}</span>`
+      });
+
+      const labelMarker = L.marker([midpointLat, midpointLng], {
+        icon: labelIcon,
+        interactive: false,
+        zIndexOffset: 500
+      }).addTo(map.current!);
+
+      segmentLengthLabelsRef.current.push(labelMarker);
+    }
 
     // Update cursor style for clickable line layer when in parallel line mode
     if (isParallelLineMode && flightPathClickableLineRef.current) {

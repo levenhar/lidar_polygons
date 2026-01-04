@@ -729,6 +729,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return `${meters.toFixed(1)} m`;
   };
 
+  const formatSegmentLength = (meters: number): string => {
+    if (!Number.isFinite(meters)) return '—';
+    if (meters >= 1000) {
+      return `${(meters / 1000).toFixed(2)} km`;
+    }
+    if (meters >= 100) {
+      return `${meters.toFixed(0)} m`;
+    }
+    return `${meters.toFixed(1)} m`;
+  };
+
   // Helper function to check if a point is within DTM bounds
   const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
     if (!dtmBounds || dtmBounds.length !== 4) {
@@ -1619,6 +1630,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
       map.current.removeLayer(flightPathBufferRef.current);
       flightPathBufferRef.current = null;
     }
+
+    // Remove existing segment length labels
+    segmentLengthLabelsRef.current.forEach((label) => label.remove());
+    segmentLengthLabelsRef.current = [];
 
     // Remove existing segment length labels
     segmentLengthLabelsRef.current.forEach((label) => label.remove());

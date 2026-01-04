@@ -260,7 +260,7 @@ export function useFlightPath() {
 
     if (!active || active.points.length < 2) {
       if (routesWithPoints.length === 0) {
-        alert('No routes have at least 2 points to export.');
+        alert('No routes have 2+ points to export.');
         return;
       }
     }
@@ -268,7 +268,7 @@ export function useFlightPath() {
     let exportAll = false;
     if (routesWithPoints.length > 1) {
       exportAll = window.confirm(
-        'Export all routes?\n\nOK = export all routes with at least 2 points.\nCancel = export only the active route.'
+        'Export all routes?\nOK: export routes with 2+ points. Cancel: active route only.'
       );
     }
 
@@ -301,7 +301,7 @@ export function useFlightPath() {
     }
 
     if (features.length === 0) {
-      alert('Nothing to export. Ensure the selected route has at least 2 points.');
+      alert('Nothing to export. Add at least 2 points.');
       return;
     }
 
@@ -337,7 +337,7 @@ export function useFlightPath() {
         const lineStringFeature = geoJSON.features.find((f) => f.geometry.type === 'LineString');
 
         if (!lineStringFeature) {
-          alert('No LineString feature found in GeoJSON');
+          alert('No LineString in GeoJSON.');
           return;
         }
 
@@ -352,7 +352,7 @@ export function useFlightPath() {
         updateActiveRoute((route) => ({ ...route, points: coordinates }));
       } catch (error) {
         console.error('Error importing GeoJSON:', error);
-        alert('Failed to import GeoJSON file');
+        alert('Failed to import GeoJSON.');
       }
     },
     [updateActiveRoute]

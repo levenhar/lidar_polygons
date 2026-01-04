@@ -202,14 +202,14 @@ function App() {
           height
         });
       } else {
-        alert('Invalid height. Please enter a positive number.');
+        alert('Height must be positive.');
       }
     }
   }, [flightPath, nominalFlightHeight, updatePoint]);
 
   const handleEditPointRequest = useCallback((pointIndex: number) => {
     setEditPointIndex(pointIndex);
-    alert(`Edit mode enabled for point ${pointIndex + 1}. Click on the map to move the point.`);
+    alert(`Editing point ${pointIndex + 1}. Click the map to move it.`);
   }, []);
 
   // Handle keyboard shortcuts for undo/redo

@@ -6,6 +6,133 @@
   position: relative;
 }
 
+.quick-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.28);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1400;
+}
+
+.quick-modal__card {
+  width: 360px;
+  max-width: calc(100% - 32px);
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+  border: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  font-size: 1rem;
+}
+
+.quick-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 8px;
+}
+
+.quick-modal__title {
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: #0f172a;
+}
+
+.quick-modal__close {
+  border: none;
+  background: none;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  color: #64748b;
+}
+
+.quick-modal__body {
+  padding: 0 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quick-modal__label {
+  font-size: 0.95rem;
+  color: #475569;
+  font-weight: 600;
+}
+
+.quick-modal__input {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 1rem;
+}
+
+.quick-modal__segmented {
+  display: inline-flex;
+  gap: 6px;
+  background: #f8fafc;
+  padding: 6px;
+  border-radius: 999px;
+  align-self: flex-start;
+}
+
+.quick-modal__pill {
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.quick-modal__pill.active {
+  background: #0ea5e9;
+  color: #fff;
+  border-color: #0ea5e9;
+}
+
+.quick-modal__split {
+  display: flex;
+  gap: 8px;
+}
+
+.quick-modal__error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecdd3;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+}
+
+.quick-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px 16px 14px;
+  font-size: 1rem;
+}
+
+.quick-modal__info {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid #0ea5e9;
+  color: #0ea5e9;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: default;
+}
+
 .map-controls {
   display: flex;
   gap: 1.5rem;
@@ -416,7 +543,7 @@
 
 .edit-mode-indicator {
   position: absolute;
-  top: 70px;
+  bottom: 90px;
   left: 50%;
   transform: translateX(-50%);
   background: #f59e0b;
@@ -425,9 +552,10 @@
   border-radius: 8px;
   font-size: 1rem;
   font-weight: 500;
-  z-index: 1000;
+  z-index: 1200;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
   border: 1px solid #d97706;
+  pointer-events: none;
 }
 
 .dtm-transparency-control {

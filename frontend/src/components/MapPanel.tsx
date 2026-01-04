@@ -270,6 +270,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
   const [editingRouteName, setEditingRouteName] = useState<string>('');
+  const [dialog, setDialog] = useState<{
+    type: 'height' | 'azimuthDistance' | 'coordinates' | 'uTurn' | 'parallelOffset';
+    title: string;
+  } | null>(null);
+  const [dialogValues, setDialogValues] = useState<Record<string, string>>({});
+  const [dialogError, setDialogError] = useState<string | null>(null);
+
+  const resetDialog = () => {
+    setDialog(null);
+    setDialogValues({});
+    setDialogError(null);
+  };
 
   const activeRoute = routes.find((route) => route.id === activeRouteId) || routes[0];
   const activeRouteColor = activeRoute?.color || '#ff0000';
@@ -536,7 +548,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
-          alert('Cannot move point outside DTM bounding box. Please select a point within the DTM extent.');
+          alert('Point must stay within DTM bounds.');
           return;
         }
         
@@ -573,45 +585,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
         
         if (closestSegmentIndex >= 0) {
-          // Prompt for offset distance
-          const distanceInput = prompt(
-            `Enter offset distance in meters for parallel line:\n(Positive = right side, Negative = left side)`,
-            '50'
-          );
-          
-          if (distanceInput !== null) {
-            const offsetDistance = parseFloat(distanceInput);
-            if (!isNaN(offsetDistance)) {
-              const segmentStart = flightPath[closestSegmentIndex];
-              const segmentEnd = flightPath[closestSegmentIndex + 1];
-              
-              // Calculate parallel line
-              const [parallelStart, parallelEnd] = calculateParallelLine(
-                segmentStart,
-                segmentEnd,
-                offsetDistance
-              );
-              
-              // Check if parallel points are within bounds
-              if (
-                isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
-                isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
-              ) {
-                // Add parallel line points at the end of the flight path as a single operation
-                // Point 3 should be closer to point 2, so we add parallelEnd first (which corresponds to point 2)
-                // Then add parallelStart (which corresponds to point 1)
-                onAddPoints([parallelEnd, parallelStart]); // Add both points in a single undoable action
-                setIsParallelLineMode(false);
-                alert(`Parallel line created with offset of ${offsetDistance}m. Added 2 new points at the end of the path.`);
+          setDialog({
+            type: 'parallelOffset',
+            title: 'Parallel offset'
+          });
+          setDialogValues({
+            segmentIndex: closestSegmentIndex.toString(),
+            offset: '50'
+          });
+          setDialogError(null);
               } else {
-                alert('Parallel line points would be outside DTM bounds. Please use a smaller offset.');
-              }
-            } else {
-              alert('Invalid distance. Please enter a number.');
-            }
-          }
-        } else {
-          alert('Could not determine which line segment was clicked. Please click closer to a line segment.');
+          alert('Click closer to a line segment.');
         }
         return;
       }
@@ -623,7 +607,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
-          alert('Cannot add point outside DTM bounding box. Please select a point within the DTM extent.');
+          alert('Point must be inside DTM bounds.');
           return;
         }
         
@@ -716,7 +700,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const lat = start.lat + closestT * (end.lat - start.lat);
 
       if (!isPointWithinBounds(lng, lat)) {
-        alert('Cannot add point outside DTM bounding box. Please select a point within the DTM extent.');
+        alert('Point must be inside DTM bounds.');
         return;
       }
 
@@ -1169,7 +1153,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             } catch (transformError) {
               console.error('Error transforming coordinates:', transformError);
               console.error('Source projection:', sourceProj);
-              alert(`Failed to transform coordinates: ${transformError instanceof Error ? transformError.message : 'Unknown error'}\n\nSource projection: ${sourceProj}\n\nPlease check that the EPSG code in your GeoTIFF is correct.`);
+              alert(`Transform failed: ${transformError instanceof Error ? transformError.message : 'Unknown error'}\nSource projection: ${sourceProj}\nCheck the EPSG in your GeoTIFF.`);
               throw new Error(`Coordinate transformation failed: ${transformError instanceof Error ? transformError.message : 'Unknown error'}`);
             }
           }
@@ -1296,7 +1280,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             console.error('Error details:', sourceError);
             setDtmLoaded(false);
             setIsDtmProcessing(false);
-            alert(`Failed to add DTM to map: ${sourceError instanceof Error ? sourceError.message : 'Unknown error'}\n\nCheck browser console for details.`);
+            alert(`Can't add DTM: ${sourceError instanceof Error ? sourceError.message : 'Unknown error'}\nSee console for details.`);
           }
         };
 
@@ -1319,7 +1303,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           console.error('Error loading DTM image:', error);
           setDtmLoaded(false);
           setIsDtmProcessing(false);
-          alert('Failed to create DTM image from canvas. Check console for details.');
+          alert('Could not create DTM image. See console.');
         };
 
         const dataUrl = canvas.toDataURL();
@@ -1333,7 +1317,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         setDtmLoaded(false);
         setIsDtmProcessing(false);
-        alert(`Failed to load DTM: ${errorMessage}\n\nPlease ensure the file is a valid GeoTIFF with elevation data.`);
+        alert(`Failed to load DTM: ${errorMessage}\nEnsure the file is a valid GeoTIFF.`);
       }
     };
 
@@ -1351,13 +1335,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const hasValidExtension = allowedExtensions.some((ext) => lowerName.endsWith(ext));
 
     if (!hasValidExtension) {
-      alert('Please upload a GeoTIFF file (.tif, .tiff, .geotiff).');
+      alert('Upload a GeoTIFF (.tif/.tiff/.geotiff).');
       resetFileInput();
       return;
     }
 
     if (isUploading) {
-      alert('A DTM upload is already in progress. Please wait for it to finish.');
+      alert('Upload in progress. Please wait.');
       resetFileInput();
       return;
     }
@@ -1366,14 +1350,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const maxSizeBytes = 199 * 1024 * 1024; // 199 MB
     if (file.size > maxSizeBytes) {
       const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
-      alert(`File size (${fileSizeMB} MB) exceeds the maximum allowed size of 199 MB. Please use a smaller DTM file.`);
+      alert(`File is ${fileSizeMB} MB (max 199). Use a smaller DTM.`);
       resetFileInput();
       return;
     }
 
     // Prevent uploading if a DTM is already loaded
     if (dtmLoaded) {
-      alert('A DTM is already loaded. Please unload it first before loading a new one.');
+      alert('Unload the current DTM before loading another.');
       resetFileInput();
       return;
     }
@@ -1492,7 +1476,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     e.stopPropagation();
     setIsDragOver(false);
     if (isUploading) {
-      alert('A DTM upload is already in progress. Please wait for it to finish.');
+      alert('Upload in progress. Please wait.');
       return;
     }
     const file = e.dataTransfer?.files?.[0];
@@ -1523,7 +1507,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   };
 
   const handleDeleteAllPoints = () => {
-    if (window.confirm('Are you sure you want to delete all points?')) {
+    if (window.confirm('Delete all points?')) {
       onPathChange([]);
     }
   };
@@ -1536,75 +1520,31 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const handleSetFlightHeight = (pointIndex: number) => {
     const currentPoint = flightPath[pointIndex];
     const currentHeight = currentPoint.height ?? nominalFlightHeight;
-    const heightInput = prompt(`Enter flight height (AGL in meters) for point ${pointIndex + 1}:`, currentHeight.toString());
-    
-    if (heightInput !== null) {
-      const height = parseFloat(heightInput);
-      if (!isNaN(height) && height >= 0) {
-        onUpdatePoint(pointIndex, {
-          ...currentPoint,
-          height
-        });
-      } else {
-        alert('Invalid height. Please enter a positive number.');
-      }
-    }
+    setDialog({
+      type: 'height',
+      title: `Point ${pointIndex + 1} height`
+    });
+    setDialogValues({ height: currentHeight.toString(), pointIndex: pointIndex.toString() });
+    setDialogError(null);
   };
 
   const handleCreatePointFromAzimuthDistance = () => {
     if (flightPath.length === 0) {
-      alert('Please add at least one point first before creating a point from azimuth and distance.');
+      alert('Add a point first.');
       return;
     }
 
     if (!dtmLoaded) {
-      alert('Please load a DTM first.');
+      alert('Load a DTM first.');
       return;
     }
 
-    const lastPoint = flightPath[flightPath.length - 1];
-    
-    // Prompt for azimuth (in degrees, 0-360, measured from north)
-    const azimuthInput = prompt(
-      `Enter azimuth in degrees (0-360, measured from north):\n` +
-      `0° = North, 90° = East, 180° = South, 270° = West`,
-      '0'
-    );
-    
-    if (azimuthInput === null) return;
-    
-    const azimuth = parseFloat(azimuthInput);
-    if (isNaN(azimuth) || azimuth < 0 || azimuth >= 360) {
-      alert('Invalid azimuth. Please enter a number between 0 and 360.');
-      return;
-    }
-
-    // Prompt for distance (in meters)
-    const distanceInput = prompt('Enter distance in meters:', '100');
-    
-    if (distanceInput === null) return;
-    
-    const distance = parseFloat(distanceInput);
-    if (isNaN(distance) || distance <= 0) {
-      alert('Invalid distance. Please enter a positive number.');
-      return;
-    }
-
-    // Convert azimuth (degrees from north) to bearing (radians from north)
-    // Azimuth and bearing are the same, just need to convert to radians
-    const bearing = (azimuth * Math.PI) / 180;
-
-    // Calculate new point
-    const newPoint = calculateDestination(lastPoint, bearing, distance);
-
-    // Check if new point is within DTM bounds
-    if (!isPointWithinBounds(newPoint.lng, newPoint.lat)) {
-      alert('The calculated point is outside DTM bounding box. Please use a smaller distance or different azimuth.');
-      return;
-    }
-
-    // Add the new point
-    onAddPoint(newPoint);
+    setDialog({
+      type: 'azimuthDistance',
+      title: 'Azimuth + distance'
+    });
+    setDialogValues({ azimuth: '0', distance: '100' });
+    setDialogError(null);
   };
 
   // Handle DTM opacity change
@@ -1620,189 +1560,46 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleCreatePointFromCoordinates = () => {
     if (!dtmLoaded) {
-      alert('Please load a DTM first.');
+      alert('Load a DTM first.');
       return;
     }
 
-    // Prompt user to choose coordinate system
-    const coordTypeInput = prompt(
-      `Select coordinate system:\n` +
-      `1 - Geographic (Lat/Lng)\n` +
-      `2 - UTM\n\n` +
-      `Enter 1 or 2:`,
-      '1'
-    );
-
-    if (coordTypeInput === null) return;
-
-    const coordType = coordTypeInput.trim();
-    let lng: number, lat: number;
-
-    if (coordType === '1') {
-      // Geographic coordinates (Lat/Lng)
-      const lngInput = prompt('Enter Longitude (decimal degrees, -180 to 180):', '');
-      if (lngInput === null) return;
-
-      const latInput = prompt('Enter Latitude (decimal degrees, -90 to 90):', '');
-      if (latInput === null) return;
-
-      lng = parseFloat(lngInput);
-      lat = parseFloat(latInput);
-
-      if (isNaN(lng) || isNaN(lat)) {
-        alert('Invalid coordinates. Please enter valid numbers.');
-        return;
-      }
-
-      if (lng < -180 || lng > 180) {
-        alert('Invalid longitude. Please enter a value between -180 and 180.');
-        return;
-      }
-
-      if (lat < -90 || lat > 90) {
-        alert('Invalid latitude. Please enter a value between -90 and 90.');
-        return;
-      }
-    } else if (coordType === '2') {
-      // UTM coordinates
-      const eastingInput = prompt('Enter UTM Easting (meters):', '');
-      if (eastingInput === null) return;
-
-      const northingInput = prompt('Enter UTM Northing (meters):', '');
-      if (northingInput === null) return;
-
-      const zoneInput = prompt('Enter UTM Zone (1-60):', '36');
-      if (zoneInput === null) return;
-
-      const hemisphereInput = prompt('Enter Hemisphere (N for North, S for South):', 'N');
-      if (hemisphereInput === null) return;
-
-      const easting = parseFloat(eastingInput);
-      const northing = parseFloat(northingInput);
-      const zone = parseInt(zoneInput, 10);
-      const hemisphere = hemisphereInput.trim().toUpperCase();
-
-      if (isNaN(easting) || isNaN(northing) || isNaN(zone)) {
-        alert('Invalid UTM coordinates. Please enter valid numbers.');
-        return;
-      }
-
-      if (zone < 1 || zone > 60) {
-        alert('Invalid UTM zone. Please enter a value between 1 and 60.');
-        return;
-      }
-
-      if (hemisphere !== 'N' && hemisphere !== 'S') {
-        alert('Invalid hemisphere. Please enter N for North or S for South.');
-        return;
-      }
-
-      // Convert UTM to WGS84 using proj4
-      try {
-        // Define UTM projection using proj4 string format
-        // UTM zones: central meridian at 6° intervals, false easting 500,000m, false northing 10,000,000m for Southern hemisphere
-        const utmProjString = `+proj=utm +zone=${zone} +${hemisphere === 'N' ? 'north' : 'south'} +datum=WGS84 +units=m +no_defs`;
-        
-        // Define WGS84 (EPSG:4326) projection
-        const wgs84Proj = '+proj=longlat +datum=WGS84 +no_defs';
-        
-        // Transform from UTM to WGS84
-        const [transformedLng, transformedLat] = proj4(utmProjString, wgs84Proj, [easting, northing]);
-        lng = transformedLng;
-        lat = transformedLat;
-        
-        console.log(`Converted UTM (Zone ${zone}${hemisphere}, ${easting}, ${northing}) to WGS84: (${lng}, ${lat})`);
-      } catch (transformError) {
-        console.error('Error transforming UTM coordinates:', transformError);
-        alert(`Failed to convert UTM coordinates: ${transformError instanceof Error ? transformError.message : 'Unknown error'}`);
-        return;
-      }
-    } else {
-      alert('Invalid selection. Please enter 1 for Geographic or 2 for UTM.');
-      return;
-    }
-
-    // Check if point is within DTM bounds
-    if (!isPointWithinBounds(lng, lat)) {
-      alert('The specified point is outside DTM bounding box. Please enter coordinates within the DTM extent.');
-      return;
-    }
-
-    // Create and add the new point
-    const newPoint: Coordinate = {
-      lng,
-      lat
-    };
-    onAddPoint(newPoint);
+    setDialog({
+      type: 'coordinates',
+      title: 'Add point by coords'
+    });
+    setDialogValues({
+      mode: 'geo',
+      lng: '',
+      lat: '',
+      easting: '',
+      northing: '',
+      zone: '36',
+      hemisphere: 'N'
+    });
+    setDialogError(null);
   };
 
   const handleAddUTurn = () => {
     if (!dtmLoaded) {
-      alert('Please load a DTM first.');
+      alert('Load a DTM first.');
       return;
     }
 
     if (flightPath.length < 2) {
-      alert('Please add at least two points first (so the U-turn can follow your current direction).');
+      alert('Add at least two points first.');
       return;
     }
 
-    const radiusInput = prompt('Enter U-turn radius in meters (positive = right, negative = left):', '50');
-    if (radiusInput === null) return;
-
-    const radius = parseFloat(radiusInput);
-    if (isNaN(radius) || radius === 0) {
-      alert('Invalid radius. Please enter a non-zero number.');
-      return;
-    }
-
-    const side: UTurnSide = radius > 0 ? 'R' : 'L';
-    const radiusMeters = Math.abs(radius);
-
-    const prev = flightPath[flightPath.length - 2];
-    const start = flightPath[flightPath.length - 1];
-
-    const numUTurnPoints = 10;
-    const maxStartEndDistance = radiusMeters * 2;
-    const distanceInput = prompt(
-      `Enter distance between U-turn start and end points in meters (max ${maxStartEndDistance.toFixed(2)}). End stays on the perpendicular line.`,
-      maxStartEndDistance.toString()
-    );
-    if (distanceInput === null) return;
-
-    const startEndDistance = parseFloat(distanceInput);
-    if (isNaN(startEndDistance) || startEndDistance <= 0) {
-      alert('Invalid distance. Please enter a positive number.');
-      return;
-    }
-
-    const clampedDistance = Math.min(startEndDistance, maxStartEndDistance);
-    if (startEndDistance > maxStartEndDistance) {
-      alert(`Distance reduced to ${maxStartEndDistance} meters (must be <= 2 x radius).`);
-    }
-
-    const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
-
-    if (pts.length !== numUTurnPoints) {
-      alert('Failed to generate U-turn points.');
-      return;
-    }
-
-    // Validate bounds (all points must be inside DTM extent)
-    const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
-    if (outOfBounds) {
-      alert('U-turn points fall outside the DTM bounding box. Try a smaller radius.');
-      return;
-    }
-
-    const startHeight = start.height;
-    const uTurnPoints: Coordinate[] =
-      startHeight !== undefined
-        ? pts.map(p => ({ ...p, height: startHeight }))
-        : pts;
-
-    // Add all points in one undoable action
-    onAddPoints(uTurnPoints);
+    setDialog({
+      type: 'uTurn',
+      title: 'Add U-turn'
+    });
+    setDialogValues({
+      radius: '50',
+      distance: '100'
+    });
+    setDialogError(null);
   };
 
   const currentBaseIndex = baseMaps.findIndex((entry) => entry.id === activeBaseMapId);
@@ -1810,8 +1607,403 @@ const MapPanel: React.FC<MapPanelProps> = ({
     ? baseMaps[(Math.max(currentBaseIndex, 0) + 1) % baseMaps.length]
     : null;
 
+  const handleDialogSubmit = () => {
+    if (!dialog) return;
+    setDialogError(null);
+
+    if (dialog.type === 'height') {
+      const target = dialogValues.height;
+      const height = target ? parseFloat(target) : NaN;
+      const index = parseInt(dialogValues.pointIndex || '0', 10);
+      if (isNaN(height) || height < 0) {
+        setDialogError('Height must be >= 0.');
+        return;
+      }
+      const point = flightPath[index];
+      if (!point) {
+        setDialogError('Point not found.');
+        return;
+      }
+      onUpdatePoint(index, { ...point, height });
+      resetDialog();
+        return;
+      }
+
+    if (dialog.type === 'azimuthDistance') {
+      const azimuth = parseFloat(dialogValues.azimuth || '');
+      const distance = parseFloat(dialogValues.distance || '');
+      if (isNaN(azimuth) || azimuth < 0 || azimuth >= 360) {
+        setDialogError('Azimuth 0-360.');
+        return;
+      }
+      if (isNaN(distance) || distance <= 0) {
+        setDialogError('Distance > 0.');
+        return;
+      }
+      const lastPoint = flightPath[flightPath.length - 1];
+      const bearing = (azimuth * Math.PI) / 180;
+      const newPoint = calculateDestination(lastPoint, bearing, distance);
+      if (!isPointWithinBounds(newPoint.lng, newPoint.lat)) {
+        setDialogError('Point outside DTM.');
+        return;
+      }
+      onAddPoint(newPoint);
+      resetDialog();
+        return;
+      }
+
+    if (dialog.type === 'parallelOffset') {
+      const offset = parseFloat(dialogValues.offset || '');
+      const segmentIndex = parseInt(dialogValues.segmentIndex || '-1', 10);
+      if (isNaN(offset)) {
+        setDialogError('Offset needed.');
+        return;
+      }
+      if (segmentIndex < 0 || segmentIndex >= flightPath.length - 1) {
+        setDialogError('Pick segment again.');
+        return;
+      }
+      const segmentStart = flightPath[segmentIndex];
+      const segmentEnd = flightPath[segmentIndex + 1];
+      const [parallelStart, parallelEnd] = calculateParallelLine(
+        segmentStart,
+        segmentEnd,
+        offset
+      );
+      if (
+        isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
+        isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
+      ) {
+        onAddPoints([parallelEnd, parallelStart]);
+        setIsParallelLineMode(false);
+        resetDialog();
+      } else {
+        setDialogError('Offset exits DTM.');
+      }
+      return;
+    }
+
+    if (dialog.type === 'coordinates') {
+      const mode = dialogValues.mode || 'geo';
+      let lng: number | null = null;
+      let lat: number | null = null;
+
+      if (mode === 'geo') {
+        lng = parseFloat(dialogValues.lng || '');
+        lat = parseFloat(dialogValues.lat || '');
+        if (isNaN(lng) || isNaN(lat)) {
+          setDialogError('Enter numbers.');
+          return;
+        }
+        if (lng < -180 || lng > 180) {
+          setDialogError('Lng -180..180.');
+          return;
+        }
+        if (lat < -90 || lat > 90) {
+          setDialogError('Lat -90..90.');
+          return;
+        }
+      } else {
+        const easting = parseFloat(dialogValues.easting || '');
+        const northing = parseFloat(dialogValues.northing || '');
+        const zone = parseInt(dialogValues.zone || '', 10);
+        const hemisphere = (dialogValues.hemisphere || 'N').toUpperCase();
+      if (isNaN(easting) || isNaN(northing) || isNaN(zone)) {
+          setDialogError('UTM numbers only.');
+        return;
+      }
+      if (zone < 1 || zone > 60) {
+          setDialogError('Zone 1-60.');
+        return;
+      }
+      if (hemisphere !== 'N' && hemisphere !== 'S') {
+          setDialogError('Hemisphere N/S.');
+        return;
+      }
+      try {
+        const utmProjString = `+proj=utm +zone=${zone} +${hemisphere === 'N' ? 'north' : 'south'} +datum=WGS84 +units=m +no_defs`;
+        const wgs84Proj = '+proj=longlat +datum=WGS84 +no_defs';
+        const [transformedLng, transformedLat] = proj4(utmProjString, wgs84Proj, [easting, northing]);
+        lng = transformedLng;
+        lat = transformedLat;
+      } catch (transformError) {
+        console.error('Error transforming UTM coordinates:', transformError);
+          setDialogError('UTM convert failed.');
+        return;
+      }
+    }
+
+      if (lng === null || lat === null) {
+        setDialogError('Coordinates missing.');
+      return;
+    }
+
+      if (!isPointWithinBounds(lng, lat)) {
+        setDialogError('Point outside DTM.');
+      return;
+    }
+
+      onAddPoint({ lng, lat });
+      resetDialog();
+      return;
+    }
+
+    if (dialog.type === 'uTurn') {
+      const radius = parseFloat(dialogValues.radius || '');
+      const distance = parseFloat(dialogValues.distance || '');
+    if (isNaN(radius) || radius === 0) {
+        setDialogError('Radius non-zero.');
+      return;
+    }
+      if (isNaN(distance) || distance <= 0) {
+        setDialogError('Distance > 0.');
+        return;
+      }
+    const side: UTurnSide = radius > 0 ? 'R' : 'L';
+    const radiusMeters = Math.abs(radius);
+    const prev = flightPath[flightPath.length - 2];
+    const start = flightPath[flightPath.length - 1];
+    const numUTurnPoints = 10;
+    const maxStartEndDistance = radiusMeters * 2;
+      const clampedDistance = Math.min(distance, maxStartEndDistance);
+      if (distance > maxStartEndDistance) {
+        setDialogError(`Distance capped at ${maxStartEndDistance}m.`);
+      }
+    const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
+    if (pts.length !== numUTurnPoints) {
+        setDialogError('Could not build U-turn.');
+      return;
+    }
+    const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
+    if (outOfBounds) {
+        setDialogError('U-turn outside DTM.');
+      return;
+    }
+    const startHeight = start.height;
+    const uTurnPoints: Coordinate[] =
+      startHeight !== undefined
+        ? pts.map(p => ({ ...p, height: startHeight }))
+        : pts;
+    onAddPoints(uTurnPoints);
+      resetDialog();
+    }
+  };
+
+  const renderDialogFields = () => {
+    if (!dialog) return null;
+    if (dialog.type === 'height') {
+      return (
+        <>
+          <label className="quick-modal__label" htmlFor="height-input">Height (m)</label>
+          <input
+            id="height-input"
+            type="number"
+            step="0.1"
+            value={dialogValues.height ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, height: e.target.value }))}
+            className="quick-modal__input"
+          />
+          <input type="hidden" value={dialogValues.pointIndex ?? ''} readOnly />
+        </>
+      );
+    }
+    if (dialog.type === 'azimuthDistance') {
+      return (
+        <>
+          <label className="quick-modal__label" htmlFor="azimuth-input">
+            Azimuth (0-360)
+          </label>
+          <input
+            id="azimuth-input"
+            type="number"
+            step="0.1"
+            value={dialogValues.azimuth ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, azimuth: e.target.value }))}
+            className="quick-modal__input"
+          />
+          <label className="quick-modal__label" htmlFor="distance-input">
+            Distance (m)
+          </label>
+          <input
+            id="distance-input"
+            type="number"
+            step="1"
+            value={dialogValues.distance ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, distance: e.target.value }))}
+            className="quick-modal__input"
+          />
+        </>
+      );
+    }
+    if (dialog.type === 'parallelOffset') {
+      return (
+        <>
+          <label className="quick-modal__label" htmlFor="offset-input">
+            Offset (m)
+            <Tooltip tooltip="Positive = right, negative = left">
+              <span className="quick-modal__info" aria-label="Offset direction info">i</span>
+            </Tooltip>
+          </label>
+          <input
+            id="offset-input"
+            type="number"
+            step="1"
+            value={dialogValues.offset ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, offset: e.target.value }))}
+            className="quick-modal__input"
+          />
+        </>
+      );
+    }
+    if (dialog.type === 'coordinates') {
+      const mode = dialogValues.mode || 'geo';
+      return (
+        <>
+          <div className="quick-modal__segmented">
+            <button
+              type="button"
+              className={`quick-modal__pill ${mode === 'geo' ? 'active' : ''}`}
+              onClick={() => setDialogValues((prev) => ({ ...prev, mode: 'geo' }))}
+            >
+              Lat/Lng
+            </button>
+            <button
+              type="button"
+              className={`quick-modal__pill ${mode === 'utm' ? 'active' : ''}`}
+              onClick={() => setDialogValues((prev) => ({ ...prev, mode: 'utm' }))}
+            >
+              UTM
+            </button>
+          </div>
+          {mode === 'geo' ? (
+            <>
+              <label className="quick-modal__label" htmlFor="lng-input">Longitude</label>
+              <input
+                id="lng-input"
+                type="number"
+                step="0.000001"
+                value={dialogValues.lng ?? ''}
+                onChange={(e) => setDialogValues((prev) => ({ ...prev, lng: e.target.value }))}
+                className="quick-modal__input"
+              />
+              <label className="quick-modal__label" htmlFor="lat-input">Latitude</label>
+              <input
+                id="lat-input"
+                type="number"
+                step="0.000001"
+                value={dialogValues.lat ?? ''}
+                onChange={(e) => setDialogValues((prev) => ({ ...prev, lat: e.target.value }))}
+                className="quick-modal__input"
+              />
+            </>
+          ) : (
+            <>
+              <label className="quick-modal__label" htmlFor="easting-input">Easting (m)</label>
+              <input
+                id="easting-input"
+                type="number"
+                step="1"
+                value={dialogValues.easting ?? ''}
+                onChange={(e) => setDialogValues((prev) => ({ ...prev, easting: e.target.value }))}
+                className="quick-modal__input"
+              />
+              <label className="quick-modal__label" htmlFor="northing-input">Northing (m)</label>
+              <input
+                id="northing-input"
+                type="number"
+                step="1"
+                value={dialogValues.northing ?? ''}
+                onChange={(e) => setDialogValues((prev) => ({ ...prev, northing: e.target.value }))}
+                className="quick-modal__input"
+              />
+              <div className="quick-modal__split">
+                <div>
+                  <label className="quick-modal__label" htmlFor="zone-input">Zone</label>
+                  <input
+                    id="zone-input"
+                    type="number"
+                    step="1"
+                    value={dialogValues.zone ?? ''}
+                    onChange={(e) => setDialogValues((prev) => ({ ...prev, zone: e.target.value }))}
+                    className="quick-modal__input"
+                  />
+                </div>
+                <div>
+                  <label className="quick-modal__label" htmlFor="hemisphere-input">Hem</label>
+                  <input
+                    id="hemisphere-input"
+                    type="text"
+                    maxLength={1}
+                    value={dialogValues.hemisphere ?? 'N'}
+                    onChange={(e) => setDialogValues((prev) => ({ ...prev, hemisphere: e.target.value }))}
+                    className="quick-modal__input"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      );
+    }
+    if (dialog.type === 'uTurn') {
+      return (
+        <>
+          <label className="quick-modal__label" htmlFor="radius-input">
+            Radius (m)
+            <Tooltip tooltip="Positive = right, negative = left">
+              <span className="quick-modal__info" aria-label="Radius direction info">i</span>
+            </Tooltip>
+          </label>
+          <input
+            id="radius-input"
+            type="number"
+            step="1"
+            value={dialogValues.radius ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, radius: e.target.value }))}
+            className="quick-modal__input"
+          />
+          <label className="quick-modal__label" htmlFor="distance-ut-input">Span (m)</label>
+          <input
+            id="distance-ut-input"
+            type="number"
+            step="1"
+            value={dialogValues.distance ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, distance: e.target.value }))}
+            className="quick-modal__input"
+          />
+        </>
+      );
+    }
+    return null;
+  };
+
   return (
     <div className="map-panel">
+      {dialog && (
+        <div className="quick-modal__backdrop" role="dialog" aria-modal="true">
+          <div className="quick-modal__card">
+            <div className="quick-modal__header">
+              <div className="quick-modal__title">{dialog.title}</div>
+              <button
+                type="button"
+                className="quick-modal__close"
+                onClick={resetDialog}
+                aria-label="Close input dialog"
+              >
+                ×
+              </button>
+            </div>
+            <div className="quick-modal__body">
+              {renderDialogFields()}
+              {dialogError && <div className="quick-modal__error">{dialogError}</div>}
+            </div>
+            <div className="quick-modal__actions">
+              <button type="button" className="btn btn-tertiary" onClick={resetDialog}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={handleDialogSubmit}>Apply</button>
+            </div>
+          </div>
+        </div>
+      )}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
@@ -1834,7 +2026,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       )}
       {isParallelLineMode && (
         <div className="edit-mode-indicator">
-          Parallel Line mode: Click on a line segment to create a parallel line
+          Click a line segment to create a parallel line
         </div>
       )}
       <div className="map-controls">
@@ -1923,10 +2115,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
                         className="route-visibility switch"
                         title={
                           route.id === activeRouteId
-                            ? 'Active route is always visible.'
+                            ? 'Active route stays visible.'
                             : route.visible
-                              ? 'Hide this route on the map'
-                              : 'Show this route on the map'
+                              ? 'Hide route'
+                              : 'Show route'
                         }
                       >
                         <input
@@ -1937,13 +2129,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
                         />
                         <span className="switch-slider" aria-hidden />
                       </label>
-                      <Tooltip tooltip={routes.length <= 1 ? 'At least one route is required.' : 'Delete this route.'}>
+                      <Tooltip tooltip={routes.length <= 1 ? 'Keep at least one route.' : 'Delete route.'}>
                         <button
                           type="button"
                           className="btn btn-destructive btn-icon btn-compact"
                           onClick={() => {
                             if (routes.length <= 1) return;
-                            if (window.confirm(`Delete "${route.name}"? This cannot be undone.`)) {
+                            if (window.confirm(`Delete "${route.name}"? Cannot undo.`)) {
                               onDeleteRoute(route.id);
                             }
                           }}
@@ -1988,7 +2180,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     type="button"
                     className="btn btn-destructive"
                     onClick={() => {
-                      if (window.confirm('Reset routes to a single empty route? This will remove all other routes and points.')) {
+                      if (window.confirm('Reset to one empty route? Removes all routes and points.')) {
                         onResetToSingleRoute();
                       }
                     }}
@@ -2014,7 +2206,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 style={{ display: 'none' }}
                 disabled={dtmLoaded}
               />
-              <Tooltip tooltip={dtmLoaded ? 'DTM already loaded. Unload it before loading another.' : 'Load a Digital Terrain Model (GeoTIFF) to enable planning.'}>
+              <Tooltip tooltip={dtmLoaded ? 'Unload current DTM first.' : 'Load DTM (GeoTIFF).'}>
                 <label
                   htmlFor="dtm-upload"
                   className={`btn btn-secondary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
@@ -2029,7 +2221,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 tooltip={
                   !dtmSource || !dtmLoaded
                     ? 'No DTM loaded.'
-                    : 'Unload DTM and clear all routes and points.'
+                    : 'Unload DTM and clear routes.'
                 }
               >
                 <button
@@ -2045,7 +2237,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               </Tooltip>
             </div>
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={flightPath.length === 0 ? 'No points to delete.' : 'Delete all flight path points (clears the route).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'No points to delete.' : 'Clear all points.'}>
                 <button
                   onClick={handleDeleteAllPoints}
                   className="btn btn-destructive btn-icon"
@@ -2065,7 +2257,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">Planning Options</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first to enable drawing.' : isDrawing ? 'Stop drawing (exit click-to-add mode).' : 'Draw path: click on the map to add points.'}>
+              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : isDrawing ? 'Stop drawing.' : 'Draw path (click map).'}>
                 <button
                   onClick={() => {
                     setIsDrawing(!isDrawing);
@@ -2087,12 +2279,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'Load a DTM first to enable parallel line creation.'
+                    ? 'Load a DTM first.'
                     : flightPath.length < 2
-                      ? 'Add at least 2 points first.'
+                      ? 'Add 2+ points first.'
                       : isParallelLineMode
-                        ? 'Cancel parallel line mode.'
-                        : 'Create a parallel line: click a segment, then enter offset (meters).'
+                        ? 'Stop parallel line mode.'
+                        : 'Parallel line: click a segment, set offset.'
                 }
               >
                 <button
@@ -2120,8 +2312,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   !dtmLoaded
                     ? 'Load a DTM first.'
                     : flightPath.length === 0
-                      ? 'Add at least 1 point first.'
-                      : 'Add a point from the last point using azimuth (deg) and distance (m).'
+                      ? 'Add a point first.'
+                      : 'Add point by azimuth + distance.'
                 }
               >
                 <button
@@ -2135,7 +2327,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">Azimuth + Distance</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Add a point by entering coordinates (Geographic or UTM).'}>
+              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Add point by coordinates.'}>
                 <button
                   onClick={handleCreatePointFromCoordinates}
                   className="btn btn-secondary btn-icon"
@@ -2152,8 +2344,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   !dtmLoaded
                     ? 'Load a DTM first.'
                     : flightPath.length < 2
-                      ? 'Add at least 2 points first.'
-                      : 'Add a U-turn (adds 10 points) using radius + distance (end on perpendicular).'
+                      ? 'Add 2+ points first.'
+                      : 'Add U-turn with radius + distance.'
                 }
               >
                 <button
@@ -2175,7 +2367,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">History</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Undo last action (Ctrl+Z).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Undo (Ctrl+Z).'}>
                 <button
                   onClick={onUndo}
                   disabled={!canUndo || flightPath.length === 0}
@@ -2187,7 +2379,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">Undo</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Redo last action (Ctrl+Y or Ctrl+Shift+Z).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Redo (Ctrl+Y or Ctrl+Shift+Z).'}>
                 <button
                   onClick={onRedo}
                   disabled={!canRedo || flightPath.length === 0}
@@ -2207,7 +2399,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">View Controls</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Fit map view to the DTM bounding box.'}>
+              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Fit view to DTM.'}>
                 <button
                   onClick={handleFitToDTM}
                   className="btn btn-tertiary btn-icon"

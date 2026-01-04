@@ -112,6 +112,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .domain(d3.extent(elevationProfile, d => d.distance) as [number, number])
       .range([0, width]);
 
+    const firstPointElevation = elevationProfile[0]?.elevation ?? 0;
+    const constantFlightAltitude = firstPointElevation + nominalFlightHeight;
+
+    // @ts-ignore
+    const getSafetyThreshold = (d: ElevationPoint) => {
+      const maxElev = d.maxElevation !== undefined ? d.maxElevation : d.elevation;
+      return maxElev + safetyHeight;
+    };
+
+    const getResolutionThreshold = (d: ElevationPoint) => {
+      const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
+      return minElev + resolutionHeight;
+    };
+
     // Calculate domain including min/max elevations within radius
     const allMinElevations = elevationProfile
       .map(d => d.minElevation)
@@ -132,13 +146,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     
     const maxElevation = Math.max(
       ...elevationProfile.map(d => d.elevation),
-      ...elevationProfile.map(d => d.elevation + (d.flightHeight ?? nominalFlightHeight)),
+      constantFlightAltitude,
       ...(allMaxElevations.length > 0 ? allMaxElevations : [0]),
       maxWithSafety,
       maxWithResolution
     );
     const minElevation = Math.min(
       ...elevationProfile.map(d => d.elevation),
+      constantFlightAltitude,
       ...(allMinElevations.length > 0 ? allMinElevations : [Infinity])
     );
 
@@ -155,6 +170,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     let maxMarkers: d3.Selection<SVGCircleElement, ElevationPoint, any, any> | null = null;
     let selectedDistanceLine: d3.Selection<SVGLineElement, unknown, any, any> | null = null;
     let selectedDistance: number | null = null;
+    let resolutionViolationAreas: d3.Selection<SVGPathElement, ElevationPoint[], any, any> | null = null;
+    let safetyViolationAreas: d3.Selection<SVGPathElement, ElevationPoint[], any, any> | null = null;
 
     // Draw ground elevation line
     const groundLine = d3.line<ElevationPoint>()
@@ -172,7 +189,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // Draw flight altitude line
     const flightLine = d3.line<ElevationPoint>()
       .x(d => currentXScale(d.distance))
-      .y(d => currentYScale(d.elevation + (d.flightHeight ?? nominalFlightHeight)))
+      .y(() => currentYScale(constantFlightAltitude))
       .curve(d3.curveMonotoneX);
 
     const flightPathLine = chartArea.append('path')
@@ -180,10 +197,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill', 'none')
       .attr('stroke', '#1E90FF')
       .attr('stroke-width', 2)
-      .attr('stroke-dasharray', '5,5')
       .attr('d', flightLine);
 
-    // Draw safety line (yellow) - safetyHeight meters above max elevation
+    // Draw safety line (red) - safetyHeight meters above max elevation
     // Use maxElevation if available, otherwise use regular elevation
     const safetyLine = d3.line<ElevationPoint>()
       .x(d => currentXScale(d.distance))
@@ -196,9 +212,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const safetyPath = chartArea.append('path')
       .datum(elevationProfile)
       .attr('fill', 'none')
-      .attr('stroke', '#FFD700')
-      .attr('stroke-width', 2)
-      .attr('stroke-dasharray', '8,4')
+      .attr('stroke', '#DC2626')
+      .attr('stroke-width', 3)
+      .attr('stroke-dasharray', '10,6')
       .attr('d', safetyLine);
 
     // Draw resolution line (green) - resolutionHeight meters above min elevation
@@ -214,9 +230,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const resolutionPath = chartArea.append('path')
       .datum(elevationProfile)
       .attr('fill', 'none')
-      .attr('stroke', '#32CD32')
-      .attr('stroke-width', 2)
-      .attr('stroke-dasharray', '8,4')
+      .attr('stroke', '#16A34A')
+      .attr('stroke-width', 3)
+      .attr('stroke-dasharray', '10,6')
       .attr('d', resolutionLine);
 
     // Add grid lines
@@ -264,7 +280,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .attr('x2', d => currentXScale(d.distance))
         .attr('y1', d => currentYScale(d.minElevation!))
         .attr('y2', d => currentYScale(d.maxElevation!))
-        .attr('stroke', '#FF6B6B')
+        .attr('stroke', '#FBBF24')
         .attr('stroke-width', 2)
         .attr('opacity', 0.6);
 
@@ -277,7 +293,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .attr('cx', d => currentXScale(d.distance))
         .attr('cy', d => currentYScale(d.minElevation!))
         .attr('r', 2.5)
-        .attr('fill', '#FF6B6B')
+        .attr('fill', '#FBBF24')
         .attr('opacity', 0.8);
 
       // Draw max elevation markers
@@ -289,7 +305,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .attr('cx', d => currentXScale(d.distance))
         .attr('cy', d => currentYScale(d.maxElevation!))
         .attr('r', 2.5)
-        .attr('fill', '#FF6B6B')
+        .attr('fill', '#FBBF24')
         .attr('opacity', 0.8);
     } else {
       // Remove any existing min/max elements if there are no points
@@ -314,18 +330,54 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill-opacity', 0.3)
       .attr('d', groundAreaGenerator);
 
-    // Fill area between ground and flight altitude
-    const flightAreaGenerator = d3.area<ElevationPoint>()
+    const buildSegments = (points: ElevationPoint[], predicate: (d: ElevationPoint) => boolean) => {
+      const segments: ElevationPoint[][] = [];
+      let current: ElevationPoint[] = [];
+      points.forEach((p) => {
+        if (predicate(p)) {
+          current.push(p);
+        } else if (current.length) {
+          segments.push(current);
+          current = [];
+        }
+      });
+      if (current.length) segments.push(current);
+      return segments;
+    };
+
+    const resolutionSegments = buildSegments(elevationProfile, (d) => constantFlightAltitude > getResolutionThreshold(d));
+    const safetySegments = buildSegments(elevationProfile, (d) => constantFlightAltitude < getSafetyThreshold(d));
+
+    const resolutionViolationGroup = chartArea.append('g').attr('class', 'resolution-violations');
+    const safetyViolationGroup = chartArea.append('g').attr('class', 'safety-violations');
+
+    const resolutionAreaGenerator = d3.area<ElevationPoint>()
       .x(d => currentXScale(d.distance))
-      .y0(d => currentYScale(d.elevation))
-      .y1(d => currentYScale(d.elevation + (d.flightHeight ?? nominalFlightHeight)))
+      .y0(d => currentYScale(getResolutionThreshold(d)))
+      .y1(() => currentYScale(constantFlightAltitude))
       .curve(d3.curveMonotoneX);
 
-    const flightArea = chartArea.append('path')
-      .datum(elevationProfile)
-      .attr('fill', '#87CEEB')
-      .attr('fill-opacity', 0.3)
-      .attr('d', flightAreaGenerator);
+    const safetyAreaGenerator = d3.area<ElevationPoint>()
+      .x(d => currentXScale(d.distance))
+      .y0(() => currentYScale(constantFlightAltitude))
+      .y1(d => currentYScale(getSafetyThreshold(d)))
+      .curve(d3.curveMonotoneX);
+
+    resolutionViolationAreas = resolutionViolationGroup.selectAll<SVGPathElement, ElevationPoint[]>('path')
+      .data(resolutionSegments)
+      .enter()
+      .append('path')
+      .attr('fill', '#16A34A')
+      .attr('fill-opacity', 0.18)
+      .attr('d', d => resolutionAreaGenerator(d));
+
+    safetyViolationAreas = safetyViolationGroup.selectAll<SVGPathElement, ElevationPoint[]>('path')
+      .data(safetySegments)
+      .enter()
+      .append('path')
+      .attr('fill', '#DC2626')
+      .attr('fill-opacity', 0.2)
+      .attr('d', d => safetyAreaGenerator(d));
 
     // Find original flight path vertices in the elevation profile
     // Match by coordinates (with small tolerance for floating point precision)
@@ -380,7 +432,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .append('circle')
       .attr('class', 'flight-point')
       .attr('cx', d => currentXScale(d.point.distance))
-      .attr('cy', d => currentYScale(d.point.elevation + (d.point.flightHeight ?? nominalFlightHeight)))
+      .attr('cy', () => currentYScale(constantFlightAltitude))
       .attr('r', 3)
       .attr('fill', '#1E90FF')
       .style('cursor', 'pointer');
@@ -483,10 +535,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     const legendData = [
       { label: 'Ground Elevation', color: '#8B4513', style: 'solid' },
-      { label: 'Flight Altitude', color: '#1E90FF', style: 'dashed' },
-      ...(pointsWithMinMax.length > 0 ? [{ label: 'Min/Max Elevation', color: '#FF6B6B', style: 'solid' }] : []),
-      { label: `Safety (+${safetyHeight}m)`, color: '#FFD700', style: 'dashed' },
-      { label: `Resolution (+${resolutionHeight}m)`, color: '#32CD32', style: 'dashed' }
+      { label: 'Flight Altitude', color: '#1E90FF', style: 'solid' },
+      ...(pointsWithMinMax.length > 0 ? [{ label: 'Min/Max Elevation', color: '#FBBF24', style: 'solid' }] : []),
+      { label: `Safety (+${safetyHeight}m)`, color: '#DC2626', style: 'dashed' },
+      { label: `Resolution (+${resolutionHeight}m)`, color: '#16A34A', style: 'dashed' }
     ];
 
     // Calculate the width of the longest label
@@ -529,8 +581,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .attr('y1', 0)
         .attr('y2', 0)
         .attr('stroke', item.color)
-        .attr('stroke-width', 2)
-        .attr('stroke-dasharray', item.style === 'dashed' ? '5,5' : '0');
+        .attr('stroke-width', item.style === 'dashed' ? 3 : 2)
+        .attr('stroke-dasharray', item.style === 'dashed' ? '8,5' : '0');
 
       legendItem.append('text')
         .attr('x', 25)
@@ -578,7 +630,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         safetyPath.attr('d', safetyLine);
         resolutionPath.attr('d', resolutionLine);
         groundArea.attr('d', groundAreaGenerator);
-        flightArea.attr('d', flightAreaGenerator);
+
+        if (resolutionViolationAreas) {
+          const resolutionAreaGenerator = d3.area<ElevationPoint>()
+            .x(d => currentXScale(d.distance))
+            .y0(d => currentYScale(getResolutionThreshold(d)))
+            .y1(() => currentYScale(constantFlightAltitude))
+            .curve(d3.curveMonotoneX);
+          resolutionViolationAreas.attr('d', d => resolutionAreaGenerator(d));
+        }
+
+        if (safetyViolationAreas) {
+          const safetyAreaGenerator = d3.area<ElevationPoint>()
+            .x(d => currentXScale(d.distance))
+            .y0(() => currentYScale(constantFlightAltitude))
+            .y1(d => currentYScale(getSafetyThreshold(d)))
+            .curve(d3.curveMonotoneX);
+          safetyViolationAreas.attr('d', d => safetyAreaGenerator(d));
+        }
 
         if (rangeBars) {
           rangeBars
@@ -604,7 +673,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
         flightPoints
           .attr('cx', d => currentXScale(d.point.distance))
-          .attr('cy', d => currentYScale(d.point.elevation + (d.point.flightHeight ?? nominalFlightHeight)));
+          .attr('cy', () => currentYScale(constantFlightAltitude));
 
         pointLabels
           .attr('x', d => currentXScale(d.point.distance))
@@ -625,11 +694,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
       let clickedInputPoint: { point: ElevationPoint; index: number; isFlight: boolean } | null = null;
       
+      const constantFlightY = currentYScale(constantFlightAltitude);
       if (originalVertices.length > 0) {
         for (const vertex of originalVertices) {
           const pointX = currentXScale(vertex.point.distance);
           const groundY = currentYScale(vertex.point.elevation);
-          const flightY = currentYScale(vertex.point.elevation + (vertex.point.flightHeight ?? nominalFlightHeight));
+          const flightY = constantFlightY;
           
           // Check if click is within 10 pixels of ground or flight point
           const distToGround = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(groundY - mouseY, 2));
@@ -670,11 +740,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         // Check if we're near any input point (ground or flight points)
         // If so, don't interfere with their right-click events
         let isNearInputPoint = false;
+        const constantFlightY = currentYScale(constantFlightAltitude);
         if (originalVertices.length > 0) {
           for (const vertex of originalVertices) {
             const pointX = currentXScale(vertex.point.distance);
             const groundY = currentYScale(vertex.point.elevation);
-            const flightY = currentYScale(vertex.point.elevation + (vertex.point.flightHeight ?? nominalFlightHeight));
+            const flightY = constantFlightY;
             
             // Check if mouse is within 10 pixels of ground or flight point
             const distToGround = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(groundY - mouseY, 2));
@@ -767,14 +838,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const exportCSV = () => {
     if (elevationProfile.length === 0) return;
 
+    const firstPointElevation = elevationProfile[0]?.elevation ?? 0;
+    const constantFlightAltitude = firstPointElevation + nominalFlightHeight;
+
     const headers = ['Distance (m)', 'Ground Elevation (m)', 'Flight Altitude (m)', 'AGL (m)', 'Longitude', 'Latitude'];
     const rows = elevationProfile.map(point => {
-      const flightHeight = point.flightHeight ?? nominalFlightHeight;
+      const flightAltitude = constantFlightAltitude;
+      const agl = flightAltitude - point.elevation;
       return [
         point.distance.toFixed(2),
         point.elevation.toFixed(2),
-        (point.elevation + flightHeight).toFixed(2),
-        flightHeight.toFixed(2),
+        flightAltitude.toFixed(2),
+        agl.toFixed(2),
         point.longitude.toFixed(6),
         point.latitude.toFixed(6)
       ];

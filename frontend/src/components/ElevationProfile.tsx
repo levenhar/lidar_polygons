@@ -528,6 +528,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return minElev + resolutionHeight;
     };
 
+    const firstPointElevation = elevationProfile[0]?.elevation ?? 0;
+    const constantFlightAltitude = firstPointElevation + nominalFlightHeight;
+
+    // @ts-ignore
+    const getSafetyThreshold = (d: ElevationPoint) => {
+      const maxElev = d.maxElevation !== undefined ? d.maxElevation : d.elevation;
+      return maxElev + safetyHeight;
+    };
+
+    const getResolutionThreshold = (d: ElevationPoint) => {
+      const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
+      return minElev + resolutionHeight;
+    };
+
     // Calculate domain including min/max elevations within radius
     const allMinElevations = elevationProfile
       .map(d => d.minElevation)
@@ -1518,6 +1532,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         // Check if we're near any input point (ground or flight points)
         // If so, don't interfere with their right-click events
         let isNearInputPoint = false;
+        const constantFlightY = currentYScale(constantFlightAltitude);
         if (originalVertices.length > 0) {
           for (const vertex of originalVertices) {
             const pointX = currentXScale(vertex.point.distance);

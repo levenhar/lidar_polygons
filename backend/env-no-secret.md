@@ -1,0 +1,21 @@
+BACKEND_SERVICE_NAME = backend
+BACKEND_PORT = 5000
+FRONTEND_SERVICE_NAME = fronend
+FRONTEND_PORT = 8080
+MAPS_TOKEN = ""
+MAPS_URL = https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png
+MAPS_URL_ALT = https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}
+
+
+### maps display parameters
+MAP_PREVIEW_ZOOM_DEFAULT = 0
+MAP_PREVIEW_X_DEFAULT = 0
+MAP_PREVIEW_Y_DEFAULT = 0
+
+MAP_PREVIEW_ZOOM_PRIMARY = 0
+MAP_PREVIEW_X_PRIMARY = 0
+MAP_PREVIEW_Y_PRIMARY = 0
+
+MAP_PREVIEW_ZOOM_ALTERNATE = 0
+MAP_PREVIEW_X_ALTERNATE = 0
+MAP_PREVIEW_Y_ALTERNATE = 0

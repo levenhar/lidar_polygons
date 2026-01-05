@@ -1,8 +1,11 @@
 import { Coordinate } from '../App';
 
 export interface ClimbConfig {
-  hvRatio: number; // horizontal meters required per 1m climb
+  climbRatio: number; // horizontal meters required per 1m climb (up)
+  descentRatio: number; // horizontal meters required per 1m descent (down)
   allowTurnsDuringClimb: boolean;
+  linkRatios: boolean;
+  vertexProximityMeters: number; // distance from vertex where climbing is paused
 }
 
 export interface BaseAltitudeSample {
@@ -41,21 +44,6 @@ function haversineDistance(a: Coordinate, b: Coordinate): number {
   return EARTH_RADIUS_M * c;
 }
 
-function bearingDegrees(a: Coordinate, b: Coordinate): number {
-  const dLon = ((b.lng - a.lng) * Math.PI) / 180;
-  const lat1 = (a.lat * Math.PI) / 180;
-  const lat2 = (b.lat * Math.PI) / 180;
-  const y = Math.sin(dLon) * Math.cos(lat2);
-  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-  const brng = Math.atan2(y, x);
-  return ((brng * 180) / Math.PI + 360) % 360;
-}
-
-function angleDelta(a: number, b: number): number {
-  const diff = Math.abs(a - b) % 360;
-  return diff > 180 ? 360 - diff : diff;
-}
-
 function cumulativeDistances(path: Coordinate[]): number[] {
   if (path.length === 0) return [];
   const distances = [0];
@@ -65,29 +53,21 @@ function cumulativeDistances(path: Coordinate[]): number[] {
   return distances;
 }
 
-function findSegmentIndex(target: number, cumulative: number[]): number {
-  if (cumulative.length < 2) return 0;
-  for (let i = 0; i < cumulative.length - 1; i++) {
-    if (target >= cumulative[i] && target <= cumulative[i + 1]) {
-      return i;
-    }
-  }
-  return cumulative.length - 2;
-}
-
 /**
  * Compute a gradual climb profile starting at a distance along track.
- * Climb progresses at hvRatio meters horizontal per 1 meter vertical.
+ * Climb progresses at climbRatio (if > 0) or descentRatio (if < 0) meters horizontal per 1 meter vertical.
  * When allowTurnsDuringClimb is false, horizontal distance inside turn segments
  * does not advance the climb ("pause during turns").
  */
 export function computeClimbProfile(
   startDistance: number,
   climbAmount: number,
-  hvRatio: number,
+  climbRatio: number,
+  descentRatio: number,
   allowTurnsDuringClimb: boolean,
   pathGeometry: Coordinate[],
   baseProfile: BaseAltitudeSample[],
+  vertexProximityMeters?: number,
   endDistance?: number
 ): ClimbProfileResult {
   const warnings: string[] = [];
@@ -127,8 +107,8 @@ export function computeClimbProfile(
     };
   }
 
-  if (!Number.isFinite(hvRatio) || hvRatio <= 0) {
-    warnings.push('Horizontal-to-vertical ratio must be > 0.');
+  if (!Number.isFinite(climbRatio) || climbRatio <= 0 || !Number.isFinite(descentRatio) || descentRatio <= 0) {
+    warnings.push('Ratios must be > 0.');
     return {
       points: baseProfile.map((p) => ({
         ...p,
@@ -149,8 +129,11 @@ export function computeClimbProfile(
   const climbEnd = endDistance !== undefined ? Math.min(endDistance, lastDistance) : lastDistance;
   const availableHorizontal = Math.max(0, climbEnd - startDistance);
   const climbDirection = Math.sign(climbAmount);
-  const requiredHorizontal = Math.abs(climbAmount) * hvRatio;
-  const appliedMagnitude = Math.min(Math.abs(climbAmount), availableHorizontal / hvRatio);
+  // Choose ratio based on direction: increasing altitude (positive) vs decreasing (negative)
+  const activeRatio = climbAmount > 0 ? climbRatio : descentRatio;
+
+  const requiredHorizontal = Math.abs(climbAmount) * activeRatio;
+  const appliedMagnitude = Math.min(Math.abs(climbAmount), availableHorizontal / activeRatio);
   const appliedClimb = appliedMagnitude * climbDirection;
 
   if (Math.abs(appliedClimb) < Math.abs(climbAmount)) {
@@ -161,19 +144,34 @@ export function computeClimbProfile(
     );
   }
 
-  // Pre-compute turn segments (pause climb during turns when disabled)
-  const turnThresholdDeg = 10; // small wiggle allowed
+  // Pre-compute vertex distances (pause climb near vertices when disabled)
   const cumulative = cumulativeDistances(pathGeometry);
-  const segmentBearings =
-    pathGeometry.length >= 2
-      ? pathGeometry.slice(0, -1).map((_, idx) => bearingDegrees(pathGeometry[idx], pathGeometry[idx + 1]))
-      : [];
-  const isTurnSegment: boolean[] = segmentBearings.map(() => false);
+  const vertexProximity = vertexProximityMeters || 30; // Default 30m if not provided
 
-  for (let i = 1; i < segmentBearings.length; i++) {
-    if (angleDelta(segmentBearings[i - 1], segmentBearings[i]) > turnThresholdDeg) {
-      isTurnSegment[i] = true;
-      isTurnSegment[i - 1] = true;
+  // Validate that climb start point is outside vertex proximity zones
+  if (!allowTurnsDuringClimb) {
+    for (const vertexDist of cumulative) {
+      if (Math.abs(startDistance - vertexDist) < vertexProximity) {
+        warnings.push(
+          `Climb start (${startDistance.toFixed(1)}m) is within ${vertexProximity}m of vertex at ${vertexDist.toFixed(1)}m. ` +
+          `Minimum distance required: ${vertexProximity}m.`
+        );
+        // Return early with no climb applied
+        return {
+          points: baseProfile.map((p) => ({
+            ...p,
+            plannedAltitude: p.baseAltitude,
+            climbDelta: 0,
+            isClimbPhase: false
+          })),
+          appliedClimb: 0,
+          requiredHorizontal,
+          availableHorizontal,
+          startDistance,
+          completionDistance: startDistance,
+          warnings
+        };
+      }
     }
   }
 
@@ -192,14 +190,32 @@ export function computeClimbProfile(
 
     const cappedDistance = Math.min(sample.distance, climbEnd);
     const deltaHorizontal = Math.max(0, cappedDistance - lastDistanceUsed);
-    const segmentIdx = cumulative.length > 1 ? findSegmentIndex(sample.distance, cumulative) : 0;
-    const effectiveHorizontal =
-      !allowTurnsDuringClimb && isTurnSegment[segmentIdx] ? 0 : deltaHorizontal;
-    if (!allowTurnsDuringClimb && isTurnSegment[segmentIdx] && appliedMagnitude > 0) {
+
+    // Check if the distance interval [lastDistanceUsed, cappedDistance] intersects any vertex proximity zone
+    let nearVertex = false;
+    if (!allowTurnsDuringClimb) {
+      for (const vertexDist of cumulative) {
+        // Check if vertex proximity zone [vertexDist - proximity, vertexDist + proximity] 
+        // intersects with our interval [lastDistanceUsed, cappedDistance]
+        const zoneStart = vertexDist - vertexProximity;
+        const zoneEnd = vertexDist + vertexProximity;
+        const intervalStart = lastDistanceUsed;
+        const intervalEnd = cappedDistance;
+
+        // Intervals intersect if: intervalStart < zoneEnd AND intervalEnd > zoneStart
+        if (intervalStart < zoneEnd && intervalEnd > zoneStart) {
+          nearVertex = true;
+          break;
+        }
+      }
+    }
+
+    const effectiveHorizontal = nearVertex ? 0 : deltaHorizontal;
+    if (nearVertex && appliedMagnitude > 0) {
       encounteredTurnDuringClimb = true;
     }
 
-    const potentialClimb = (effectiveHorizontal / hvRatio) * climbDirection;
+    const potentialClimb = (effectiveHorizontal / activeRatio) * climbDirection;
     const targetClimb =
       climbDirection > 0
         ? Math.min(appliedClimb, climbed + potentialClimb)
@@ -224,7 +240,7 @@ export function computeClimbProfile(
   });
 
   if (encounteredTurnDuringClimb) {
-    warnings.push('Climb intersects a turn while turns are disabled.');
+    warnings.push('Climb intersects a vertex proximity zone.');
   }
 
   return {

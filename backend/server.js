@@ -77,17 +77,23 @@ const getPreviewConfig = () => {
 };
 
 // Clear cached uploads on restart to avoid serving stale files
-const clearUploadsDirectory = () => {
+// Clear cached uploads on restart to avoid serving stale files
+const clearUploadsDirectory = async () => {
   try {
-    rmSync(uploadsDir, { recursive: true, force: true });
-    mkdirSync(uploadsDir, { recursive: true });
+    if (existsSync(uploadsDir)) {
+      // Readdir and unlink each file instead of removing the directory itself
+      // This preserves the directory inode which is important for Docker bind mounts
+      const { readdir } = await import('fs/promises');
+      const files = await readdir(uploadsDir);
+      await Promise.all(
+        files.map(file => unlink(join(uploadsDir, file)).catch(e => console.error(`Failed to delete ${file}:`, e)))
+      );
+    } else {
+      mkdirSync(uploadsDir, { recursive: true });
+    }
     console.log('Uploads cache cleared on startup');
   } catch (error) {
     console.error('Failed to clear uploads cache on startup:', error);
-    // Ensure directory still exists so uploads do not fail
-    if (!existsSync(uploadsDir)) {
-      mkdirSync(uploadsDir, { recursive: true });
-    }
   }
 };
 
@@ -129,7 +135,7 @@ app.get('/api/health', (req, res) => {
 
 // token endpoint
 app.get('/api/token', (req, res) => {
-  res.json({ token: MAPS_TOKEN})
+  res.json({ token: MAPS_TOKEN })
 })
 
 // url endpoint
@@ -147,7 +153,7 @@ app.get('/api/map-preview', (req, res) => {
 
 // crs endpoint
 app.get('/api/crs', (req, res) => {
-  res.json({ crs: MAPS_CRS})
+  res.json({ crs: MAPS_CRS })
 })
 
 
@@ -160,13 +166,13 @@ app.get('/api/dtm/:filename/test', async (req, res) => {
     if (!existsSync(filePath)) {
       return res.status(404).json({ error: 'File not found' });
     }
-    
+
     console.log(`Testing GeoTIFF: ${filename}`);
 
     // Try to parse GeoTIFF
     const tiff = await fromFile(filePath);
     console.log('GeoTIFF opened successfully');
-    
+
     const image = await tiff.getImage();
     console.log('Image retrieved');
 
@@ -176,7 +182,7 @@ app.get('/api/dtm/:filename/test', async (req, res) => {
 
     const bbox = image.getBoundingBox();
     console.log(`Bounds: ${bbox}`);
-    
+
     // Try reading a small sample
     const rasters = await image.readRasters({
       window: [0, 0, Math.min(10, width), Math.min(10, height)]
@@ -200,6 +206,24 @@ app.get('/api/dtm/:filename/test', async (req, res) => {
   }
 });
 
+// Python backend URL
+const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
+
+// Proxy helper
+const proxyToPython = async (endpoint) => {
+  try {
+    const response = await fetch(`${PYTHON_BACKEND_URL}${endpoint}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Python backend error: ${response.status} ${response.statusText} - ${errorText}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Python proxy error:', error);
+    throw error;
+  }
+};
+
 // Upload DTM file endpoint
 app.post('/api/upload-dtm', upload.single('dtm'), async (req, res) => {
   if (!req.file) {
@@ -207,38 +231,27 @@ app.post('/api/upload-dtm', upload.single('dtm'), async (req, res) => {
   }
 
   try {
-    // Parse GeoTIFF to get metadata immediately
-    const filePath = join(uploadsDir, req.file.filename);
-    const tiff = await fromFile(filePath);
-    const image = await tiff.getImage();
-    const bbox = image.getBoundingBox();
-    const [minX, minY, maxX, maxY] = bbox;
+    // Call Python backend for metadata
+    const metadata = await proxyToPython(`/dtm/${req.file.filename}/metadata`);
 
     res.json({
       success: true,
       filename: req.file.filename,
       path: `/uploads/${req.file.filename}`,
       size: req.file.size,
-      bounds: {
-        minX,
-        minY,
-        maxX,
-        maxY
-      },
-      resolution: {
-        width: image.getWidth(),
-        height: image.getHeight()
-      }
+      bounds: metadata.bounds,
+      resolution: metadata.resolution
     });
   } catch (error) {
-    console.error('Error parsing uploaded GeoTIFF:', error);
-    // Still return success but without metadata
+    console.error('Error parsing uploaded GeoTIFF via Python:', error);
+    // Return partial success if python fails, or error?
+    // Let's return minimal info if python fails, assuming file upload worked
     res.json({
       success: true,
       filename: req.file.filename,
       path: `/uploads/${req.file.filename}`,
       size: req.file.size,
-      error: 'Could not parse GeoTIFF metadata'
+      error: 'Could not retrieve metadata from Python backend'
     });
   }
 });
@@ -272,34 +285,9 @@ app.post('/api/dtm/cleanup', async (req, res) => {
 app.get('/api/dtm/:filename/metadata', async (req, res) => {
   try {
     const filename = req.params.filename;
-    const filePath = join(uploadsDir, filename);
-
-    if (!existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-
-    // Parse GeoTIFF to get metadata
-    const tiff = await fromFile(filePath);
-    const image = await tiff.getImage();
-    const bbox = image.getBoundingBox();
-    const [minX, minY, maxX, maxY] = bbox;
-
-    res.json({
-      filename,
-      bounds: {
-        minX,
-        minY,
-        maxX,
-        maxY
-      },
-      resolution: {
-        width: image.getWidth(),
-        height: image.getHeight()
-      },
-      noDataValue: image.getGDALNoData()
-    });
+    const metadata = await proxyToPython(`/dtm/${filename}/metadata`);
+    res.json(metadata);
   } catch (error) {
-    console.error('Error parsing GeoTIFF:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -308,175 +296,18 @@ app.get('/api/dtm/:filename/metadata', async (req, res) => {
 app.get('/api/dtm/:filename/raster', async (req, res) => {
   try {
     const filename = req.params.filename;
-    const filePath = join(uploadsDir, filename);
+    console.log(`Proxying raster request for ${filename} to Python backend...`);
 
-    if (!existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
-    }
+    // For large raster data, we might want to pipe the response directly
+    // But existing frontend expects specific JSON structure which the Python backend provides
+    const rasterData = await proxyToPython(`/dtm/${filename}/raster`);
 
-    console.log(`Processing GeoTIFF: ${filename}`);
-
-    // Parse GeoTIFF
-    const tiff = await fromFile(filePath);
-    const image = await tiff.getImage();
-    const width = image.getWidth();
-    const height = image.getHeight();
-
-    console.log(`GeoTIFF dimensions: ${width}x${height} (${width * height} pixels)`);
-
-    // Read full resolution raster data - no downsampling
-    let rasters;
-    let data;
-
-    try {
-      console.log('Reading full resolution raster data...');
-      rasters = await image.readRasters();
-      let rawData = rasters[0];
-      console.log(`Raw data type: ${rawData.constructor.name}, length: ${rawData.length}`);
-
-      // Convert to array (keep full resolution)
-      // Use a more efficient method that doesn't cause stack overflow
-      if (ArrayBuffer.isView(rawData) && !Array.isArray(rawData)) {
-        console.log('Converting TypedArray to regular array (full resolution)...');
-        const totalLength = rawData.length;
-        const chunkSize = 100000; // Smaller chunks to avoid stack overflow
-        const result = new Array(totalLength);
-
-        // Copy in chunks without using spread operator
-        for (let i = 0; i < totalLength; i += chunkSize) {
-          const end = Math.min(i + chunkSize, totalLength);
-          for (let j = i; j < end; j++) {
-            result[j] = rawData[j];
-          }
-          if (i % (chunkSize * 10) === 0) {
-            console.log(`Converted ${((i / totalLength) * 100).toFixed(1)}%...`);
-          }
-        }
-        data = result;
-        console.log(`Conversion complete: ${data.length} values`);
-      } else {
-        data = rawData;
-        console.log(`Data already in array format: ${data.length} values`);
-      }
-
-      console.log(`Final data length: ${data.length}`);
-    } catch (readError) {
-      console.error('Error reading rasters:', readError);
-      console.error('Stack:', readError.stack);
-      throw new Error(`Failed to read GeoTIFF raster data: ${readError.message}`);
-    }
-
-    // Calculate statistics (handle no-data values) - use efficient methods for large arrays
-    const noDataValue = image.getGDALNoData();
-
-    // Calculate min/max without creating intermediate arrays
-    let min = Infinity;
-    let max = -Infinity;
-    let hasValidData = false;
-
-    for (let i = 0; i < data.length; i++) {
-      const value = data[i];
-      if (noDataValue !== null && noDataValue !== undefined && value === noDataValue) {
-        continue; // Skip no-data values
-      }
-      if (isNaN(value) || !isFinite(value)) {
-        continue; // Skip invalid values
-      }
-      hasValidData = true;
-      if (value < min) min = value;
-      if (value > max) max = value;
-    }
-
-    if (!hasValidData) {
-      min = 0;
-      max = 0;
-    }
-
-    console.log(`Elevation range: ${min} to ${max}`);
-
-    // Get bounds - check if we need coordinate transformation
-    const bbox = image.getBoundingBox();
-    const [minX, minY, maxX, maxY] = bbox;
-
-    // Check if bounds are in projected coordinates (large numbers) vs geographic (lat/lon)
-    // Geographic coordinates: lon typically -180 to 180, lat -90 to 90
-    // Projected coordinates: typically much larger numbers
-    const isProjected = Math.abs(minX) > 180 || Math.abs(minY) > 90 ||
-      Math.abs(maxX) > 180 || Math.abs(maxY) > 90;
-
-    console.log(`Bounds: [${minX}, ${minY}, ${maxX}, ${maxY}]`);
-    console.log(`Coordinate system: ${isProjected ? 'Projected (needs transformation)' : 'Geographic (WGS84)'}`);
-
-    // Prepare response - use full resolution
-    const responseData = {
-      width: width,
-      height: height,
-      originalWidth: width,
-      originalHeight: height,
-      min,
-      max,
-      bounds: bbox,
-      noDataValue: noDataValue,
-      isProjected: isProjected
-    };
-
-    // Try to get coordinate system info for transformation
-    try {
-      const geoKeys = image.getGeoKeys();
-      const fileDirectory = image.getFileDirectory();
-
-      // Get CRS information
-      responseData.crs = {
-        geographicType: geoKeys?.GeographicTypeGeoKey || null,
-        projectedCSType: geoKeys?.ProjectedCSTypeGeoKey || null,
-        geogCitation: geoKeys?.GeogCitationGeoKey || null,
-        projCitation: geoKeys?.PCSCitationGeoKey || null
-      };
-
-      // Get projection parameters if available
-      responseData.projParams = {
-        projString: fileDirectory.GeoAsciiParamsTag || null,
-        modelTiepoint: fileDirectory.ModelTiepointTag || null,
-        modelPixelScale: fileDirectory.ModelPixelScaleTag || null,
-        modelTransformation: fileDirectory.ModelTransformationTag || null
-      };
-
-      // Try to determine EPSG code
-      if (geoKeys?.ProjectedCSTypeGeoKey) {
-        responseData.epsg = geoKeys.ProjectedCSTypeGeoKey;
-      } else if (geoKeys?.GeographicTypeGeoKey) {
-        responseData.epsg = geoKeys.GeographicTypeGeoKey;
-      }
-
-      console.log('CRS Info:', JSON.stringify(responseData.crs, null, 2));
-      console.log('EPSG Code:', responseData.epsg);
-    } catch (e) {
-      console.error('Error getting CRS info:', e);
-      // Ignore if we can't get CRS info
-    }
-
-    console.log('Preparing to send response...');
-    console.log(`Data array length: ${data.length}`);
-
-    // Add data to response
-    try {
-      responseData.data = data;
-      console.log('Serializing JSON response...');
-      const jsonString = JSON.stringify(responseData);
-      console.log(`JSON size: ${(jsonString.length / 1024 / 1024).toFixed(2)} MB`);
-
-      res.json(responseData);
-      console.log('Response sent successfully');
-    } catch (jsonError) {
-      console.error('Error serializing JSON:', jsonError);
-      throw new Error(`Failed to serialize response: ${jsonError.message}. Data may be too large.`);
-    }
+    console.log('Received raster data from Python, sending to client...');
+    res.json(rasterData);
   } catch (error) {
-    console.error('Error processing GeoTIFF:', error);
-    console.error('Stack:', error.stack);
-    res.status(500).json({ 
+    console.error('Error getting raster data:', error);
+    res.status(500).json({
       error: error.message,
-      details: error.stack,
       filename: req.params.filename
     });
   }
@@ -600,7 +431,7 @@ app.post('/api/elevation-profile', async (req, res) => {
       const [lon2, lat2] = coord2;
       const dLat = (lat2 - lat1) * Math.PI / 180;
       const dLon = (lon2 - lon1) * Math.PI / 180;
-      const a = 
+      const a =
         Math.sin(dLat / 2) * Math.sin(dLat / 2) +
         Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
         Math.sin(dLon / 2) * Math.sin(dLon / 2);
@@ -913,14 +744,14 @@ app.post('/api/elevation-profile', async (req, res) => {
 });
 
 // 1) Path to Vite build 
-  const distPath = join(__dirname, '../frontend/dist');
-  console.log("distPath");
-  console.log(distPath)
+const distPath = join(__dirname, '../frontend/dist');
+console.log("distPath");
+console.log(distPath)
 // 2) Serve static file (JS, CSS, image, etc.)
-  app.use(express.static(distPath));
+app.use(express.static(distPath));
 // 3) SPA fallback: for any unknown route, send index.html
-  app.get('*', (req, res) => {
-    res.sendFile(join(distPath, 'index.html'));
+app.get('*', (req, res) => {
+  res.sendFile(join(distPath, 'index.html'));
 });
 
 

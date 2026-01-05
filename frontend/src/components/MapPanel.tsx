@@ -981,7 +981,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const endHeight = end.height ?? nominalFlightHeight;
       const avgHeight = (startHeight + endHeight) / 2;
 
-      const swathWidth = 2 * avgHeight * Math.tan(fovRadians / 2);
+      // Calculate half-width based on user request (height * tan(fov/2))
+      const swathWidth = avgHeight * Math.tan(fovRadians / 2);
       const spacing = swathWidth * spacingFactor;
 
       if (!Number.isFinite(spacing) || spacing <= 0) continue;

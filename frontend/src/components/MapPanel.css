@@ -546,7 +546,7 @@
   border: none;
   border-radius: 0;
   padding: 0;
-  color: #000;
+  color: #000; /* Primary color for high contrast on light maps */
   font-size: 14px;
   font-weight: 700;
   line-height: 1.2;
@@ -554,6 +554,19 @@
   pointer-events: none;
   white-space: nowrap;
   z-index: 700;
+
+  /* Map Typography Halo Effect: */
+  /* Creates a high-contrast white buffer to ensure readability over busy satellite imagery */
+  text-shadow: 
+    -1.5px -1.5px 0 #fff,  
+     1.5px -1.5px 0 #fff,
+    -1.5px  1.5px 0 #fff,
+     1.5px  1.5px 0 #fff,
+     0px    1.5px 0 #fff,
+     0px   -1.5px 0 #fff,
+     1.5px  0px   0 #fff,
+    -1.5px  0px   0 #fff,
+     0 0 3px #fff; /* Softens the edges to blend against complex textures like trees/roads */
 }
 
 .segment-length-label span {

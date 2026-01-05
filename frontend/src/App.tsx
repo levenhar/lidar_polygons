@@ -3,6 +3,7 @@ import MapPanel from './components/MapPanel';
 import ElevationProfile from './components/ElevationProfile';
 import { useFlightPath } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
+import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, computeClimbProfile } from './utils/climb';
 import './App.css';
 
 export interface Coordinate {
@@ -19,6 +20,9 @@ export interface ElevationPoint {
   flightHeight?: number; // Interpolated flight height (AGL) at this point
   minElevation?: number; // Minimum elevation in DTM within radius
   maxElevation?: number; // Maximum elevation in DTM within radius
+  plannedAltitude?: number;
+  baseAltitude?: number;
+  climbDelta?: number;
 }
 
 interface DTMInfo {
@@ -45,7 +49,18 @@ function App() {
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
   const [editPointIndex, setEditPointIndex] = useState<number | null>(null);
   const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);
-  
+  const [hoverSource, setHoverSource] = useState<'map' | 'profile' | null>(null);
+  const [showMetadata, setShowMetadata] = useState(true);
+
+  const [climbConfig, setClimbConfig] = useState<ClimbConfig>({
+    climbRatio: 4.08,
+    descentRatio: 8.16,
+    allowTurnsDuringClimb: false,
+    linkRatios: false,
+    vertexProximityMeters: 30
+  });
+  const [climbRequests, setClimbRequests] = useState<{ endDistance: number; climbAmount: number }[]>([]);
+
   // @ts-ignore
   const {
     routes,
@@ -86,9 +101,9 @@ function App() {
 
   React.useEffect(() => {
     const prev = lastProfileParamsRef.current;
-    const baseChanged = !prev 
-      || prev.flightPath !== flightPath 
-      || prev.dtmSource !== dtmSource 
+    const baseChanged = !prev
+      || prev.flightPath !== flightPath
+      || prev.dtmSource !== dtmSource
       || prev.safetySearchRadius !== safetySearchRadius
       || prev.resolutionSearchRadius !== resolutionSearchRadius;
     const nominalChanged = !prev || prev.nominalFlightHeight !== nominalFlightHeight;
@@ -114,6 +129,90 @@ function App() {
     };
   }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights]);
 
+  const fullProfileResult = React.useMemo(() => {
+    if (elevationProfile.length === 0) return { points: [], warnings: [] };
+
+    // 1. Calculate base altitude profile (nominal height above first point)
+    const startElevation = elevationProfile[0].elevation;
+    const constantAltitude = startElevation + nominalFlightHeight;
+    const baseAltitudeProfile: BaseAltitudeSample[] = elevationProfile.map((p) => ({
+      distance: p.distance,
+      baseAltitude: constantAltitude,
+      ground: p.elevation
+    }));
+
+    // 2. Initial base plan
+    const basePlanPoints: ClimbProfilePoint[] = baseAltitudeProfile.map((p) => ({
+      ...p,
+      plannedAltitude: p.baseAltitude,
+      climbDelta: 0,
+      isClimbPhase: false
+    }));
+
+    if (flightPath.length === 0) {
+      return {
+        points: elevationProfile.map((p, i) => ({
+          ...p,
+          plannedAltitude: basePlanPoints[i].plannedAltitude,
+          baseAltitude: basePlanPoints[i].baseAltitude,
+          climbDelta: basePlanPoints[i].climbDelta,
+          flightHeight: basePlanPoints[i].plannedAltitude - p.elevation
+        })),
+        warnings: []
+      };
+    }
+
+    // 3. Process climb requests sequentially
+    const sortedClimbs = [...climbRequests].sort((a, b) => a.endDistance - b.endDistance);
+    let currentBase = baseAltitudeProfile;
+    let currentPlanned = basePlanPoints;
+    const allWarnings: string[] = [];
+
+    sortedClimbs.forEach((climb, idx) => {
+      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
+      const startDistanceOfClimb = Math.max(0, climb.endDistance - requiredHorizontal);
+
+      const res = computeClimbProfile(
+        startDistanceOfClimb,
+        climb.climbAmount,
+        climbConfig.climbRatio,
+        climbConfig.descentRatio,
+        climbConfig.allowTurnsDuringClimb,
+        flightPath,
+        currentBase,
+        climbConfig.vertexProximityMeters,
+        climb.endDistance
+      );
+
+      allWarnings.push(...res.warnings.map(w => `Climb ${idx + 1}: ${w}`));
+
+      currentPlanned = res.points.map((p, i) => ({
+        ...p,
+        climbDelta: p.plannedAltitude - (basePlanPoints[i]?.baseAltitude ?? p.baseAltitude),
+        isClimbPhase: p.plannedAltitude !== p.baseAltitude
+      }));
+
+      currentBase = res.points.map((p) => ({
+        distance: p.distance,
+        baseAltitude: p.plannedAltitude,
+        ground: p.ground
+      }));
+    });
+
+    // 4. Merge results into the final ElevationPoint array
+    return {
+      points: elevationProfile.map((p, i) => ({
+        ...p,
+        plannedAltitude: currentPlanned[i].plannedAltitude,
+        baseAltitude: currentPlanned[i].baseAltitude,
+        climbDelta: currentPlanned[i].climbDelta,
+        flightHeight: currentPlanned[i].plannedAltitude - p.elevation
+      })),
+      warnings: allWarnings
+    };
+  }, [elevationProfile, nominalFlightHeight, flightPath, climbRequests, climbConfig]);
+
   const deleteDtmOnServer = useCallback(async (pathToDelete?: string, keepalive: boolean = false) => {
     const target = pathToDelete || dtmSource;
     if (!target) return;
@@ -132,12 +231,74 @@ function App() {
     }
   }, [dtmSource]);
 
-  const handlePathPointHover = useCallback((point: Coordinate | null) => {
+  const handlePathPointHover = useCallback((point: Coordinate | null, distance?: number) => {
     setSelectedPoint(point);
-  }, []);
+    if (point && fullProfileResult.points.length > 0) {
+      if (distance !== undefined) {
+        // Find the points in full profile to interpolate between
+        let leftIdx = 0;
+        let rightIdx = fullProfileResult.points.length - 1;
+
+        // Find the segment containing this distance
+        for (let i = 0; i < fullProfileResult.points.length - 1; i++) {
+          if (distance >= fullProfileResult.points[i].distance && distance <= fullProfileResult.points[i + 1].distance) {
+            leftIdx = i;
+            rightIdx = i + 1;
+            break;
+          }
+        }
+
+        const p1 = fullProfileResult.points[leftIdx];
+        const p2 = fullProfileResult.points[rightIdx];
+        const distRange = p2.distance - p1.distance;
+        const t = distRange > 0 ? (distance - p1.distance) / distRange : 0;
+
+        const interpolatedElevation = p1.elevation + (p2.elevation - p1.elevation) * t;
+        const interpolatedMin = (p1.minElevation !== undefined && p2.minElevation !== undefined)
+          ? p1.minElevation + (p2.minElevation - p1.minElevation) * t : undefined;
+        const interpolatedMax = (p1.maxElevation !== undefined && p2.maxElevation !== undefined)
+          ? p1.maxElevation + (p2.maxElevation - p1.maxElevation) * t : undefined;
+
+        const interpolatedPlanned = (p1.plannedAltitude !== undefined && p2.plannedAltitude !== undefined)
+          ? p1.plannedAltitude + (p2.plannedAltitude - p1.plannedAltitude) * t : undefined;
+
+        const interpolatedFlightHeight = (interpolatedPlanned !== undefined)
+          ? interpolatedPlanned - interpolatedElevation : undefined;
+
+        setHoveredElevationPoint({
+          distance: distance,
+          elevation: interpolatedElevation,
+          longitude: point.lng,
+          latitude: point.lat,
+          minElevation: interpolatedMin,
+          maxElevation: interpolatedMax,
+          plannedAltitude: interpolatedPlanned,
+          flightHeight: interpolatedFlightHeight
+        });
+      } else {
+        // Fallback: find the closest point in full profile by coordinates
+        let closest = fullProfileResult.points[0];
+        let minSqDist = Math.pow(closest.longitude - point.lng, 2) + Math.pow(closest.latitude - point.lat, 2);
+
+        for (const p of fullProfileResult.points) {
+          const sqDist = Math.pow(p.longitude - point.lng, 2) + Math.pow(p.latitude - point.lat, 2);
+          if (sqDist < minSqDist) {
+            minSqDist = sqDist;
+            closest = p;
+          }
+        }
+        setHoveredElevationPoint(closest);
+      }
+      setHoverSource('map');
+    } else {
+      setHoveredElevationPoint(null);
+      setHoverSource(null);
+    }
+  }, [fullProfileResult.points]);
 
   const handleElevationPointHover = useCallback((point: ElevationPoint | null) => {
     setHoveredElevationPoint(point);
+    setHoverSource(point ? 'profile' : null);
   }, []);
 
   const handleDtmLoad = useCallback((source: string, info?: any) => {
@@ -195,7 +356,7 @@ function App() {
     const currentPoint = flightPath[pointIndex];
     const currentHeight = currentPoint.height ?? nominalFlightHeight;
     const heightInput = prompt(`Enter flight height (AGL in meters) for point ${pointIndex + 1}:`, currentHeight.toString());
-    
+
     if (heightInput !== null) {
       const height = parseFloat(heightInput);
       if (!isNaN(height) && height >= 0) {
@@ -339,8 +500,8 @@ function App() {
             <div className="group-title">Data Export</div>
             <div className="group-columns">
               <div className="group-column">
-                <button 
-                  onClick={exportGeoJSON} 
+                <button
+                  onClick={exportGeoJSON}
                   className="btn btn-secondary"
                   disabled={flightPath.length < 2}
                   title={flightPath.length < 2 ? 'Draw at least 2 points to export GeoJSON' : 'Export flight path as GeoJSON'}
@@ -360,8 +521,8 @@ function App() {
                   id="import-geojson"
                   disabled={!dtmSource}
                 />
-                <label 
-                  htmlFor="import-geojson" 
+                <label
+                  htmlFor="import-geojson"
                   className={`btn btn-secondary ${!dtmSource ? 'disabled' : ''}`}
                   style={!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
                   title={!dtmSource ? 'Load a DTM first to import GeoJSON' : 'Import flight path from GeoJSON file'}
@@ -406,9 +567,12 @@ function App() {
           editPointIndex={editPointIndex}
           onEditPointIndexChange={setEditPointIndex}
           hoveredElevationPoint={hoveredElevationPoint}
+          hoverSource={hoverSource}
+          showMetadata={showMetadata}
+          onShowMetadataChange={setShowMetadata}
         />
         <ElevationProfile
-          elevationProfile={elevationProfile}
+          elevationProfile={fullProfileResult.points}
           loading={loading}
           nominalFlightHeight={nominalFlightHeight}
           safetyHeight={safetyHeight}
@@ -420,6 +584,14 @@ function App() {
           onSetFlightHeight={handleSetFlightHeight}
           onEditPointRequest={handleEditPointRequest}
           onElevationPointHover={handleElevationPointHover}
+          hoveredPoint={hoveredElevationPoint}
+          hoverSource={hoverSource}
+          climbConfig={climbConfig}
+          setClimbConfig={setClimbConfig}
+          climbRequests={climbRequests}
+          setClimbRequests={setClimbRequests}
+          climbWarnings={fullProfileResult.warnings}
+          showMetadata={showMetadata}
         />
       </div>
     </div>

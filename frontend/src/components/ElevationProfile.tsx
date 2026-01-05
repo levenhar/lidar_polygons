@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { ElevationPoint, Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import './ElevationProfile.css';
-import { BaseAltitudeSample, ClimbConfig, ClimbProfilePoint, computeClimbProfile } from '../utils/climb';
+import { ClimbConfig, computeClimbProfile, BaseAltitudeSample } from '../utils/climb';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   const common = {
@@ -95,6 +95,14 @@ interface ElevationProfileProps {
   onSetFlightHeight: (index: number) => void;
   onEditPointRequest: (index: number) => void;
   onElevationPointHover?: (point: ElevationPoint | null) => void;
+  hoveredPoint?: ElevationPoint | null;
+  hoverSource?: 'map' | 'profile' | null;
+  climbConfig: ClimbConfig;
+  setClimbConfig: React.Dispatch<React.SetStateAction<ClimbConfig>>;
+  climbRequests: { endDistance: number; climbAmount: number }[];
+  setClimbRequests: React.Dispatch<React.SetStateAction<{ endDistance: number; climbAmount: number }[]>>;
+  climbWarnings: string[];
+  showMetadata: boolean;
 }
 
 const ElevationProfile: React.FC<ElevationProfileProps> = ({
@@ -109,26 +117,25 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   onUpdatePoint,
   onSetFlightHeight,
   onEditPointRequest,
-  onElevationPointHover
+  onElevationPointHover,
+  hoveredPoint,
+  hoverSource,
+  climbConfig,
+  setClimbConfig,
+  climbRequests,
+  setClimbRequests,
+  climbWarnings,
+  showMetadata
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const clipPathIdRef = useRef(`elevation-clip-${Math.random().toString(36).slice(2, 8)}`);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
-  const [climbConfig, setClimbConfig] = useState<ClimbConfig>({
-    climbRatio: 4.08,
-    descentRatio: 8.16,
-    allowTurnsDuringClimb: false,
-    linkRatios: false,
-    vertexProximityMeters: 30
-  });
   const [isClimbConfigOpen, setIsClimbConfigOpen] = useState(false);
   const [isClimbAmountOpen, setIsClimbAmountOpen] = useState(false);
   const [pendingClimbEnd, setPendingClimbEnd] = useState<number | null>(null);
   const [climbAmountInput, setClimbAmountInput] = useState<string>('');
   const [climbAmountError, setClimbAmountError] = useState<string | null>(null);
-  const [climbRequests, setClimbRequests] = useState<{ endDistance: number; climbAmount: number }[]>([]);
-  const [climbWarnings, setClimbWarnings] = useState<string[]>([]);
   const [climbConfigDraft, setClimbConfigDraft] = useState<{
     climbRatio: string;
     descentRatio: string;
@@ -146,6 +153,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [climbValidationPopup, setClimbValidationPopup] = useState<string | null>(null);
   const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number } | null>(null);
   const climbContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
 
   useEffect(() => {
     if (!climbContextMenu) return;
@@ -162,93 +170,21 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     };
   }, [climbContextMenu]);
 
-  const baseAltitudeProfile = useMemo<BaseAltitudeSample[]>(() => {
-    if (!elevationProfile.length) return [];
-    const startElevation = elevationProfile[0].elevation;
-    const constantAltitude = startElevation + nominalFlightHeight;
-    return elevationProfile.map((p) => ({
-      distance: p.distance,
-      baseAltitude: constantAltitude,
-      ground: p.elevation
-    }));
-  }, [elevationProfile, nominalFlightHeight]);
-
-  const basePlanPoints = useMemo<ClimbProfilePoint[]>(() => {
-    return baseAltitudeProfile.map((p) => ({
-      ...p,
-      plannedAltitude: p.baseAltitude,
-      climbDelta: 0,
-      isClimbPhase: false
-    }));
-  }, [baseAltitudeProfile]);
-
-  const climbResult = useMemo(() => {
-    if (baseAltitudeProfile.length === 0 || flightPath.length === 0) {
-      return { points: basePlanPoints, warnings: [] as string[] };
-    }
-
-    // Each climb uses endDistance as the point where climb finishes; start is derived from hvRatio.
-    const sortedClimbs = [...climbRequests].sort((a, b) => a.endDistance - b.endDistance);
-    let currentBase = baseAltitudeProfile;
-    let currentPlanned = basePlanPoints;
-    const warnings: string[] = [];
-
-    sortedClimbs.forEach((climb, idx) => {
-      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
-      const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
-      const startDistance = Math.max(0, climb.endDistance - requiredHorizontal);
-      const res = computeClimbProfile(
-        startDistance,
-        climb.climbAmount,
-        climbConfig.climbRatio,
-        climbConfig.descentRatio,
-        climbConfig.allowTurnsDuringClimb,
-        flightPath,
-        currentBase,
-        climbConfig.vertexProximityMeters,
-        climb.endDistance
-      );
-      warnings.push(...res.warnings.map((w) => `Climb ${idx + 1}: ${w}`));
-      currentPlanned = res.points.map((p, i) => ({
-        ...p,
-        // track total climb from the original base plan
-        climbDelta: p.plannedAltitude - (basePlanPoints[i]?.baseAltitude ?? p.baseAltitude),
-        isClimbPhase: p.plannedAltitude !== p.baseAltitude && p.plannedAltitude !== (currentBase[i]?.baseAltitude ?? p.baseAltitude)
-      }));
-      // Next climb starts from the planned altitude of this step
-      currentBase = res.points.map((p) => ({
-        distance: p.distance,
-        baseAltitude: p.plannedAltitude,
-        ground: p.ground
-      }));
-    });
-
-    return { points: currentPlanned, warnings };
-  }, [baseAltitudeProfile, flightPath, climbRequests, climbConfig, basePlanPoints]);
-
-  useEffect(() => {
-    setClimbWarnings(climbResult.warnings ?? []);
-  }, [climbResult]);
-
-  const plannedProfilePoints = useMemo<ClimbProfilePoint[]>(() => {
-    return climbResult.points ?? basePlanPoints;
-  }, [climbResult, basePlanPoints]);
-
   const getPlannedAltitudeAtDistance = useCallback(
     (distance: number) => {
-      if (plannedProfilePoints.length === 0) return nominalFlightHeight;
-      let closest = plannedProfilePoints[0];
+      if (elevationProfile.length === 0) return nominalFlightHeight;
+      let closest = elevationProfile[0];
       let minDelta = Math.abs(closest.distance - distance);
-      for (const p of plannedProfilePoints) {
+      for (const p of elevationProfile) {
         const delta = Math.abs(p.distance - distance);
         if (delta < minDelta) {
           closest = p;
           minDelta = delta;
         }
       }
-      return closest.plannedAltitude;
+      return closest.plannedAltitude ?? (closest.elevation + nominalFlightHeight);
     },
-    [plannedProfilePoints, nominalFlightHeight]
+    [elevationProfile, nominalFlightHeight]
   );
 
   const activeClimbStartDistance = null;
@@ -293,8 +229,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .domain(d3.extent(elevationProfile, d => d.distance) as [number, number])
       .range([0, width]);
 
-    const plannedAltitudes = plannedProfilePoints.map((p) => p.plannedAltitude);
-    const baseAltitudes = basePlanPoints.map((p) => p.baseAltitude);
+    const plannedAltitudes = elevationProfile.map((p) => p.plannedAltitude || (p.elevation + nominalFlightHeight));
+    const baseAltitudes = elevationProfile.map((p) => p.baseAltitude || (p.elevation + nominalFlightHeight));
 
     // @ts-ignore
     const getSafetyThreshold = (d: ElevationPoint) => {
@@ -358,10 +294,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     let climbAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
     let climbEndMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbLabels: d3.Selection<SVGTextElement, any, any, any> | null = null;
-    const profileWithPlan = elevationProfile.map((p, idx) => {
-      const planned = plannedProfilePoints[idx]?.plannedAltitude ?? (p.elevation + nominalFlightHeight);
-      const baseAltitude = basePlanPoints[idx]?.baseAltitude ?? planned;
-      const climbDelta = planned - baseAltitude;
+    const profileWithPlan = elevationProfile.map((p) => {
+      const planned = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
+      const baseAltitude = p.baseAltitude ?? planned;
+      const climbDelta = p.climbDelta ?? 0;
       return {
         ...p,
         plannedAltitude: planned,
@@ -399,7 +335,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill', 'none')
       .attr('stroke', '#1E90FF')
       .attr('stroke-width', 2)
-      .attr('stroke-dasharray', climbResult ? '6,4' : '0')
+      .attr('stroke-dasharray', climbRequests.length > 0 ? '6,4' : '0')
       .attr('d', baseFlightLine);
 
     const plannedFlightPathLine = chartArea.append('path')
@@ -757,6 +693,31 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
     }
 
+    // Highlight hovered point
+    let hoveredDistanceLine: d3.Selection<SVGLineElement, unknown, any, any> | null = null;
+    let hoveredPointMarker: d3.Selection<SVGCircleElement, unknown, any, any> | null = null;
+    let hoveredDistance: number | null = null;
+
+    if (hoveredPoint) {
+      hoveredDistance = hoveredPoint.distance;
+      hoveredDistanceLine = chartArea.append('line')
+        .attr('x1', currentXScale(hoveredPoint.distance))
+        .attr('x2', currentXScale(hoveredPoint.distance))
+        .attr('y1', 0)
+        .attr('y2', height)
+        .attr('stroke', '#9B59B6')
+        .attr('stroke-width', 2)
+        .attr('stroke-dasharray', '3,3');
+
+      hoveredPointMarker = chartArea.append('circle')
+        .attr('cx', currentXScale(hoveredPoint.distance))
+        .attr('cy', currentYScale(getPlannedAltitudeAtDistance(hoveredPoint.distance)))
+        .attr('r', 5)
+        .attr('fill', '#9B59B6')
+        .attr('stroke', '#ffffff')
+        .attr('stroke-width', 2);
+    }
+
     const endMarkersData = climbRequests.map((c) => ({ endDistance: c.endDistance, climbAmount: c.climbAmount }));
 
     climbEndMarkers = chartArea.selectAll<SVGGElement, any>('.climb-end-marker')
@@ -807,9 +768,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     const legendData = [
       { label: 'Ground Elevation', color: '#8B4513', style: 'solid' },
-      { label: climbResult ? 'Flight Altitude (base)' : 'Flight Altitude', color: '#1E90FF', style: climbResult ? 'dashed' : 'solid' },
-      ...(climbResult ? [{ label: 'Flight Altitude (with climb)', color: '#6f42c1', style: 'solid' }] : []),
+      { label: climbRequests.length > 0 ? 'Flight Altitude (base)' : 'Flight Altitude', color: '#1E90FF', style: climbRequests.length > 0 ? 'dashed' : 'solid' },
+      ...(climbRequests.length > 0 ? [{ label: 'Flight Altitude (with climb)', color: '#6f42c1', style: 'solid' }] : []),
       ...(pointsWithMinMax.length > 0 ? [{ label: 'Min/Max Elevation', color: '#FBBF24', style: 'solid' }] : []),
+      ...(climbWarnings.length > 0 ? [{ label: 'Climb Warning', color: '#FFD700', style: 'solid' }] : []),
       { label: `Safety (+${safetyHeight}m)`, color: '#DC2626', style: 'dashed' },
       { label: `Resolution (+${resolutionHeight}m)`, color: '#16A34A', style: 'dashed' }
     ];
@@ -969,6 +931,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             .attr('x2', currentXScale(selectedDistance));
         }
 
+        if (hoveredDistanceLine && hoveredDistance !== null) {
+          hoveredDistanceLine
+            .attr('x1', currentXScale(hoveredDistance))
+            .attr('x2', currentXScale(hoveredDistance));
+        }
+
+        if (hoveredPointMarker && hoveredPoint) {
+          hoveredPointMarker
+            .attr('cx', currentXScale(hoveredPoint.distance))
+            .attr('cy', currentYScale(getPlannedAltitudeAtDistance(hoveredPoint.distance)));
+        }
+
         climbEndMarkers?.selectAll<SVGCircleElement, any>('circle')
           .attr('cx', (d: any) => currentXScale(d.endDistance))
           .attr('cy', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)));
@@ -1100,12 +1074,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           }
 
           if (closestPoint) {
+            setMousePos({ x: event.clientX, y: event.clientY });
             onElevationPointHover(closestPoint);
           }
         }
       });
 
       overlay.on('mouseleave', () => {
+        setMousePos(null);
         if (onElevationPointHover) {
           onElevationPointHover(null);
         }
@@ -1124,9 +1100,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     onSetFlightHeight,
     onEditPointRequest,
     onElevationPointHover,
-    plannedProfilePoints,
-    basePlanPoints,
-    climbResult,
+    hoveredPoint,
     activeClimbStartDistance,
     getPlannedAltitudeAtDistance
   ]);
@@ -1141,9 +1115,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       setClimbAmountError('Enter a non-zero climb value (positive or negative).');
       return;
     }
-    // Simulate existing climbs to get the current base before adding this climb
     const baseAfterExisting = (() => {
-      let currentBase = baseAltitudeProfile;
+      const startElevation = elevationProfile[0].elevation;
+      const constantAltitude = startElevation + nominalFlightHeight;
+      let currentBase: BaseAltitudeSample[] = elevationProfile.map((p) => ({
+        distance: p.distance,
+        baseAltitude: constantAltitude,
+        ground: p.elevation
+      }));
       const sorted = [...climbRequests].sort((a, b) => a.endDistance - b.endDistance);
       sorted.forEach((c) => {
         const activeRatio = c.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
@@ -1260,13 +1239,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     setIsClimbAmountOpen(false);
     setPendingClimbEnd(null);
     setClimbAmountError(null);
-  }, [climbAmountInput, pendingClimbEnd, baseAltitudeProfile, climbRequests, climbConfig, flightPath]);
+  }, [climbAmountInput, pendingClimbEnd, climbRequests, climbConfig, flightPath, elevationProfile, nominalFlightHeight, setClimbRequests]);
 
   const handleRemoveClimb = useCallback(() => {
     setClimbRequests([]);
     setPendingClimbEnd(null);
-    setClimbWarnings([]);
-  }, []);
+  }, [setClimbRequests]);
 
   const handleRemoveSingleClimb = useCallback((endDistance: number) => {
     setClimbRequests((prev) => prev.filter((c) => Math.abs(c.endDistance - endDistance) > 0.001));
@@ -1359,9 +1337,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (elevationProfile.length === 0) return;
 
     const headers = ['Distance (m)', 'Ground Elevation (m)', 'Flight Altitude (m)', 'AGL (m)', 'Longitude', 'Latitude'];
-    const rows = elevationProfile.map((point, idx) => {
-      const planned = plannedProfilePoints[idx]?.plannedAltitude ?? point.elevation + nominalFlightHeight;
-      const flightAltitude = planned;
+    const rows = elevationProfile.map((point) => {
+      const flightAltitude = point.plannedAltitude ?? (point.elevation + nominalFlightHeight);
       const agl = flightAltitude - point.elevation;
       return [
         point.distance.toFixed(2),
@@ -1528,10 +1505,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </div>
             <div className="climb-modal__actions">
               <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbAmountOpen(false)}>Cancel</button>
-              {climbRequests.length > 0 && (
-                <button className="btn btn-tertiary" type="button" onClick={handleRemoveClimb}>
-                  Remove all climbs
-                </button>
+              {(climbRequests.length > 0 || climbWarnings.length > 0) && (
+                <span className="warning-badge" title={climbWarnings.join('\n')}>
+                  {climbWarnings.length}
+                </span>
               )}
               <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>Apply climb</button>
             </div>
@@ -1694,6 +1671,36 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               {elevationProfile[elevationProfile.length - 1]?.distance.toFixed(1)} m
             </span>
           </div>
+        </div>
+      )}
+      {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && (
+        <div
+          className="hover-metadata-tooltip"
+          style={{
+            left: mousePos.x + 15,
+            top: mousePos.y + 15
+          }}
+        >
+          <div className="tooltip-section">
+            <span className="tooltip-label">Lat:</span> {hoveredPoint.latitude.toFixed(6)}
+          </div>
+          <div className="tooltip-section">
+            <span className="tooltip-label">Lng:</span> {hoveredPoint.longitude.toFixed(6)}
+          </div>
+          <div className="tooltip-divider" />
+          <div className="tooltip-section">
+            <span className="tooltip-label">AGL Height:</span> {hoveredPoint.flightHeight?.toFixed(1)}m
+          </div>
+          {hoveredPoint.minElevation !== undefined && (
+            <div className="tooltip-section">
+              <span className="tooltip-label">H from Min:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.minElevation).toFixed(1)}m
+            </div>
+          )}
+          {hoveredPoint.maxElevation !== undefined && (
+            <div className="tooltip-section">
+              <span className="tooltip-label">H from Max:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.maxElevation).toFixed(1)}m
+            </div>
+          )}
         </div>
       )}
     </div>

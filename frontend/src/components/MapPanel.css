@@ -411,15 +411,15 @@
   transition: transform 120ms ease;
 }
 
-.switch input:checked + .switch-slider {
+.switch input:checked+.switch-slider {
   background: #0ea5e9;
 }
 
-.switch input:checked + .switch-slider::after {
+.switch input:checked+.switch-slider::after {
   transform: translateX(18px);
 }
 
-.switch input:disabled + .switch-slider {
+.switch input:disabled+.switch-slider {
   background: #cbd5e1;
 }
 
@@ -526,7 +526,8 @@
 
 .flight-point-marker.is-dragging {
   /* High-contrast “picked up” state */
-  background: #2563EB; /* accessible blue */
+  background: #2563EB;
+  /* accessible blue */
   border-color: #ffffff;
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
   transform: scale(1.12);
@@ -541,32 +542,38 @@
   pointer-events: none;
 }
 
+.hovered-elevation-marker {
+  pointer-events: none !important;
+}
+
 .segment-length-label {
   background: transparent;
   border: none;
   border-radius: 0;
   padding: 0;
-  color: #000; /* Primary color for high contrast on light maps */
+  color: #000;
+  /* Primary color for high contrast on light maps */
   font-size: 14px;
   font-weight: 700;
   line-height: 1.2;
   box-shadow: none;
-  pointer-events: none;
+  pointer-events: none !important;
   white-space: nowrap;
   z-index: 700;
 
   /* Map Typography Halo Effect: */
   /* Creates a high-contrast white buffer to ensure readability over busy satellite imagery */
-  text-shadow: 
-    -1.5px -1.5px 0 #fff,  
-     1.5px -1.5px 0 #fff,
-    -1.5px  1.5px 0 #fff,
-     1.5px  1.5px 0 #fff,
-     0px    1.5px 0 #fff,
-     0px   -1.5px 0 #fff,
-     1.5px  0px   0 #fff,
-    -1.5px  0px   0 #fff,
-     0 0 3px #fff; /* Softens the edges to blend against complex textures like trees/roads */
+  text-shadow:
+    -1.5px -1.5px 0 #fff,
+    1.5px -1.5px 0 #fff,
+    -1.5px 1.5px 0 #fff,
+    1.5px 1.5px 0 #fff,
+    0px 1.5px 0 #fff,
+    0px -1.5px 0 #fff,
+    1.5px 0px 0 #fff,
+    -1.5px 0px 0 #fff,
+    0 0 3px #fff;
+  /* Softens the edges to blend against complex textures like trees/roads */
 }
 
 .segment-length-label span {
@@ -708,8 +715,13 @@
 }
 
 @keyframes spin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 .upload-progress-fill::after {
@@ -719,12 +731,10 @@
   left: 0;
   bottom: 0;
   right: 0;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.3) 50%,
-    transparent 100%
-  );
+  background: linear-gradient(90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.3) 50%,
+      transparent 100%);
   animation: shimmer 1.5s infinite;
 }
 
@@ -732,6 +742,7 @@
   0% {
     transform: translateX(-100%);
   }
+
   100% {
     transform: translateX(100%);
   }
@@ -778,5 +789,3 @@
   background-color: #f3f4f6;
   transition: opacity 0.3s ease;
 }
-
-

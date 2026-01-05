@@ -528,8 +528,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return minElev + resolutionHeight;
     };
 
-    const firstPointElevation = elevationProfile[0]?.elevation ?? 0;
-    const constantFlightAltitude = firstPointElevation + nominalFlightHeight;
+    const plannedAltitudes = plannedProfilePoints.map((p) => p.plannedAltitude);
+    const baseAltitudes = basePlanPoints.map((p) => p.baseAltitude);
 
     // @ts-ignore
     const getSafetyThreshold = (d: ElevationPoint) => {
@@ -863,6 +863,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('stroke', 'none')
       .attr('d', d => climbAreaGenerator(d));
     */
+
+    // Climb visualization (shaded area between base and climbed altitude)
+    const climbSegments = buildSegments(profileWithPlan, (d) => Math.abs(d.climbDelta) > 0.05);
+    const climbGroup = chartArea.append('g').attr('class', 'climb-areas');
+    const climbAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+      .x(d => currentXScale(d.distance))
+      .y0(d => currentYScale(d.baseAltitude))
+      .y1(d => currentYScale(d.plannedAltitude))
+      .curve(d3.curveMonotoneX);
+
+    climbAreas = climbGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+      .data(climbSegments)
+      .enter()
+      .append('path')
+      .attr('fill', '#6f42c1')
+      .attr('fill-opacity', 0.18)
+      .attr('stroke', 'none')
+      .attr('d', d => climbAreaGenerator(d));
 
     // Find original flight path vertices in the elevation profile
     // Match by coordinates (with small tolerance for floating point precision)
@@ -1532,7 +1550,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         // Check if we're near any input point (ground or flight points)
         // If so, don't interfere with their right-click events
         let isNearInputPoint = false;
-        const constantFlightY = currentYScale(constantFlightAltitude);
         if (originalVertices.length > 0) {
           for (const vertex of originalVertices) {
             const pointX = currentXScale(vertex.point.distance);

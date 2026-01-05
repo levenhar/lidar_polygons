@@ -537,10 +537,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return maxElev + safetyHeight;
     };
 
+    /*
     const getResolutionThreshold = (d: ElevationPoint) => {
       const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
       return minElev + resolutionHeight;
     };
+    */
 
     // Calculate domain including min/max elevations within radius
     const allMinElevations = elevationProfile
@@ -865,6 +867,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     */
 
     // Climb visualization (shaded area between base and climbed altitude)
+    /*
     const climbSegments = buildSegments(profileWithPlan, (d) => Math.abs(d.climbDelta) > 0.05);
     const climbGroup = chartArea.append('g').attr('class', 'climb-areas');
     const climbAreaGenerator = d3.area<typeof profileWithPlan[0]>()
@@ -872,7 +875,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .y0(d => currentYScale(d.baseAltitude))
       .y1(d => currentYScale(d.plannedAltitude))
       .curve(d3.curveMonotoneX);
+    */
 
+    /*
     climbAreas = climbGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(climbSegments)
       .enter()
@@ -881,6 +886,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill-opacity', 0.18)
       .attr('stroke', 'none')
       .attr('d', d => climbAreaGenerator(d));
+    */
 
     // Find original flight path vertices in the elevation profile
     // Match by coordinates (with small tolerance for floating point precision)

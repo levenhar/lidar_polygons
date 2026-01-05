@@ -1583,11 +1583,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
 
-    // Check file size (199 MB = 199 * 1024 * 1024 bytes)
-    const maxSizeBytes = 199 * 1024 * 1024; // 199 MB
+    // Check file size (2 GB = 2048 * 1024 * 1024 bytes)
+    const maxSizeBytes = 2048 * 1024 * 1024; // 2 GB
     if (file.size > maxSizeBytes) {
-      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
-      alert(`File is ${fileSizeMB} MB (max 199). Use a smaller DTM.`);
+      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(0);
+      alert(`File is ${fileSizeMB} MB (max 2048). Use a smaller DTM.`);
       resetFileInput();
       return;
     }

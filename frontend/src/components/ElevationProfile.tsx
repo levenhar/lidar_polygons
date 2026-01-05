@@ -199,8 +199,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove(); // Clear previous render
 
-    const margin = { top: 20, right: 30, bottom: 60, left: 80 };
-    const legendWidth = 160; // Space for legend outside the graph
+    const margin = { top: 20, right: 30, bottom: 110, left: 80 };
+    const legendWidth = 0; // Move legend under the plot
     const width = containerRef.current.clientWidth - margin.left - margin.right - legendWidth;
     const height = 400 - margin.top - margin.bottom;
 
@@ -238,10 +238,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return maxElev + safetyHeight;
     };
 
+    /*
     const getResolutionThreshold = (d: ElevationPoint) => {
       const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
       return minElev + resolutionHeight;
     };
+    */
 
     // Calculate domain including min/max elevations within radius
     const allMinElevations = elevationProfile
@@ -284,14 +286,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     let currentYScale = baseYScale;
 
     // Selections we need to update on zoom/pan
+    /* 
     let rangeBars: d3.Selection<SVGLineElement, ElevationPoint, any, any> | null = null;
     let minMarkers: d3.Selection<SVGCircleElement, ElevationPoint, any, any> | null = null;
     let maxMarkers: d3.Selection<SVGCircleElement, ElevationPoint, any, any> | null = null;
+    */
     let selectedDistanceLine: d3.Selection<SVGLineElement, unknown, any, any> | null = null;
     let selectedDistance: number | null = null;
+    /*
     let resolutionViolationAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
     let safetyViolationAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
     let climbAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
+    */
     let climbEndMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbLabels: d3.Selection<SVGTextElement, any, any, any> | null = null;
     const profileWithPlan = elevationProfile.map((p) => {
@@ -320,16 +326,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('d', groundLine);
 
     // Draw base (pre-climb) and planned (post-climb) altitude lines
+    /*
     const baseFlightLine = d3.line<typeof profileWithPlan[0]>()
       .x(d => currentXScale(d.distance))
       .y(d => currentYScale(d.baseAltitude))
       .curve(d3.curveMonotoneX);
+    */
 
     const plannedFlightLine = d3.line<typeof profileWithPlan[0]>()
       .x(d => currentXScale(d.distance))
       .y(d => currentYScale(d.plannedAltitude))
       .curve(d3.curveMonotoneX);
 
+    /* 
     const baseFlightPathLine = chartArea.append('path')
       .datum(profileWithPlan)
       .attr('fill', 'none')
@@ -337,6 +346,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('stroke-width', 2)
       .attr('stroke-dasharray', climbRequests.length > 0 ? '6,4' : '0')
       .attr('d', baseFlightLine);
+    */
 
     const plannedFlightPathLine = chartArea.append('path')
       .datum(profileWithPlan)
@@ -416,6 +426,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (pointsWithMinMax.length > 0) {
       console.log(`Drawing min/max range bars for ${pointsWithMinMax.length} points`);
 
+      /*
       // Draw vertical range bars for min/max elevation - make them more visible
       rangeBars = chartArea.selectAll<SVGLineElement, ElevationPoint>('.elevation-range-bar')
         .data(pointsWithMinMax)
@@ -453,16 +464,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .attr('r', 2.5)
         .attr('fill', '#FBBF24')
         .attr('opacity', 0.8);
+      */
     } else {
       // Remove any existing min/max elements if there are no points
       g.selectAll('.elevation-range-bar').remove();
       g.selectAll('.min-elevation-marker').remove();
       g.selectAll('.max-elevation-marker').remove();
+      /*
       rangeBars = null;
       minMarkers = null;
       maxMarkers = null;
+      */
     }
 
+    /*
     // Fill area under ground
     const groundAreaGenerator = d3.area<ElevationPoint>()
       .x(d => currentXScale(d.distance))
@@ -475,7 +490,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill', '#8B4513')
       .attr('fill-opacity', 0.3)
       .attr('d', groundAreaGenerator);
+    */
 
+    /*
     const buildSegments = <T,>(points: T[], predicate: (d: T) => boolean) => {
       const segments: T[][] = [];
       let current: T[] = [];
@@ -490,7 +507,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       if (current.length) segments.push(current);
       return segments;
     };
+    */
 
+    /*
     const resolutionSegments = buildSegments(profileWithPlan, (d) => d.plannedAltitude > getResolutionThreshold(d));
     const safetySegments = buildSegments(profileWithPlan, (d) => d.plannedAltitude < getSafetyThreshold(d));
 
@@ -508,7 +527,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .y0(d => currentYScale(d.plannedAltitude))
       .y1(d => currentYScale(getSafetyThreshold(d)))
       .curve(d3.curveMonotoneX);
+    */
 
+    /*
     resolutionViolationAreas = resolutionViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(resolutionSegments)
       .enter()
@@ -524,8 +545,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill', '#DC2626')
       .attr('fill-opacity', 0.2)
       .attr('d', d => safetyAreaGenerator(d));
+    */
 
     // Climb visualization (shaded area between base and climbed altitude)
+    /*
     const climbSegments = buildSegments(profileWithPlan, (d) => Math.abs(d.climbDelta) > 0.05);
     const climbGroup = chartArea.append('g').attr('class', 'climb-areas');
     const climbAreaGenerator = d3.area<typeof profileWithPlan[0]>()
@@ -533,7 +556,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .y0(d => currentYScale(d.baseAltitude))
       .y1(d => currentYScale(d.plannedAltitude))
       .curve(d3.curveMonotoneX);
+    */
 
+    /*
     climbAreas = climbGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(climbSegments)
       .enter()
@@ -542,6 +567,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill-opacity', 0.18)
       .attr('stroke', 'none')
       .attr('d', d => climbAreaGenerator(d));
+    */
 
     // Find original flight path vertices in the elevation profile
     // Match by coordinates (with small tolerance for floating point precision)
@@ -762,16 +788,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         return `${sign}${d.climbAmount.toFixed(0)}m`;
       });
 
-    // Add legend outside the graph area
+    // Add legend under the graph area
+    const legendOffset = 80; // Increased spacing
     const legend = svg.append('g')
-      .attr('transform', `translate(${width + margin.left + 10}, ${margin.top + 20})`);
+      .attr('transform', `translate(${margin.left}, ${height + margin.top + legendOffset})`);
 
     const legendData = [
       { label: 'Ground Elevation', color: '#8B4513', style: 'solid' },
-      { label: climbRequests.length > 0 ? 'Flight Altitude (base)' : 'Flight Altitude', color: '#1E90FF', style: climbRequests.length > 0 ? 'dashed' : 'solid' },
-      ...(climbRequests.length > 0 ? [{ label: 'Flight Altitude (with climb)', color: '#6f42c1', style: 'solid' }] : []),
-      ...(pointsWithMinMax.length > 0 ? [{ label: 'Min/Max Elevation', color: '#FBBF24', style: 'solid' }] : []),
-      ...(climbWarnings.length > 0 ? [{ label: 'Climb Warning', color: '#FFD700', style: 'solid' }] : []),
+      { label: 'Flight height', color: '#6f42c1', style: 'solid' },
       { label: `Safety (+${safetyHeight}m)`, color: '#DC2626', style: 'dashed' },
       { label: `Resolution (+${resolutionHeight}m)`, color: '#16A34A', style: 'dashed' }
     ];
@@ -791,24 +815,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     });
     tempText.remove();
 
-    // Add white background rectangle for legend
-    // Width = line width (20px) + spacing (5px) + text width + padding (10px on each side)
-    const legendHeight = legendData.length * 20;
-    const legendBoxWidth = 20 + 5 + maxTextWidth + 20; // line + spacing + text + padding
-    legend.append('rect')
-      .attr('x', -5)
-      .attr('y', -12)
-      .attr('width', legendBoxWidth)
-      .attr('height', legendHeight + 4)
-      .attr('fill', '#ffffff')
-      .attr('stroke', '#e5e7eb')
-      .attr('stroke-width', 1)
-      .attr('rx', 4)
-      .attr('opacity', 0.95);
+    // Layout legend items horizontally
+    let currentX = 0;
+    const spacing = 30;
 
-    legendData.forEach((item, i) => {
+    legendData.forEach((item) => {
       const legendItem = legend.append('g')
-        .attr('transform', `translate(0, ${i * 20})`);
+        .attr('transform', `translate(${currentX}, 0)`);
 
       legendItem.append('line')
         .attr('x1', 0)
@@ -819,12 +832,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .attr('stroke-width', item.style === 'dashed' ? 3 : 2)
         .attr('stroke-dasharray', item.style === 'dashed' ? '8,5' : '0');
 
-      legendItem.append('text')
+      const labelText = legendItem.append('text')
         .attr('x', 25)
         .attr('y', 4)
         .attr('fill', 'black')
         .style('font-size', '14px')
         .text(item.label);
+
+      const textWidth = (labelText.node() as SVGTextElement)?.getBBox().width || 0;
+      currentX += 25 + textWidth + spacing;
     });
 
     // Interaction overlay captures zoom/pan and hover without showing a visible layer
@@ -862,12 +878,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         yAxisGroup.selectAll('text').style('font-size', '12px');
 
         groundPath.attr('d', groundLine);
-        baseFlightPathLine.attr('d', baseFlightLine);
+        // baseFlightPathLine.attr('d', baseFlightLine);
         plannedFlightPathLine.attr('d', plannedFlightLine);
         safetyPath.attr('d', safetyLine);
         resolutionPath.attr('d', resolutionLine);
-        groundArea.attr('d', groundAreaGenerator);
+        // groundArea.attr('d', groundAreaGenerator);
 
+        /*
         if (resolutionViolationAreas) {
           const resolutionAreaGenerator = d3.area<typeof profileWithPlan[0]>()
             .x(d => currentXScale(d.distance))
@@ -876,7 +893,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             .curve(d3.curveMonotoneX);
           resolutionViolationAreas.attr('d', d => resolutionAreaGenerator(d));
         }
-
+ 
         if (safetyViolationAreas) {
           const safetyAreaGenerator = d3.area<typeof profileWithPlan[0]>()
             .x(d => currentXScale(d.distance))
@@ -885,7 +902,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             .curve(d3.curveMonotoneX);
           safetyViolationAreas.attr('d', d => safetyAreaGenerator(d));
         }
-
+ 
         if (climbAreas) {
           const climbAreaGenerator = d3.area<typeof profileWithPlan[0]>()
             .x(d => currentXScale(d.distance))
@@ -894,7 +911,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             .curve(d3.curveMonotoneX);
           climbAreas.attr('d', d => climbAreaGenerator(d));
         }
+        */
 
+        /*
         if (rangeBars) {
           rangeBars
             .attr('x1', d => currentXScale(d.distance))
@@ -912,6 +931,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             .attr('cx', d => currentXScale(d.distance))
             .attr('cy', d => currentYScale(d.maxElevation!));
         }
+        */
 
         groundPoints
           .attr('cx', d => currentXScale(d.point.distance))

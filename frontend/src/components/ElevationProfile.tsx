@@ -528,8 +528,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return minElev + resolutionHeight;
     };
 
-    const plannedAltitudes = plannedProfilePoints.map((p) => p.plannedAltitude);
-    const baseAltitudes = basePlanPoints.map((p) => p.baseAltitude);
+    const plannedAltitudes = elevationProfile.map((p) => p.plannedAltitude || (p.elevation + nominalFlightHeight));
+    const baseAltitudes = elevationProfile.map((p) => p.baseAltitude || (p.elevation + nominalFlightHeight));
 
     // @ts-ignore
     const getSafetyThreshold = (d: ElevationPoint) => {
@@ -2896,6 +2896,36 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           }}
         >
           <CoordinateTooltip point={hoveredPoint} utm={hoveredUtm} />
+        </div>
+      )}
+      {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && (
+        <div
+          className="hover-metadata-tooltip"
+          style={{
+            left: mousePos.x + 15,
+            top: mousePos.y + 15
+          }}
+        >
+          <div className="tooltip-section">
+            <span className="tooltip-label">Lat:</span> {hoveredPoint.latitude.toFixed(6)}
+          </div>
+          <div className="tooltip-section">
+            <span className="tooltip-label">Lng:</span> {hoveredPoint.longitude.toFixed(6)}
+          </div>
+          <div className="tooltip-divider" />
+          <div className="tooltip-section">
+            <span className="tooltip-label">AGL Height:</span> {hoveredPoint.flightHeight?.toFixed(1)}m
+          </div>
+          {hoveredPoint.minElevation !== undefined && (
+            <div className="tooltip-section">
+              <span className="tooltip-label">H from Min:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.minElevation).toFixed(1)}m
+            </div>
+          )}
+          {hoveredPoint.maxElevation !== undefined && (
+            <div className="tooltip-section">
+              <span className="tooltip-label">H from Max:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.maxElevation).toFixed(1)}m
+            </div>
+          )}
         </div>
       )}
     </div>

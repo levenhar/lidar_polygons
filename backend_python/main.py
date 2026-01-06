@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import FastAPI, HTTPException, File, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
 import rasterio
 import rasterio.features
@@ -13,6 +13,14 @@ from pydantic import BaseModel
 from math import radians, cos, sin, asin, sqrt
 import pyproj
 from pyproj import Transformer
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("backend_python")
 
 app = FastAPI()
 
@@ -63,6 +71,9 @@ def interpolate_segment(start, end, interval_meters):
 
 @app.post("/elevation-profile")
 async def get_elevation_profile(request: ElevationProfileRequest):
+    start_time = time.time()
+    logger.info(f"Calculating elevation profile for {request.dtmPath} with {len(request.coordinates)} points")
+    
     if len(request.coordinates) < 2:
         raise HTTPException(status_code=400, detail="At least two points required")
         
@@ -202,12 +213,12 @@ async def get_elevation_profile(request: ElevationProfileRequest):
                     "maxElevation": max_elev
                 })
                 
+            duration = time.time() - start_time
+            logger.info(f"Elevation profile calculated in {duration:.3f}s, sampled {len(profile)} points")
             return {"profile": profile}
             
     except Exception as e:
-        print(f"Error calculating elevation profile: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error calculating elevation profile: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
@@ -221,6 +232,7 @@ async def get_dtm_metadata(filename: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
+    logger.info(f"Fetching metadata for DTM: {filename}")
     try:
         with rasterio.open(file_path) as src:
             bounds = src.bounds
@@ -240,11 +252,13 @@ async def get_dtm_metadata(filename: str):
                 "crs": src.crs.to_string() if src.crs else None
             }
     except Exception as e:
-        print(f"Error reading metadata: {e}")
+        logger.error(f"Error reading metadata for {filename}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload-dtm")
 async def upload_dtm(dtm: UploadFile = File(...)):
+    start_time = time.time()
+    logger.info(f"Uploading DTM: {dtm.filename}")
     try:
         # Generate filename with timestamp similar to Node.js backend
         filename = f"{int(time.time() * 1000)}-{dtm.filename}"
@@ -260,6 +274,9 @@ async def upload_dtm(dtm: UploadFile = File(...)):
         # Get metadata for the newly uploaded file
         metadata = await get_dtm_metadata(filename)
         
+        duration = time.time() - start_time
+        logger.info(f"DTM uploaded successfully: {filename} in {duration:.3f}s")
+        
         return {
             "success": True,
             "filename": filename,
@@ -269,7 +286,7 @@ async def upload_dtm(dtm: UploadFile = File(...)):
             "resolution": metadata["resolution"]
         }
     except Exception as e:
-        print(f"Error uploading DTM: {e}")
+        logger.error(f"Error uploading DTM {dtm.filename}: {e}", exc_info=True)
         # Clean up if file was partially written
         if 'file_path' in locals() and os.path.exists(file_path):
             try:
@@ -285,6 +302,8 @@ async def get_dtm_raster(filename: str):
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
+    start_time = time.time()
+    logger.info(f"Reading raster data for DTM: {filename}")
     try:
         with rasterio.open(file_path) as src:
             # Read first band
@@ -325,7 +344,7 @@ async def get_dtm_raster(filename: str):
             # Node.js backend seemed to simple pass it, but JSON.stringify usually turns NaN to null.
             # Rasterio reads into numpy array.
             
-            return {
+            res = {
                 "width": src.width,
                 "height": src.height,
                 "originalWidth": src.width,
@@ -338,7 +357,10 @@ async def get_dtm_raster(filename: str):
                 "data": flat_data.tolist(),
                 "crs": src.crs.to_string() if src.crs else None
             }
+            duration = time.time() - start_time
+            logger.info(f"Raster data read for {filename} in {duration:.3f}s")
+            return res
             
     except Exception as e:
-        print(f"Error reading raster: {e}")
+        logger.error(f"Error reading raster {filename}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

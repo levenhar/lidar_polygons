@@ -254,21 +254,13 @@ const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8
 // Proxy helper
 const proxyToPython = async (endpoint, options = {}) => {
   try {
-    const response = await fetch(`${PYTHON_BACKEND_URL}${endpoint}`, {
-      ...options,
-      // @ts-ignore - AbortSignal.timeout is available in Node 17.3+
-      signal: AbortSignal.timeout(300000) // 5 minutes
-    });
+    const response = await fetch(`${PYTHON_BACKEND_URL}${endpoint}`, options);
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`Python backend error: ${response.status} ${response.statusText} - ${errorText}`);
     }
     return await response.json();
   } catch (error) {
-    if (error.name === 'TimeoutError') {
-      console.error(`Python proxy timeout for ${endpoint} after 5 minutes`);
-      throw new Error(`Python backend timed out after 5 minutes`);
-    }
     console.error(`Python proxy error for ${endpoint}:`, error);
     throw error;
   }
@@ -289,9 +281,7 @@ app.post('/api/upload-dtm', async (req, res) => {
       },
       body: req,
       // @ts-ignore
-      duplex: 'half',
-      // @ts-ignore
-      signal: AbortSignal.timeout(300000) // 5 minutes
+      duplex: 'half'
     });
 
     if (!response.ok) {
@@ -797,10 +787,7 @@ app.get('*', (req, res) => {
 
 
 // Start server
-const server = app.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`Backend server running on http://localhost:${PORT}`);
 });
-
-// Set server timeout to 5 minutes (300,000 ms)
-server.timeout = 300000;
 

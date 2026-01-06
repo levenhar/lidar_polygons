@@ -405,6 +405,9 @@ def interpolate_segment(start, end, interval_meters):
 
 @app.post("/elevation-profile")
 async def get_elevation_profile(request: ElevationProfileRequest):
+    start_time = time.time()
+    logger.info(f"Calculating elevation profile for {request.dtmPath} with {len(request.coordinates)} points")
+    
     if len(request.coordinates) < 2:
         raise HTTPException(status_code=400, detail="At least two points required")
         
@@ -544,12 +547,12 @@ async def get_elevation_profile(request: ElevationProfileRequest):
                     "maxElevation": max_elev
                 })
                 
+            duration = time.time() - start_time
+            logger.info(f"Elevation profile calculated in {duration:.3f}s, sampled {len(profile)} points")
             return {"profile": profile}
             
     except Exception as e:
-        print(f"Error calculating elevation profile: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Error calculating elevation profile: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")

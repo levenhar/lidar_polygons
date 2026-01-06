@@ -212,21 +212,13 @@ const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8
 // Proxy helper
 const proxyToPython = async (endpoint, options = {}) => {
   try {
-    const response = await fetch(`${PYTHON_BACKEND_URL}${endpoint}`, {
-      ...options,
-      // @ts-ignore - AbortSignal.timeout is available in Node 17.3+
-      signal: AbortSignal.timeout(300000) // 5 minutes
-    });
+    const response = await fetch(`${PYTHON_BACKEND_URL}${endpoint}`, options);
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`Python backend error: ${response.status} ${response.statusText} - ${errorText}`);
     }
     return await response.json();
   } catch (error) {
-    if (error.name === 'TimeoutError') {
-      console.error(`Python proxy timeout for ${endpoint} after 5 minutes`);
-      throw new Error(`Python backend timed out after 5 minutes`);
-    }
     console.error(`Python proxy error for ${endpoint}:`, error);
     throw error;
   }
@@ -247,9 +239,7 @@ app.post('/api/upload-dtm', async (req, res) => {
       },
       body: req,
       // @ts-ignore
-      duplex: 'half',
-      // @ts-ignore
-      signal: AbortSignal.timeout(300000) // 5 minutes
+      duplex: 'half'
     });
 
     if (!response.ok) {
@@ -311,14 +301,27 @@ app.get('/api/dtm/:filename/raster', async (req, res) => {
     const filename = req.params.filename;
     console.log(`Proxying raster request for ${filename} to Python backend...`);
 
-    // For large raster data, we might want to pipe the response directly
-    // But existing frontend expects specific JSON structure which the Python backend provides
-    const rasterData = await proxyToPython(`/dtm/${filename}/raster`);
+    const response = await fetch(`${PYTHON_BACKEND_URL}/dtm/${filename}/raster`);
 
-    console.log('Received raster data from Python, sending to client...');
-    res.json(rasterData);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Python raster error:', errorText);
+      return res.status(response.status).json({ error: errorText });
+    }
+
+    // Forward the content type and stream the body
+    res.setHeader('Content-Type', response.headers.get('Content-Type') || 'application/json');
+
+    // In Node 18+ fetch (and node-fetch v3), response.body is a ReadableStream
+    // We use a helper to pipe it to the response
+    if (response.body) {
+      const { Readable } = await import('node:stream');
+      Readable.fromWeb(response.body).pipe(res);
+    } else {
+      res.status(204).end();
+    }
   } catch (error) {
-    console.error('Error getting raster data:', error);
+    console.error('Error proxying raster data:', error);
     res.status(500).json({
       error: error.message,
       filename: req.params.filename
@@ -378,10 +381,7 @@ app.get('*', (req, res) => {
 
 
 // Start server
-const server = app.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`Backend server running on http://localhost:${PORT}`);
 });
-
-// Set server timeout to 5 minutes (300,000 ms)
-server.timeout = 300000;
 

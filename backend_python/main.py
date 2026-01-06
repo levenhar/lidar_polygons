@@ -306,8 +306,27 @@ async def get_dtm_raster(filename: str):
     logger.info(f"Reading raster data for DTM: {filename}")
     try:
         with rasterio.open(file_path) as src:
-            # Read first band
-            data = src.read(1)
+            # Downsample for visualization if too large
+            # 2048x2048 is more than enough for a map preview and stays well within JSON/browser limits
+            MAX_DIM = 2048
+            
+            if src.width > MAX_DIM or src.height > MAX_DIM:
+                scale = max(src.width, src.height) / MAX_DIM
+                new_width = int(src.width / scale)
+                new_height = int(src.height / scale)
+                logger.info(f"Downsampling DTM from {src.width}x{src.height} to {new_width}x{new_height} (factor {scale:.2f})")
+                
+                data = src.read(
+                    1,
+                    out_shape=(new_height, new_width),
+                    resampling=rasterio.enums.Resampling.bilinear
+                )
+                render_width = new_width
+                render_height = new_height
+            else:
+                data = src.read(1)
+                render_width = src.width
+                render_height = src.height
             
             # Get stats
             nodata = src.nodata
@@ -338,15 +357,9 @@ async def get_dtm_raster(filename: str):
             # Flatten array
             flat_data = data.flatten()
             
-            # Handle serialization of special values (NaN, Infinity)
-            # Replace NaNs/Infinity with null or custom handling if needed, 
-            # but standard JSON doesn't support NaN.
-            # Node.js backend seemed to simple pass it, but JSON.stringify usually turns NaN to null.
-            # Rasterio reads into numpy array.
-            
             res = {
-                "width": src.width,
-                "height": src.height,
+                "width": render_width,
+                "height": render_height,
                 "originalWidth": src.width,
                 "originalHeight": src.height,
                 "min": min_val,
@@ -358,7 +371,7 @@ async def get_dtm_raster(filename: str):
                 "crs": src.crs.to_string() if src.crs else None
             }
             duration = time.time() - start_time
-            logger.info(f"Raster data read for {filename} in {duration:.3f}s")
+            logger.info(f"Raster data read and processed for {filename} in {duration:.3f}s")
             return res
             
     except Exception as e:

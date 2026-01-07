@@ -1,8 +1,8 @@
 [
   {
     "id": "standard-mapping",
-    "name": "Standard mapping",
-    "description": "Balanced climb (4.08) with conservative descent (8.16) and 30m turn buffer.",
+    "name": "מיפוי סטנדרטי",
+    "description": "טיפוס מאוזן (4.08) עם ירידה שמרנית (8.16) ומרווח פנייה 30 מ'.",
     "climbRatio": 4.08,
     "descentRatio": 8.16,
     "allowTurnsDuringClimb": false,
@@ -11,8 +11,8 @@
   },
   {
     "id": "gentle-linked",
-    "name": "Gentle linked",
-    "description": "Gentle slopes with linked ratios and turns allowed; tighter 25m vertex buffer.",
+    "name": "מתון מקושר",
+    "description": "שיפוע מתון עם מקדמים מקושרים ופניות מותרות; מרווח קודקוד מצומצם 25 מ'.",
     "climbRatio": 6,
     "descentRatio": 6,
     "allowTurnsDuringClimb": true,
@@ -21,8 +21,8 @@
   },
   {
     "id": "aggressive-short",
-    "name": "Aggressive short legs",
-    "description": "Steeper climb/descent for short routes; turns paused with a 20m buffer.",
+    "name": "אגרסיבי למקטעים קצרים",
+    "description": "טיפוס/ירידה חדים יותר למסלולים קצרים; פניות מופסקות עם מרווח 20 מ'.",
     "climbRatio": 3,
     "descentRatio": 3.5,
     "allowTurnsDuringClimb": false,
@@ -31,8 +31,8 @@
   },
   {
     "id": "wide-turn-buffer",
-    "name": "Wide turn buffer",
-    "description": "Standard ratios with a larger 60m no-climb zone around turns.",
+    "name": "מרווח פנייה רחב",
+    "description": "מקדמים סטנדרטיים עם אזור ללא טיפוס גדול יותר של 60 מ' סביב פניות.",
     "climbRatio": 4.08,
     "descentRatio": 8.16,
     "allowTurnsDuringClimb": false,

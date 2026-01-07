@@ -66,21 +66,21 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
         className="context-menu-item"
         onClick={() => handleMenuItemClick(onDelete)}
       >
-        Delete Point
+        מחק נקודה
       </div>
       {onEdit && (
         <div
           className="context-menu-item"
           onClick={() => handleMenuItemClick(onEdit)}
         >
-          Edit / Move Point
+          ערוך / הזז נקודה
         </div>
       )}
       <div
         className="context-menu-item"
         onClick={() => handleMenuItemClick(onSetHeight)}
       >
-        Set Flight Height
+        הגדר גובה טיסה
       </div>
     </div>
   );

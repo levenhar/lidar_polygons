@@ -222,7 +222,7 @@ function App() {
         climb.endDistance
       );
 
-      allWarnings.push(...res.warnings.map(w => `Climb ${idx + 1}: ${w}`));
+      allWarnings.push(...res.warnings.map(w => `עלייה ${idx + 1}: ${w}`));
 
       currentPlanned = res.points.map((p, i) => ({
         ...p,
@@ -389,7 +389,7 @@ function App() {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!dtmSource && flightPath.length === 0) return;
 
-      const warning = 'Refreshing will delete all points and unload the DTM. Continue?';
+      const warning = 'רענון ימחק את כל הנקודות ויפרוק את ה‑DTM. להמשיך?';
       event.preventDefault();
       event.returnValue = warning;
       return warning;
@@ -416,7 +416,7 @@ function App() {
     if (pointIndex < 0 || pointIndex >= flightPath.length) return;
     const currentPoint = flightPath[pointIndex];
     const currentHeight = currentPoint.height ?? nominalFlightHeight;
-    const heightInput = prompt(`Enter flight height (AGL in meters) for point ${pointIndex + 1}:`, currentHeight.toString());
+    const heightInput = prompt(`הזן גובה טיסה (AGL במטרים) עבור נקודה ${pointIndex + 1}:`, currentHeight.toString());
 
     if (heightInput !== null) {
       const height = parseFloat(heightInput);
@@ -426,14 +426,14 @@ function App() {
           height
         });
       } else {
-        alert('Height must be positive.');
+        alert('הגובה חייב להיות חיובי.');
       }
     }
   }, [flightPath, nominalFlightHeight, updatePoint]);
 
   const handleEditPointRequest = useCallback((pointIndex: number) => {
     setEditPointIndex(pointIndex);
-    alert(`Editing point ${pointIndex + 1}. Click the map to move it.`);
+    alert(`מצב עריכה: נקודה ${pointIndex + 1}. לחץ על המפה כדי להזיז.`);
   }, []);
 
   const handleSelectClimbPreset = useCallback((presetId: string) => {
@@ -476,13 +476,13 @@ function App() {
   return (
     <div className="app-container">
       <div className="app-header">
-        <h1>LiDAR Mission Planner</h1>
+        <h1>מתכנן משימות LiDAR</h1>
         <div className="header-controls">
           <div className="header-group">
-            <div className="group-title">Flight Parameters</div>
+            <div className="group-title">פרמטרי טיסה</div>
             <div className="group-inputs">
               <label>
-                <span className="input-label">Nominal Height (m)</span>
+                <span className="input-label">גובה נומינלי (מ')</span>
                 <input
                   type="number"
                   value={nominalFlightHeight}
@@ -493,7 +493,7 @@ function App() {
                 />
               </label>
               <label>
-                <span className="input-label">Safety (m)</span>
+                <span className="input-label">גובה בטיחות (מ')</span>
                 <input
                   type="number"
                   value={safetyHeight}
@@ -504,7 +504,7 @@ function App() {
                 />
               </label>
               <label>
-                <span className="input-label">Resolution (m)</span>
+                <span className="input-label">גובה רזולוציה (מ')</span>
                 <input
                   type="number"
                   value={resolutionHeight}
@@ -515,7 +515,7 @@ function App() {
                 />
               </label>
               <label>
-                <span className="input-label">Safety Radius (m)</span>
+                <span className="input-label">רדיוס בטיחות (מ')</span>
                 <input
                   type="number"
                   value={safetySearchRadius}
@@ -526,7 +526,7 @@ function App() {
                 />
               </label>
               <label>
-                <span className="input-label">Resolution Radius (m)</span>
+                <span className="input-label">רדיוס רזולוציה (מ')</span>
                 <input
                   type="number"
                   value={resolutionSearchRadius}
@@ -539,10 +539,10 @@ function App() {
             </div>
           </div>
           <div className="header-group">
-            <div className="group-title">Mission Parameters</div>
+            <div className="group-title">פרמטרי משימה</div>
             <div className="group-inputs">
               <label>
-                <span className="input-label">Overlap (%)</span>
+                <span className="input-label">חפיפה (%)</span>
                 <input
                   type="number"
                   value={overlapPercentage}
@@ -554,7 +554,7 @@ function App() {
                 />
               </label>
               <label>
-                <span className="input-label">FOV (°)</span>
+                <span className="input-label">שדה ראייה (°)</span>
                 <input
                   type="number"
                   value={fovDegrees}
@@ -568,16 +568,16 @@ function App() {
             </div>
           </div>
           <div className="header-group">
-            <div className="group-title">Data Export</div>
+            <div className="group-title">ייצוא נתונים</div>
             <div className="group-columns">
               <div className="group-column">
                 <button
                   onClick={exportGeoJSON}
                   className="btn btn-secondary"
                   disabled={flightPath.length < 2}
-                  title={flightPath.length < 2 ? 'Draw at least 2 points to export GeoJSON' : 'Export flight path as GeoJSON'}
+                  title={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
                 >
-                  Export GeoJSON
+                  ייצוא מסלול
                 </button>
                 <input
                   type="file"
@@ -596,9 +596,9 @@ function App() {
                   htmlFor="import-geojson"
                   className={`btn btn-secondary ${!dtmSource ? 'disabled' : ''}`}
                   style={!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
-                  title={!dtmSource ? 'Load a DTM first to import GeoJSON' : 'Import flight path from GeoJSON file'}
+                  title={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
                 >
-                  Import GeoJSON
+                  העלאת מסלול
                 </label>
               </div>
             </div>

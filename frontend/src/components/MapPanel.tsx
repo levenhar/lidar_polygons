@@ -585,7 +585,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
-          alert('Point must stay within DTM bounds.');
+          alert('נקודה חייבת להישאר בתוך גבולות ה-DTM.');
           return;
         }
 
@@ -624,7 +624,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (closestSegmentIndex >= 0) {
           setDialog({
             type: 'parallelOffset',
-            title: 'Parallel offset'
+            title: 'היסט מקביל'
           });
           setDialogValues({
             segmentIndex: closestSegmentIndex.toString(),
@@ -632,7 +632,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           });
           setDialogError(null);
         } else {
-          alert('Click closer to a line segment.');
+          alert('לחץ קרוב יותר למקטע קו.');
         }
         return;
       }
@@ -644,7 +644,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
-          alert('Point must be inside DTM bounds.');
+          alert('נקודה חייבת להיות בתוך גבולות ה-DTM.');
           return;
         }
 
@@ -759,7 +759,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const lat = start.lat + closestT * (end.lat - start.lat);
 
       if (!isPointWithinBounds(lng, lat)) {
-        alert('Point must be inside DTM bounds.');
+        alert('נקודה חייבת להיות בתוך גבולות ה-DTM.');
         return;
       }
 
@@ -843,7 +843,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       const bearingDeg = (calculateBearing(start, end) * 180) / Math.PI;
       const normalizedBearing = ((bearingDeg % 360) + 360) % 360;
-      const displayAngle = normalizedBearing <= 270 ? bearingDeg - 90 : bearingDeg + 90;
+      let displayAngle = normalizedBearing <= 270 ? bearingDeg - 90 : bearingDeg + 90;
+      // Add extra 180 degree rotation for azimuth between 180-270
+      if (normalizedBearing >= 180 && normalizedBearing <= 270) {
+        displayAngle += 180;
+      }
 
       const labelIcon = L.divIcon({
         className: 'segment-length-label',
@@ -1032,7 +1036,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           // Reset to last valid position if outside bounds
           marker.setLatLng(lastValidPosition);
           onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
-          alert('Cannot move point outside DTM bounding box. Point has been reset to the previous valid position.');
+          alert('לא ניתן להזיז נקודה מחוץ לתיבת התוחם של ה-DTM. הנקודה אופסה למיקום החוקי הקודם.');
         }
       };
 
@@ -1592,7 +1596,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           console.error('Error loading DTM image:', error);
           setDtmLoaded(false);
           setIsDtmProcessing(false);
-          alert('Could not create DTM image. See console.');
+          alert('לא ניתן ליצור תמונת DTM. ראה קונסולה.');
         };
 
         const dataUrl = canvas.toDataURL();
@@ -1603,10 +1607,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
         img.src = dataUrl;
       } catch (error) {
         console.error('Error loading DTM:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        const errorMessage = error instanceof Error ? error.message : 'שגיאה לא ידועה';
         setDtmLoaded(false);
         setIsDtmProcessing(false);
-        alert(`Failed to load DTM: ${errorMessage}\nEnsure the file is a valid GeoTIFF.`);
+        alert(`טעינת DTM נכשלה: ${errorMessage}\nוודא שהקובץ הוא GeoTIFF תקין.`);
       }
     };
 
@@ -1624,13 +1628,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const hasValidExtension = allowedExtensions.some((ext) => lowerName.endsWith(ext));
 
     if (!hasValidExtension) {
-      alert('Upload a GeoTIFF (.tif/.tiff/.geotiff).');
+      alert('העלה קובץ GeoTIFF (.tif/.tiff/.geotiff).');
       resetFileInput();
       return;
     }
 
     if (isUploading) {
-      alert('Upload in progress. Please wait.');
+      alert('העלאה מתבצעת. אנא המתן.');
       resetFileInput();
       return;
     }
@@ -1639,14 +1643,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const maxSizeBytes = 2048 * 1024 * 1024; // 2 GB
     if (file.size > maxSizeBytes) {
       const fileSizeMB = (file.size / (1024 * 1024)).toFixed(0);
-      alert(`File is ${fileSizeMB} MB (max 2048). Use a smaller DTM.`);
+      alert(`הקובץ הוא ${fileSizeMB} MB (מקסימום 2048). השתמש ב-DTM קטן יותר.`);
       resetFileInput();
       return;
     }
 
     // Prevent uploading if a DTM is already loaded
     if (dtmLoaded) {
-      alert('Unload the current DTM before loading another.');
+      alert('פרוק את ה-DTM הנוכחי לפני טעינת אחר.');
       resetFileInput();
       return;
     }
@@ -1682,7 +1686,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             }
           } catch (parseError) {
             console.error('Error parsing response:', parseError);
-            alert('Failed to parse server response');
+            alert('ניתוח תגובת השרת נכשל');
           }
         } else {
           try {
@@ -1704,7 +1708,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Handle errors
       xhr.addEventListener('error', () => {
         console.error('Error uploading DTM:', xhr.statusText);
-        alert('Failed to upload DTM file');
+        alert('העלאת קובץ DTM נכשלה');
       });
 
       // Handle abort
@@ -1720,7 +1724,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       xhr.send(formData);
     } catch (error) {
       console.error('Error uploading DTM:', error);
-      alert('Failed to upload DTM file');
+      alert('העלאת קובץ DTM נכשלה');
       setIsUploading(false);
       setUploadProgress(0);
       resetFileInput();
@@ -1765,7 +1769,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     e.stopPropagation();
     setIsDragOver(false);
     if (isUploading) {
-      alert('Upload in progress. Please wait.');
+      alert('העלאה מתבצעת. אנא המתן.');
       return;
     }
     const file = e.dataTransfer?.files?.[0];
@@ -1796,7 +1800,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   };
 
   const handleDeleteAllPoints = () => {
-    if (window.confirm('Delete all points?')) {
+    if (window.confirm('למחוק את כל הנקודות?')) {
       onPathChange([]);
     }
   };
@@ -1811,7 +1815,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const currentHeight = currentPoint.height ?? nominalFlightHeight;
     setDialog({
       type: 'height',
-      title: `Point ${pointIndex + 1} height`
+      title: `גובה נקודה ${pointIndex + 1}`
     });
     setDialogValues({ height: currentHeight.toString(), pointIndex: pointIndex.toString() });
     setDialogError(null);
@@ -1819,18 +1823,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleCreatePointFromAzimuthDistance = () => {
     if (flightPath.length === 0) {
-      alert('Add a point first.');
+      alert('הוסף נקודה תחילה.');
       return;
     }
 
     if (!dtmLoaded) {
-      alert('Load a DTM first.');
+      alert('טען DTM תחילה.');
       return;
     }
 
     setDialog({
       type: 'azimuthDistance',
-      title: 'Azimuth + distance'
+      title: 'אזימוט + מרחק'
     });
     setDialogValues({ azimuth: '0', distance: '100' });
     setDialogError(null);
@@ -1849,13 +1853,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleCreatePointFromCoordinates = () => {
     if (!dtmLoaded) {
-      alert('Load a DTM first.');
+      alert('טען DTM תחילה.');
       return;
     }
 
     setDialog({
       type: 'coordinates',
-      title: 'Add point by coords'
+      title: 'הוסף נקודה לפי קואורדינטות'
     });
     setDialogValues({
       mode: 'geo',
@@ -1871,18 +1875,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleAddUTurn = () => {
     if (!dtmLoaded) {
-      alert('Load a DTM first.');
+      alert('טען DTM תחילה.');
       return;
     }
 
     if (flightPath.length < 2) {
-      alert('Add at least two points first.');
+      alert('הוסף לפחות שתי נקודות תחילה.');
       return;
     }
 
     setDialog({
       type: 'uTurn',
-      title: 'Add U-turn'
+      title: 'הוסף פרסה'
     });
     setDialogValues({
       radius: '50',
@@ -1905,12 +1909,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const height = target ? parseFloat(target) : NaN;
       const index = parseInt(dialogValues.pointIndex || '0', 10);
       if (isNaN(height) || height < 0) {
-        setDialogError('Height must be >= 0.');
+        setDialogError('גובה חייב להיות >= 0.');
         return;
       }
       const point = flightPath[index];
       if (!point) {
-        setDialogError('Point not found.');
+        setDialogError('נקודה לא נמצאה.');
         return;
       }
       onUpdatePoint(index, { ...point, height });
@@ -1922,18 +1926,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const azimuth = parseFloat(dialogValues.azimuth || '');
       const distance = parseFloat(dialogValues.distance || '');
       if (isNaN(azimuth) || azimuth < 0 || azimuth >= 360) {
-        setDialogError('Azimuth 0-360.');
+        setDialogError('אזימוט חייב להיות 0-360.');
         return;
       }
       if (isNaN(distance) || distance <= 0) {
-        setDialogError('Distance > 0.');
+        setDialogError('מרחק חייב להיות > 0.');
         return;
       }
       const lastPoint = flightPath[flightPath.length - 1];
       const bearing = (azimuth * Math.PI) / 180;
       const newPoint = calculateDestination(lastPoint, bearing, distance);
       if (!isPointWithinBounds(newPoint.lng, newPoint.lat)) {
-        setDialogError('Point outside DTM.');
+        setDialogError('נקודה מחוץ ל-DTM.');
         return;
       }
       onAddPoint(newPoint);
@@ -1945,11 +1949,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const offset = parseFloat(dialogValues.offset || '');
       const segmentIndex = parseInt(dialogValues.segmentIndex || '-1', 10);
       if (isNaN(offset)) {
-        setDialogError('Offset needed.');
+        setDialogError('נדרש היסט.');
         return;
       }
       if (segmentIndex < 0 || segmentIndex >= flightPath.length - 1) {
-        setDialogError('Pick segment again.');
+        setDialogError('בחר מקטע שוב.');
         return;
       }
       const segmentStart = flightPath[segmentIndex];
@@ -1967,7 +1971,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         setIsParallelLineMode(false);
         resetDialog();
       } else {
-        setDialogError('Offset exits DTM.');
+        setDialogError('היסט יוצא מ-DTM.');
       }
       return;
     }
@@ -1981,15 +1985,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
         lng = parseFloat(dialogValues.lng || '');
         lat = parseFloat(dialogValues.lat || '');
         if (isNaN(lng) || isNaN(lat)) {
-          setDialogError('Enter numbers.');
+          setDialogError('הזן מספרים.');
           return;
         }
         if (lng < -180 || lng > 180) {
-          setDialogError('Lng -180..180.');
+          setDialogError('קו אורך: -180..180.');
           return;
         }
         if (lat < -90 || lat > 90) {
-          setDialogError('Lat -90..90.');
+          setDialogError('קו רוחב: -90..90.');
           return;
         }
       } else {
@@ -1998,15 +2002,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const zone = parseInt(dialogValues.zone || '', 10);
         const hemisphere = (dialogValues.hemisphere || 'N').toUpperCase();
         if (isNaN(easting) || isNaN(northing) || isNaN(zone)) {
-          setDialogError('UTM numbers only.');
+          setDialogError('UTM: מספרים בלבד.');
           return;
         }
         if (zone < 1 || zone > 60) {
-          setDialogError('Zone 1-60.');
+          setDialogError('אזור: 1-60.');
           return;
         }
         if (hemisphere !== 'N' && hemisphere !== 'S') {
-          setDialogError('Hemisphere N/S.');
+          setDialogError('חצי כדור: N/S.');
           return;
         }
         try {
@@ -2017,18 +2021,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
           lat = transformedLat;
         } catch (transformError) {
           console.error('Error transforming UTM coordinates:', transformError);
-          setDialogError('UTM convert failed.');
+          setDialogError('המרת UTM נכשלה.');
           return;
         }
       }
 
       if (lng === null || lat === null) {
-        setDialogError('Coordinates missing.');
+        setDialogError('קואורדינטות חסרות.');
         return;
       }
 
       if (!isPointWithinBounds(lng, lat)) {
-        setDialogError('Point outside DTM.');
+        setDialogError('נקודה מחוץ ל-DTM.');
         return;
       }
 
@@ -2041,11 +2045,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const radius = parseFloat(dialogValues.radius || '');
       const distance = parseFloat(dialogValues.distance || '');
       if (isNaN(radius) || radius === 0) {
-        setDialogError('Radius non-zero.');
+        setDialogError('רדיוס חייב להיות שונה מאפס.');
         return;
       }
       if (isNaN(distance) || distance <= 0) {
-        setDialogError('Distance > 0.');
+        setDialogError('מרחק חייב להיות > 0.');
         return;
       }
       const side: UTurnSide = radius > 0 ? 'R' : 'L';
@@ -2056,16 +2060,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const maxStartEndDistance = radiusMeters * 2;
       const clampedDistance = Math.min(distance, maxStartEndDistance);
       if (distance > maxStartEndDistance) {
-        setDialogError(`Distance capped at ${maxStartEndDistance}m.`);
+        setDialogError(`מרחק מוגבל ל-${maxStartEndDistance}מ'.`);
       }
       const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
       if (pts.length !== numUTurnPoints) {
-        setDialogError('Could not build U-turn.');
+        setDialogError('לא ניתן לבנות פרסה.');
         return;
       }
       const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
       if (outOfBounds) {
-        setDialogError('U-turn outside DTM.');
+        setDialogError('פרסה מחוץ ל-DTM.');
         return;
       }
       const startHeight = start.height;
@@ -2083,7 +2087,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (dialog.type === 'height') {
       return (
         <>
-          <label className="quick-modal__label" htmlFor="height-input">Height (m)</label>
+          <label className="quick-modal__label" htmlFor="height-input">גובה (מ')</label>
           <input
             id="height-input"
             type="number"
@@ -2100,7 +2104,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return (
         <>
           <label className="quick-modal__label" htmlFor="azimuth-input">
-            Azimuth (0-360)
+            אזימוט (0-360)
           </label>
           <input
             id="azimuth-input"
@@ -2111,7 +2115,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             className="quick-modal__input"
           />
           <label className="quick-modal__label" htmlFor="distance-input">
-            Distance (m)
+            מרחק (מ')
           </label>
           <input
             id="distance-input"
@@ -2128,9 +2132,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return (
         <>
           <label className="quick-modal__label" htmlFor="offset-input">
-            Offset (m)
-            <Tooltip tooltip="Positive = right, negative = left">
-              <span className="quick-modal__info" aria-label="Offset direction info">i</span>
+            היסט (מ')
+            <Tooltip tooltip="חיובי = ימינה, שלילי = שמאלה">
+              <span className="quick-modal__info" aria-label="מידע כיוון היסט">i</span>
             </Tooltip>
           </label>
           <input
@@ -2154,7 +2158,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               className={`quick-modal__pill ${mode === 'geo' ? 'active' : ''}`}
               onClick={() => setDialogValues((prev) => ({ ...prev, mode: 'geo' }))}
             >
-              Lat/Lng
+              קו רוחב/אורך
             </button>
             <button
               type="button"
@@ -2166,7 +2170,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
           {mode === 'geo' ? (
             <>
-              <label className="quick-modal__label" htmlFor="lng-input">Longitude</label>
+              <label className="quick-modal__label" htmlFor="lng-input">קו אורך</label>
               <input
                 id="lng-input"
                 type="number"
@@ -2175,7 +2179,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 onChange={(e) => setDialogValues((prev) => ({ ...prev, lng: e.target.value }))}
                 className="quick-modal__input"
               />
-              <label className="quick-modal__label" htmlFor="lat-input">Latitude</label>
+              <label className="quick-modal__label" htmlFor="lat-input">קו רוחב</label>
               <input
                 id="lat-input"
                 type="number"
@@ -2187,7 +2191,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             </>
           ) : (
             <>
-              <label className="quick-modal__label" htmlFor="easting-input">Easting (m)</label>
+              <label className="quick-modal__label" htmlFor="easting-input">מזרחית (מ')</label>
               <input
                 id="easting-input"
                 type="number"
@@ -2196,7 +2200,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 onChange={(e) => setDialogValues((prev) => ({ ...prev, easting: e.target.value }))}
                 className="quick-modal__input"
               />
-              <label className="quick-modal__label" htmlFor="northing-input">Northing (m)</label>
+              <label className="quick-modal__label" htmlFor="northing-input">צפונית (מ')</label>
               <input
                 id="northing-input"
                 type="number"
@@ -2207,7 +2211,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               />
               <div className="quick-modal__split">
                 <div>
-                  <label className="quick-modal__label" htmlFor="zone-input">Zone</label>
+                  <label className="quick-modal__label" htmlFor="zone-input">אזור</label>
                   <input
                     id="zone-input"
                     type="number"
@@ -2218,7 +2222,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="quick-modal__label" htmlFor="hemisphere-input">Hem</label>
+                  <label className="quick-modal__label" htmlFor="hemisphere-input">חצי כדור</label>
                   <input
                     id="hemisphere-input"
                     type="text"
@@ -2238,9 +2242,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return (
         <>
           <label className="quick-modal__label" htmlFor="radius-input">
-            Radius (m)
-            <Tooltip tooltip="Positive = right, negative = left">
-              <span className="quick-modal__info" aria-label="Radius direction info">i</span>
+            רדיוס (מ')
+            <Tooltip tooltip="חיובי = ימינה, שלילי = שמאלה">
+              <span className="quick-modal__info" aria-label="מידע כיוון רדיוס">i</span>
             </Tooltip>
           </label>
           <input
@@ -2251,7 +2255,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             onChange={(e) => setDialogValues((prev) => ({ ...prev, radius: e.target.value }))}
             className="quick-modal__input"
           />
-          <label className="quick-modal__label" htmlFor="distance-ut-input">Span (m)</label>
+          <label className="quick-modal__label" htmlFor="distance-ut-input">מרווח (מ')</label>
           <input
             id="distance-ut-input"
             type="number"
@@ -2277,7 +2281,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 type="button"
                 className="quick-modal__close"
                 onClick={resetDialog}
-                aria-label="Close input dialog"
+                aria-label="סגירת חלון קלט"
               >
                 ×
               </button>
@@ -2287,8 +2291,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
               {dialogError && <div className="quick-modal__error">{dialogError}</div>}
             </div>
             <div className="quick-modal__actions">
-              <button type="button" className="btn btn-tertiary" onClick={resetDialog}>Cancel</button>
-              <button type="button" className="btn btn-primary" onClick={handleDialogSubmit}>Apply</button>
+              <button type="button" className="btn btn-tertiary" onClick={resetDialog}>ביטול</button>
+              <button type="button" className="btn btn-primary" onClick={handleDialogSubmit}>החל</button>
             </div>
           </div>
         </div>
@@ -2310,25 +2314,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
       )}
       {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex) !== null && (
         <div className="edit-mode-indicator">
-          Edit mode: Click on the map to move point {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex)! + 1}
+          מצב עריכה: לחץ על המפה כדי להזיז את נקודה {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex)! + 1}
         </div>
       )}
       {isParallelLineMode && (
         <div className="edit-mode-indicator">
-          Click a line segment to create a parallel line
+          לחץ על מקטע קו כדי ליצור קו מקביל
         </div>
       )}
       <div className="map-controls">
         <div className={`control-group routes-panel ${isRoutesPanelOpen ? 'open' : 'closed'}`}>
           <div className="routes-panel-header">
-            <span className="group-title">Routes</span>
+            <span className="group-title">מסלולים</span>
             <button
               type="button"
               className="btn btn-tertiary btn-compact"
               onClick={() => setIsRoutesPanelOpen((prev) => !prev)}
-              aria-label={isRoutesPanelOpen ? 'Collapse routes panel' : 'Expand routes panel'}
+              aria-label={isRoutesPanelOpen ? 'סגירת לוח המסלולים' : 'פתיחת לוח המסלולים'}
             >
-              {isRoutesPanelOpen ? 'Hide' : 'Show'}
+              {isRoutesPanelOpen ? 'הסתר' : 'הצג'}
             </button>
           </div>
           {isRoutesPanelOpen && (
@@ -2339,7 +2343,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     key={route.id}
                     className={`route-row ${route.id === activeRouteId ? 'active' : ''} ${editingRouteId === route.id ? 'editing' : ''}`}
                   >
-                    <div className="route-main" title="Select active route">
+                    <div className="route-main" title="בחר מסלול פעיל">
                       <label className="route-radio">
                         <input
                           type="radio"
@@ -2382,7 +2386,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                                 setEditingRouteName('');
                               }
                             }}
-                            placeholder={`Route ${idx + 1}`}
+                            placeholder={`מסלול ${idx + 1}`}
                           />
                         ) : (
                           <button
@@ -2392,7 +2396,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                               setEditingRouteId(route.id);
                               setEditingRouteName(route.name);
                             }}
-                            title={`${route.name} (Double-click to rename)`}
+                            title={`${route.name} (לחיצה כפולה לשינוי שם)`}
                           >
                             <span className="route-name-text">{route.name}</span>
                           </button>
@@ -2404,10 +2408,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
                         className="route-visibility switch"
                         title={
                           route.id === activeRouteId
-                            ? 'Active route stays visible.'
+                            ? 'המסלול הפעיל נשאר גלוי.'
                             : route.visible
-                              ? 'Hide route'
-                              : 'Show route'
+                              ? 'הסתר מסלול'
+                              : 'הצג מסלול'
                         }
                       >
                         <input
@@ -2418,21 +2422,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
                         />
                         <span className="switch-slider" aria-hidden />
                       </label>
-                      <Tooltip tooltip={routes.length <= 1 ? 'Keep at least one route.' : 'Delete route.'}>
+                      <Tooltip tooltip={routes.length <= 1 ? 'השאר לפחות מסלול אחד.' : 'מחק מסלול.'}>
                         <button
                           type="button"
                           className="btn btn-destructive btn-icon btn-compact"
                           onClick={() => {
                             if (routes.length <= 1) return;
-                            if (window.confirm(`Delete "${route.name}"? Cannot undo.`)) {
+                            if (window.confirm(`למחוק את "${route.name}"? לא ניתן לבטל.`)) {
                               onDeleteRoute(route.id);
                             }
                           }}
                           disabled={routes.length <= 1}
-                          aria-label={`Delete ${route.name}`}
+                          aria-label={`מחיקת ${route.name}`}
                         >
                           <Icon name="trash" />
-                          <span className="sr-only">Delete route</span>
+                          <span className="sr-only">מחיקת מסלול</span>
                         </button>
                       </Tooltip>
                     </div>
@@ -2442,9 +2446,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   type="button"
                   className="btn btn-primary"
                   onClick={onAddRoute}
-                  aria-label="Add new route"
+                  aria-label="הוסף מסלול חדש"
                 >
-                  + New Route
+                  + מסלול חדש
                 </button>
                 <div className="route-bulk-actions">
                   <button
@@ -2452,30 +2456,30 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     className="btn btn-tertiary"
                     onClick={onShowAllRoutes}
                     disabled={routes.length === 0}
-                    aria-label="Show all routes"
+                    aria-label="הצג את כל המסלולים"
                   >
-                    Show all
+                    הצג הכול
                   </button>
                   <button
                     type="button"
                     className="btn btn-tertiary"
                     onClick={onHideNonActiveRoutes}
                     disabled={routes.length === 0}
-                    aria-label="Hide non-active routes"
+                    aria-label="הסתר מסלולים לא פעילים"
                   >
-                    Show active only
+                    הצג פעיל בלבד
                   </button>
                   <button
                     type="button"
                     className="btn btn-destructive"
                     onClick={() => {
-                      if (window.confirm('Reset to one empty route? Removes all routes and points.')) {
+                      if (window.confirm('לאפס למסלול ריק אחד? ימחק את כל המסלולים והנקודות.')) {
                         onResetToSingleRoute();
                       }
                     }}
-                    aria-label="Reset to single route"
+                    aria-label="איפוס למסלול אחד"
                   >
-                    Reset routes
+                    איפוס מסלולים
                   </button>
                 </div>
               </div>
@@ -2483,7 +2487,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           )}
         </div>
         <div className="control-group">
-          <div className="group-title">Data Management</div>
+          <div className="group-title">ניהול נתונים</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
               <input
@@ -2495,47 +2499,47 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 style={{ display: 'none' }}
                 disabled={dtmLoaded}
               />
-              <Tooltip tooltip={dtmLoaded ? 'Unload current DTM first.' : 'Load DTM (GeoTIFF).'}>
+              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי.' : 'טעינת DTM (GeoTIFF).'}>
                 <label
                   htmlFor="dtm-upload"
                   className={`btn btn-secondary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
                   style={dtmLoaded ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
-                  aria-label="Load DTM"
+                  aria-label="טעינת DTM"
                 >
                   <Icon name="upload" />
-                  <span className="sr-only">Load DTM</span>
+                  <span className="sr-only">טעינת DTM</span>
                 </label>
               </Tooltip>
               <Tooltip
                 tooltip={
                   !dtmSource || !dtmLoaded
-                    ? 'No DTM loaded.'
-                    : 'Unload DTM and clear routes.'
+                    ? 'לא נטען DTM.'
+                    : 'פרוק DTM ונקה מסלולים.'
                 }
               >
                 <button
                   onClick={onDtmUnload}
                   className="btn btn-destructive btn-icon"
                   disabled={!dtmSource || !dtmLoaded}
-                  aria-label="Unload DTM and clear routes"
+                  aria-label="פריקת DTM וניקוי מסלולים"
                   type="button"
                 >
                   <Icon name="eject" />
-                  <span className="sr-only">Unload DTM and clear routes</span>
+                  <span className="sr-only">פריקת DTM וניקוי מסלולים</span>
                 </button>
               </Tooltip>
             </div>
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={flightPath.length === 0 ? 'No points to delete.' : 'Clear all points.'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'אין נקודות למחיקה.' : 'נקה את כל הנקודות.'}>
                 <button
                   onClick={handleDeleteAllPoints}
                   className="btn btn-destructive btn-icon"
                   disabled={flightPath.length === 0}
-                  aria-label="Delete all points"
+                  aria-label="מחיקת כל הנקודות"
                   type="button"
                 >
                   <Icon name="trash" />
-                  <span className="sr-only">Delete All Points</span>
+                  <span className="sr-only">מחיקת כל הנקודות</span>
                 </button>
               </Tooltip>
             </div>
@@ -2543,10 +2547,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
 
         <div className="control-group">
-          <div className="group-title">Planning Options</div>
+          <div className="group-title">אפשרויות תכנון</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : isDrawing ? 'Stop drawing.' : 'Draw path (click map).'}>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה.' : isDrawing ? 'עצור שרטוט.' : 'צייר מסלול (קליק על המפה).'}>
                 <button
                   onClick={() => {
                     setIsDrawing(!isDrawing);
@@ -2558,22 +2562,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   }}
                   className={`btn btn-primary btn-icon ${isDrawing ? 'active' : ''}`}
                   disabled={!dtmLoaded}
-                  aria-label={isDrawing ? 'Stop drawing' : 'Draw path'}
+                  aria-label={isDrawing ? 'עצירת שרטוט' : 'שרטט מסלול'}
                   type="button"
                 >
                   <Icon name="pencil" />
-                  <span className="sr-only">{isDrawing ? 'Stop Drawing' : 'Draw Path'}</span>
+                  <span className="sr-only">{isDrawing ? 'עצירת שרטוט' : 'שרטט מסלול'}</span>
                 </button>
               </Tooltip>
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'Load a DTM first.'
+                    ? 'טען DTM תחילה.'
                     : flightPath.length < 2
-                      ? 'Add 2+ points first.'
+                      ? 'הוסף לפחות שתי נקודות תחילה.'
                       : isParallelLineMode
-                        ? 'Stop parallel line mode.'
-                        : 'Parallel line: click a segment, set offset.'
+                        ? 'עצור מצב קו מקביל.'
+                        : 'קו מקביל: לחץ על מקטע, קבע היסט.'
                 }
               >
                 <button
@@ -2587,11 +2591,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   }}
                   className={`btn btn-secondary btn-icon ${isParallelLineMode ? 'active' : ''}`}
                   disabled={!dtmLoaded || flightPath.length < 2}
-                  aria-label={isParallelLineMode ? 'Cancel parallel line' : 'Create parallel line'}
+                  aria-label={isParallelLineMode ? 'בטל קו מקביל' : 'צור קו מקביל'}
                   type="button"
                 >
                   <Icon name="parallel" />
-                  <span className="sr-only">{isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}</span>
+                  <span className="sr-only">{isParallelLineMode ? 'בטל קו מקביל' : 'צור קו מקביל'}</span>
                 </button>
               </Tooltip>
             </div>
@@ -2599,53 +2603,53 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'Load a DTM first.'
+                    ? 'טען DTM תחילה.'
                     : flightPath.length === 0
-                      ? 'Add a point first.'
-                      : 'Add point by azimuth + distance.'
+                      ? 'הוסף נקודה תחילה.'
+                      : 'הוסף נקודה לפי אזימוט + מרחק.'
                 }
               >
                 <button
                   onClick={handleCreatePointFromAzimuthDistance}
                   className="btn btn-secondary btn-icon"
                   disabled={!dtmLoaded || flightPath.length === 0}
-                  aria-label="Add point by azimuth and distance"
+                  aria-label="הוסף נקודה לפי אזימוט ומרחק"
                   type="button"
                 >
                   <Icon name="compass" />
-                  <span className="sr-only">Azimuth + Distance</span>
+                  <span className="sr-only">אזימוט + מרחק</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Add point by coordinates.'}>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה.' : 'הוסף נקודה לפי קואורדינטות.'}>
                 <button
                   onClick={handleCreatePointFromCoordinates}
                   className="btn btn-secondary btn-icon"
                   disabled={!dtmLoaded}
-                  aria-label="Add point by coordinate"
+                  aria-label="הוסף נקודה לפי קואורדינטות"
                   type="button"
                 >
                   <Icon name="crosshair" />
-                  <span className="sr-only">Point by Coordinate</span>
+                  <span className="sr-only">נקודה לפי קואורדינטות</span>
                 </button>
               </Tooltip>
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'Load a DTM first.'
+                    ? 'טען DTM תחילה.'
                     : flightPath.length < 2
-                      ? 'Add 2+ points first.'
-                      : 'Add U-turn with radius + distance.'
+                      ? 'הוסף לפחות שתי נקודות תחילה.'
+                      : 'הוסף פרסה עם רדיוס + מרחק.'
                 }
               >
                 <button
                   onClick={handleAddUTurn}
                   className="btn btn-secondary btn-icon"
                   disabled={!dtmLoaded || flightPath.length < 2}
-                  aria-label="Add U-turn"
+                  aria-label="הוסף פרסה"
                   type="button"
                 >
                   <Icon name="uturn" />
-                  <span className="sr-only">U-turn</span>
+                  <span className="sr-only">פרסה</span>
                 </button>
               </Tooltip>
             </div>
@@ -2653,31 +2657,31 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
 
         <div className="control-group">
-          <div className="group-title">History</div>
+          <div className="group-title">היסטוריה</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Undo (Ctrl+Z).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה.' : 'בטל (Ctrl+Z).'}>
                 <button
                   onClick={onUndo}
                   disabled={!canUndo || flightPath.length === 0}
                   className="btn btn-secondary btn-icon"
-                  aria-label="Undo"
+                  aria-label="בטל"
                   type="button"
                 >
                   <Icon name="undo" />
-                  <span className="sr-only">Undo</span>
+                  <span className="sr-only">בטל</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Redo (Ctrl+Y or Ctrl+Shift+Z).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה.' : 'בצע שוב (Ctrl+Y או Ctrl+Shift+Z).'}>
                 <button
                   onClick={onRedo}
                   disabled={!canRedo || flightPath.length === 0}
                   className="btn btn-secondary btn-icon"
-                  aria-label="Redo"
+                  aria-label="בצע שוב"
                   type="button"
                 >
                   <Icon name="redo" />
-                  <span className="sr-only">Redo</span>
+                  <span className="sr-only">בצע שוב</span>
                 </button>
               </Tooltip>
             </div>
@@ -2685,30 +2689,30 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
 
         <div className="control-group">
-          <div className="group-title">View Controls</div>
+          <div className="group-title">בקרות תצוגה</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Fit view to DTM.'}>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה.' : 'התאם תצוגה ל‑DTM.'}>
                 <button
                   onClick={handleFitToDTM}
                   className="btn btn-tertiary btn-icon"
                   disabled={!dtmLoaded}
-                  aria-label="Fit to DTM"
+                  aria-label="התאם ל‑DTM"
                   type="button"
                 >
                   <Icon name="fit" />
-                  <span className="sr-only">Fit to DTM</span>
+                  <span className="sr-only">התאם ל‑DTM</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip="Reset map view to the default extent.">
+              <Tooltip tooltip="אפס תצוגת מפה לברירת מחדל.">
                 <button
                   onClick={handleResetView}
                   className="btn btn-tertiary btn-icon"
-                  aria-label="Reset view"
+                  aria-label="איפוס תצוגה"
                   type="button"
                 >
                   <Icon name="home" />
-                  <span className="sr-only">Reset View</span>
+                  <span className="sr-only">איפוס תצוגה</span>
                 </button>
               </Tooltip>
             </div>
@@ -2716,7 +2720,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               className="group-column group-column-icons"
               style={{ display: 'flex', flexDirection: 'row', gap: '12px', alignItems: 'center' }}
             >
-              <Tooltip tooltip="Show/hide map hover metadata.">
+              <Tooltip tooltip="הצג/הסתר נתונים בזמן ריחוף.">
                 <label
                   className="switch"
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
@@ -2727,10 +2731,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     onChange={(e) => onShowMetadataChange(e.target.checked)}
                   />
                   <span className="switch-slider" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>Metadata</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>נתונים</span>
                 </label>
               </Tooltip>
-              <Tooltip tooltip="Show/hide climb labels near climb markers.">
+              <Tooltip tooltip="הצג/הסתר תוויות טיפוס ליד סמני טיפוס.">
                 <label
                   className="switch"
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
@@ -2741,7 +2745,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     onChange={(e) => onShowClimbLabelsChange(e.target.checked)}
                   />
                   <span className="switch-slider" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>Climb labels</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>תוויות טיפוס</span>
                 </label>
               </Tooltip>
             </div>
@@ -2761,8 +2765,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
             <div className="dtm-drop-content">
               <Icon name="upload" />
               <div className="dtm-drop-text">
-                <div className="dtm-drop-title">Drop DTM GeoTIFF to upload</div>
-                <div className="dtm-drop-subtitle">.tif, .tiff, .geotiff • Max 199 MB</div>
+                <div className="dtm-drop-title">גרור ושחרר קובץ DTM GeoTIFF להעלאה</div>
+                <div className="dtm-drop-subtitle">.tif, .tiff, .geotiff • עד 199MB</div>
               </div>
             </div>
           </div>
@@ -2770,7 +2774,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         {isUploading && (
           <div className="upload-progress-overlay">
             <div className="upload-progress-container">
-              <div className="upload-progress-label">Uploading DTM: {uploadProgress}%</div>
+              <div className="upload-progress-label">מעלה DTM: {uploadProgress}%</div>
               <div className="upload-progress-bar">
                 <div
                   className="upload-progress-fill"
@@ -2791,7 +2795,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             className="dtm-transparency-control"
           >
             <label htmlFor="dtm-opacity-slider" className="dtm-opacity-label">
-              DTM Transparency: {Math.round((1 - dtmOpacity) * 100)}%
+              שקפיות {Math.round((1 - dtmOpacity) * 100)}%
             </label>
             <input
               id="dtm-opacity-slider"
@@ -2810,7 +2814,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             type="button"
             className="basemap-toggle"
             onClick={handleBaseMapButtonClick}
-            title={`Switch to ${nextBaseMap.name}`}
+            title={`החלף ל‑${nextBaseMap.name}`}
           >
             <div
               className="basemap-preview"
@@ -2832,37 +2836,37 @@ const MapPanel: React.FC<MapPanelProps> = ({
           {hoveredUtm ? (
             <>
               <div className="tooltip-section">
-                <span className="tooltip-label">UTM Zone:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
+                <span className="tooltip-label">אזור UTM:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
               </div>
               <div className="tooltip-section">
-                <span className="tooltip-label">Easting:</span> {hoveredUtm.easting.toFixed(1)}m
+                <span className="tooltip-label">איסטינג:</span> {hoveredUtm.easting.toFixed(1)}m
               </div>
               <div className="tooltip-section">
-                <span className="tooltip-label">Northing:</span> {hoveredUtm.northing.toFixed(1)}m
+                <span className="tooltip-label">נורת'ינג:</span> {hoveredUtm.northing.toFixed(1)}m
               </div>
             </>
           ) : (
             <>
               <div className="tooltip-section">
-                <span className="tooltip-label">Lat:</span> {hoveredElevationPoint.latitude.toFixed(6)}
+                <span className="tooltip-label">קו רוחב:</span> {hoveredElevationPoint.latitude.toFixed(6)}
               </div>
               <div className="tooltip-section">
-                <span className="tooltip-label">Lng:</span> {hoveredElevationPoint.longitude.toFixed(6)}
+                <span className="tooltip-label">קו אורך:</span> {hoveredElevationPoint.longitude.toFixed(6)}
               </div>
             </>
           )}
           <div className="tooltip-divider" />
           <div className="tooltip-section">
-            <span className="tooltip-label">AGL Height:</span> {hoveredElevationPoint.flightHeight?.toFixed(1)}m
+            <span className="tooltip-label">גובה AGL:</span> {hoveredElevationPoint.flightHeight?.toFixed(1)}m
           </div>
           {hoveredElevationPoint.minElevation !== undefined && (
             <div className="tooltip-section">
-              <span className="tooltip-label">H from Min:</span> {((hoveredElevationPoint.elevation + (hoveredElevationPoint.flightHeight || 0)) - hoveredElevationPoint.minElevation).toFixed(1)}m
+              <span className="tooltip-label">גובה מהמינימום:</span> {((hoveredElevationPoint.elevation + (hoveredElevationPoint.flightHeight || 0)) - hoveredElevationPoint.minElevation).toFixed(1)}m
             </div>
           )}
           {hoveredElevationPoint.maxElevation !== undefined && (
             <div className="tooltip-section">
-              <span className="tooltip-label">H from Max:</span> {((hoveredElevationPoint.elevation + (hoveredElevationPoint.flightHeight || 0)) - hoveredElevationPoint.maxElevation).toFixed(1)}m
+              <span className="tooltip-label">גובה מהמקסימום:</span> {((hoveredElevationPoint.elevation + (hoveredElevationPoint.flightHeight || 0)) - hoveredElevationPoint.maxElevation).toFixed(1)}m
             </div>
           )}
         </div>

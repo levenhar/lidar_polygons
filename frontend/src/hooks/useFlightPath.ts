@@ -34,7 +34,7 @@ const colorPalette = ['#ff4d4f', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#e
 function createRoute(index: number): FlightRoute {
   return {
     id: `route-${index}-${Date.now()}`,
-    name: `Route ${index}`,
+    name: `מסלול ${index}`,
     color: colorPalette[(index - 1) % colorPalette.length],
     visible: true,
     points: []
@@ -334,28 +334,44 @@ export function useFlightPath() {
         const text = await file.text();
         const geoJSON: GeoJSON = JSON.parse(text);
 
-        const lineStringFeature = geoJSON.features.find((f) => f.geometry.type === 'LineString');
+        const lineStringFeatures = geoJSON.features.filter((f) => f.geometry.type === 'LineString');
 
-        if (!lineStringFeature) {
+        if (lineStringFeatures.length === 0) {
           alert('No LineString in GeoJSON.');
           return;
         }
 
-        const heights = lineStringFeature.properties?.heights as number[] | undefined;
+        const newRoutes: FlightRoute[] = lineStringFeatures.map((f, i) => {
+          const heights = f.properties?.heights as number[] | undefined;
+          const coordinates = f.geometry.coordinates.map((coord, index) => ({
+            lng: coord[0],
+            lat: coord[1],
+            ...(heights && heights[index] !== undefined && { height: heights[index] })
+          }));
 
-        const coordinates = lineStringFeature.geometry.coordinates.map((coord, index) => ({
-          lng: coord[0],
-          lat: coord[1],
-          ...(heights && heights[index] !== undefined && { height: heights[index] })
-        }));
+          const nextIndex = state.routes.length + i + 1;
+          const route = createRoute(nextIndex);
+          return {
+            ...route,
+            name: f.properties?.name || route.name,
+            points: coordinates
+          };
+        });
 
-        updateActiveRoute((route) => ({ ...route, points: coordinates }));
+        setState(
+          {
+            ...state,
+            routes: [...state.routes, ...newRoutes],
+            activeRouteId: newRoutes[0].id
+          },
+          true
+        );
       } catch (error) {
         console.error('Error importing GeoJSON:', error);
         alert('Failed to import GeoJSON.');
       }
     },
-    [updateActiveRoute]
+    [state, setState]
   );
 
   return {

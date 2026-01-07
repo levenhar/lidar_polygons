@@ -24,7 +24,7 @@ const Tooltip: React.FC<TooltipProps> = ({ tooltip, children, className }) => {
     const bubbleRect = bubble.getBoundingClientRect();
     const vw = window.innerWidth || document.documentElement.clientWidth || 0;
 
-    // Desired: center bubble above the trigger
+    // Center bubble above the trigger
     const desiredLeftViewport = wrapRect.left + wrapRect.width / 2 - bubbleRect.width / 2;
 
     const pad = 8; // viewport padding in px

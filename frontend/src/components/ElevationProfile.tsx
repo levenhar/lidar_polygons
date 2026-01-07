@@ -729,7 +729,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill', 'black')
       .style('text-anchor', 'middle')
       .style('font-size', '14px')
-      .text('Distance (meters)');
+      .text('מרחק (מטרים)');
 
     g.append('text')
       .attr('class', 'y-axis-label')
@@ -739,7 +739,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill', 'black')
       .style('text-anchor', 'middle')
       .style('font-size', '14px')
-      .text('Elevation (meters)');
+      .text('גובה (מטרים)');
 
     // Highlight selected point (only for user-imported points, not interpolated ones)
     if (selectedPoint && flightPath.length > 0) {
@@ -838,10 +838,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('transform', `translate(${margin.left}, ${height + margin.top + legendOffset})`);
 
     const legendData = [
-      { label: 'Ground Elevation', color: '#8B4513', style: 'solid' },
-      { label: 'Flight height', color: '#6f42c1', style: 'solid' },
-      { label: `Safety (+${safetyHeight}m)`, color: '#DC2626', style: 'dashed' },
-      { label: `Resolution (+${resolutionHeight}m)`, color: '#16A34A', style: 'dashed' }
+      { label: 'גובה קרקע', color: '#8B4513', style: 'solid' },
+      { label: 'גובה טיסה', color: '#6f42c1', style: 'solid' },
+      { label: `בטיחות (+${safetyHeight}מ')`, color: '#DC2626', style: 'dashed' },
+      { label: `רזולוציה (+${resolutionHeight}מ')`, color: '#16A34A', style: 'dashed' }
     ];
 
     // Calculate the width of the longest label
@@ -1349,6 +1349,25 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const exportPNG = () => {
     if (!svgRef.current) return;
 
+    // Calculate statistics based on flight altitude (planned altitude)
+    let totalAscent = 0;
+    let totalDescent = 0;
+    for (let i = 1; i < elevationProfile.length; i++) {
+      const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? (elevationProfile[i - 1].elevation + nominalFlightHeight);
+      const currAltitude = elevationProfile[i].plannedAltitude ?? (elevationProfile[i].elevation + nominalFlightHeight);
+      const altitudeDiff = currAltitude - prevAltitude;
+      if (altitudeDiff > 0) {
+        totalAscent += altitudeDiff;
+      } else if (altitudeDiff < 0) {
+        totalDescent += Math.abs(altitudeDiff);
+      }
+    }
+
+    const minElevation = Math.min(...elevationProfile.map(p => p.elevation));
+    const maxElevation = Math.max(...elevationProfile.map(p => p.elevation));
+    const elevationRange = maxElevation - minElevation;
+    const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
+
     const svgData = new XMLSerializer().serializeToString(svgRef.current);
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
@@ -1358,14 +1377,66 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const url = URL.createObjectURL(svgBlob);
 
     img.onload = () => {
+      // Add extra height for statistics
+      const statsHeight = 100;
       canvas.width = img.width;
-      canvas.height = img.height;
+      canvas.height = img.height + statsHeight;
 
-      // Fill canvas with white background
       if (ctx) {
+        // Fill canvas with white background
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw the SVG image
         ctx.drawImage(img, 0, 0);
+
+        // Draw statistics background
+        ctx.fillStyle = '#f9fafb';
+        ctx.fillRect(0, img.height, canvas.width, statsHeight);
+
+        // Draw statistics border
+        ctx.strokeStyle = '#e5e7eb';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, img.height);
+        ctx.lineTo(canvas.width, img.height);
+        ctx.stroke();
+
+        // Configure text style
+        ctx.fillStyle = '#111827';
+        ctx.font = 'bold 14px Arial';
+        ctx.textAlign = 'right';
+
+        // Calculate positions for statistics (right-to-left layout)
+        const statPadding = 20;
+        const statSpacing = 120;
+        const labelY = img.height + 30;
+        const valueY = img.height + 55;
+
+        // Draw statistics (from right to left)
+        const stats = [
+          { label: 'ירידה כוללת:', value: `${totalDescent.toFixed(1)} מ'` },
+          { label: 'עלייה כוללת:', value: `${totalAscent.toFixed(1)} מ'` },
+          { label: 'מרחק כולל:', value: `${totalDistance.toFixed(1)} מ'` },
+          { label: 'טווח גובה:', value: `${elevationRange.toFixed(1)} מ'` },
+          { label: 'גובה מקסימלי:', value: `${maxElevation.toFixed(1)} מ'` },
+          { label: 'גובה מינימלי:', value: `${minElevation.toFixed(1)} מ'` }
+        ];
+
+        let xPos = canvas.width - statPadding;
+        stats.forEach((stat) => {
+          // Draw label
+          ctx.fillStyle = '#6b7280';
+          ctx.font = '11px Arial';
+          ctx.fillText(stat.label, xPos, labelY);
+
+          // Draw value
+          ctx.fillStyle = '#111827';
+          ctx.font = 'bold 16px Arial';
+          ctx.fillText(stat.value, xPos, valueY);
+
+          xPos -= statSpacing;
+        });
       }
 
       canvas.toBlob((blob) => {
@@ -1451,28 +1522,28 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         />
       )}
       <div className="elevation-header">
-        <h2>Elevation Profile</h2>
+        <h2>פרופיל גובה</h2>
         <div className="elevation-controls">
           <div className="control-group">
-            <div className="group-title">Climb</div>
+            <div className="group-title">עלייה</div>
             <div className="group-buttons">
-              <Tooltip tooltip="Climb settings">
+              <Tooltip tooltip="הגדרות עלייה">
                 <button
                   onClick={openClimbConfig}
                   className="btn btn-secondary btn-icon"
                   type="button"
-                  aria-label="Climb settings"
+                  aria-label="הגדרות עלייה"
                 >
                   <ClimbIcon />
                 </button>
               </Tooltip>
-              <Tooltip tooltip={climbRequests.length ? 'Remove all climbs.' : 'No climb applied yet.'}>
+              <Tooltip tooltip={climbRequests.length ? 'הסר את כל העליות.' : 'טרם הוגדרה עלייה.'}>
                 <button
                   onClick={handleRemoveClimb}
                   disabled={climbRequests.length === 0}
                   className="btn btn-tertiary btn-icon"
                   type="button"
-                  aria-label="Remove climbs"
+                  aria-label="הסר עליות"
                 >
                   <TrashIcon />
                 </button>
@@ -1480,30 +1551,30 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </div>
           </div>
           <div className="control-group">
-            <div className="group-title">Export</div>
+            <div className="group-title">ייצוא</div>
             <div className="group-buttons">
-              <Tooltip tooltip={elevationProfile.length === 0 ? 'No profile to export yet.' : 'Export the elevation chart as PNG.'}>
+              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין.' : 'ייצא את תרשים הגובה כ-PNG.'}>
                 <button
                   onClick={exportPNG}
                   disabled={elevationProfile.length === 0}
                   className="btn btn-secondary btn-icon"
-                  aria-label="Export PNG"
+                  aria-label="ייצוא PNG"
                   type="button"
                 >
                   <ExportIcon type="png" />
-                  <span className="sr-only">Export PNG</span>
+                  <span className="sr-only">ייצוא PNG</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={elevationProfile.length === 0 ? 'No profile to export yet.' : 'Export the elevation data as CSV.'}>
+              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין.' : 'ייצא את נתוני הגובה כ-CSV.'}>
                 <button
                   onClick={exportCSV}
                   disabled={elevationProfile.length === 0}
                   className="btn btn-secondary btn-icon"
-                  aria-label="Export CSV"
+                  aria-label="ייצוא CSV"
                   type="button"
                 >
                   <ExportIcon type="csv" />
-                  <span className="sr-only">Export CSV</span>
+                  <span className="sr-only">ייצוא CSV</span>
                 </button>
               </Tooltip>
             </div>
@@ -1512,7 +1583,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       </div>
       <div className="climb-banner">
         <div className="climb-policy-text">
-          Click the profile to add climbs; click marks where the climb ends.
+          לחץ על הפרופיל כדי להוסיף עליות; הקליק מסמן היכן העלייה מסתיימת.
         </div>
         {climbWarnings.length > 0 && (
           <div className="climb-warning-list">
@@ -1526,11 +1597,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         {loading ? (
           <div className="loading">
             <div className="loading-spinner"></div>
-            <div className="loading-text">Calculating elevation profile...</div>
+            <div className="loading-text">מחשב פרופיל גובה...</div>
           </div>
         ) : elevationProfile.length === 0 ? (
           <div className="no-data">
-            Draw a flight path on the map to see the elevation profile
+            שרטט מסלול טיסה על המפה כדי לראות את פרופיל הגובה
           </div>
         ) : (
           <svg ref={svgRef} className="elevation-chart"></svg>
@@ -1540,13 +1611,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         <div className="climb-modal__backdrop" role="dialog" aria-modal="true">
           <div className="climb-modal__card">
             <div className="climb-modal__header">
-              <div className="climb-modal__title">Apply climb</div>
+              <div className="climb-modal__title">החל עלייה</div>
               <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); }}>×</button>
             </div>
             <div className="climb-modal__body">
-              <div className="climb-modal__label">Climb end distance</div>
-              <div className="climb-modal__hint">{pendingClimbEnd !== null ? `${pendingClimbEnd.toFixed(1)} m` : 'Click the profile to pick a climb end.'}</div>
-              <label className="climb-modal__label" htmlFor="climb-amount-input">Change in altitude (m)</label>
+              <div className="climb-modal__label">מרחק סיום העלייה</div>
+              <div className="climb-modal__hint">{pendingClimbEnd !== null ? `${pendingClimbEnd.toFixed(1)} מ'` : 'לחץ על הפרופיל כדי לבחור נקודת סיום עלייה.'}</div>
+              <label className="climb-modal__label" htmlFor="climb-amount-input">שינוי בגובה (מ')</label>
               <input
                 id="climb-amount-input"
                 type="number"
@@ -1557,19 +1628,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 className="climb-modal__input"
               />
               <div className="climb-modal__hint">
-                Climb starts earlier by {parseFloat(climbAmountInput) > 0 ? climbConfig.climbRatio : climbConfig.descentRatio}:1 (horizontal:vertical) to finish at this point.
-                {climbConfig.allowTurnsDuringClimb ? ' Climb continues through turns.' : ' Climb pauses while turning.'}
+                העלייה מתחילה מוקדם יותר ביחס {parseFloat(climbAmountInput) > 0 ? climbConfig.climbRatio : climbConfig.descentRatio}:1 (אופקי:אנכי) כדי להסתיים בנקודה זו.
+                {climbConfig.allowTurnsDuringClimb ? ' העלייה נמשכת דרך פניות.' : ' העלייה נעצרת בזמן פניה.'}
               </div>
               {climbAmountError && <div className="climb-modal__error">{climbAmountError}</div>}
             </div>
             <div className="climb-modal__actions">
-              <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbAmountOpen(false)}>Cancel</button>
+              <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbAmountOpen(false)}>ביטול</button>
               {(climbRequests.length > 0 || climbWarnings.length > 0) && (
                 <span className="warning-badge" title={climbWarnings.join('\n')}>
                   {climbWarnings.length}
                 </span>
               )}
-              <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>Apply climb</button>
+              <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>החל עלייה</button>
             </div>
           </div>
         </div>
@@ -1578,14 +1649,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         <div className="climb-modal__backdrop" role="dialog" aria-modal="true">
           <div className="climb-modal__card">
             <div className="climb-modal__header">
-              <div className="climb-modal__title">Climb warning</div>
+              <div className="climb-modal__title">אזהרת עלייה</div>
               <button className="climb-modal__close" onClick={() => setClimbValidationPopup(null)}>×</button>
             </div>
             <div className="climb-modal__body">
               <div className="climb-modal__error" role="alert">{climbValidationPopup}</div>
             </div>
             <div className="climb-modal__actions">
-              <button className="btn btn-primary" type="button" onClick={() => setClimbValidationPopup(null)}>OK</button>
+              <button className="btn btn-primary" type="button" onClick={() => setClimbValidationPopup(null)}>אישור</button>
             </div>
           </div>
         </div>
@@ -1594,18 +1665,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         <div className="climb-modal__backdrop" role="dialog" aria-modal="true">
           <div className="climb-modal__card">
             <div className="climb-modal__header">
-              <div className="climb-modal__title">Climb settings</div>
+              <div className="climb-modal__title">הגדרות עלייה</div>
               <button className="climb-modal__close" onClick={() => setIsClimbConfigOpen(false)}>×</button>
             </div>
             <div className="climb-modal__body">
-              <label className="climb-modal__label" htmlFor="climb-preset-select">Preset</label>
+              <label className="climb-modal__label" htmlFor="climb-preset-select">תבנית מוגדרת</label>
               <select
                 id="climb-preset-select"
                 value={selectedClimbPresetId}
                 onChange={(e) => handlePresetChange(e.target.value)}
                 className="climb-modal__input"
               >
-                <option value="custom">Custom (edit below)</option>
+                <option value="custom">מותאם אישית (ערוך למטה)</option>
                 {climbPresets.map((preset) => (
                   <option key={preset.id} value={preset.id}>
                     {preset.name}
@@ -1614,8 +1685,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               </select>
               <div className="climb-modal__hint">
                 {selectedClimbPresetId === 'custom'
-                  ? 'Edit fields below to define your own climb behavior.'
-                  : selectedPreset?.description || 'Preset loaded from climbPresets.json.'}
+                  ? 'ערוך את השדות למטה כדי להגדיר את התנהגות העלייה שלך.'
+                  : selectedPreset?.description || 'תבנית נטענה מ-climbPresets.json.'}
               </div>
               <label className="climb-modal__toggle">
                 <input
@@ -1632,10 +1703,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                     }));
                   }}
                 />
-                Link Ratios (Use same value for climb and descent)
+                קשר יחסים (השתמש באותו ערך לעלייה וירידה)
               </label>
 
-              <label className="climb-modal__label" htmlFor="climb-ratio-input">Climb Ratio (Horizontal m / 1m Up)</label>
+              <label className="climb-modal__label" htmlFor="climb-ratio-input">יחס עלייה (מ' אופקי / 1מ' למעלה)</label>
               <input
                 id="climb-ratio-input"
                 type="number"
@@ -1654,7 +1725,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 className="climb-modal__input"
               />
 
-              <label className="climb-modal__label" htmlFor="descent-ratio-input">Descent Ratio (Horizontal m / 1m Down)</label>
+              <label className="climb-modal__label" htmlFor="descent-ratio-input">יחס ירידה (מ' אופקי / 1מ' למטה)</label>
               <input
                 id="descent-ratio-input"
                 type="number"
@@ -1669,7 +1740,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 disabled={climbConfigDraft.linkRatios}
               />
 
-              <label className="climb-modal__label" htmlFor="vertex-proximity-input">Vertex Proximity (meters)</label>
+              <label className="climb-modal__label" htmlFor="vertex-proximity-input">קרבת קודקוד (מטרים)</label>
               <input
                 id="vertex-proximity-input"
                 type="number"
@@ -1689,16 +1760,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   checked={climbConfigDraft.allowTurnsDuringClimb}
                   onChange={(e) => handleAllowTurnsChange(e.target.checked)}
                 />
-                Allow climb through turns (otherwise, climb pauses until the turn ends)
+                אפשר עלייה דרך פניות (אחרת, העלייה נעצרת עד סוף הפנייה)
               </label>
               <div className="climb-modal__hint">
-                Changes apply immediately to new climbs. Existing climbs are recalculated with the new policy.
+                שינויים חלים מיד על עליות חדשות. עליות קיימות מחושבות מחדש עם המדיניות החדשה.
               </div>
               {climbConfigError && <div className="climb-modal__error">{climbConfigError}</div>}
             </div>
             <div className="climb-modal__actions">
-              <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbConfigOpen(false)}>Cancel</button>
-              <button className="btn btn-primary" type="button" onClick={handleSaveClimbConfig}>Save</button>
+              <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbConfigOpen(false)}>ביטול</button>
+              <button className="btn btn-primary" type="button" onClick={handleSaveClimbConfig}>שמור</button>
             </div>
           </div>
         </div>
@@ -1721,7 +1792,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               setIsClimbAmountOpen(true);
             }}
           >
-            Edit climb
+            ערוך עלייה
           </button>
           <button
             type="button"
@@ -1731,39 +1802,67 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               setClimbContextMenu(null);
             }}
           >
-            Delete climb
+            מחק עלייה
           </button>
         </div>
       )}
-      {elevationProfile.length > 0 && (
-        <div className="elevation-stats">
-          <div className="stat">
-            <span className="stat-label">Min Elevation:</span>
-            <span className="stat-value">
-              {Math.min(...elevationProfile.map(p => p.elevation)).toFixed(1)} m
-            </span>
+      {elevationProfile.length > 0 && (() => {
+        // Calculate ascent and descent based on flight altitude (planned altitude)
+        let totalAscent = 0;
+        let totalDescent = 0;
+        for (let i = 1; i < elevationProfile.length; i++) {
+          const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? (elevationProfile[i - 1].elevation + nominalFlightHeight);
+          const currAltitude = elevationProfile[i].plannedAltitude ?? (elevationProfile[i].elevation + nominalFlightHeight);
+          const altitudeDiff = currAltitude - prevAltitude;
+          if (altitudeDiff > 0) {
+            totalAscent += altitudeDiff;
+          } else if (altitudeDiff < 0) {
+            totalDescent += Math.abs(altitudeDiff);
+          }
+        }
+
+        return (
+          <div className="elevation-stats">
+            <div className="stat">
+              <span className="stat-label">גובה מינימלי:</span>
+              <span className="stat-value">
+                {Math.min(...elevationProfile.map(p => p.elevation)).toFixed(1)} מ'
+              </span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">גובה מקסימלי:</span>
+              <span className="stat-value">
+                {Math.max(...elevationProfile.map(p => p.elevation)).toFixed(1)} מ'
+              </span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">טווח גובה:</span>
+              <span className="stat-value">
+                {(Math.max(...elevationProfile.map(p => p.elevation)) -
+                  Math.min(...elevationProfile.map(p => p.elevation))).toFixed(1)} מ'
+              </span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">מרחק כולל:</span>
+              <span className="stat-value">
+                {elevationProfile[elevationProfile.length - 1]?.distance.toFixed(1)} מ'
+              </span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">עלייה כוללת:</span>
+              <span className="stat-value">
+                {totalAscent.toFixed(1)} מ'
+              </span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">ירידה כוללת:</span>
+              <span className="stat-value">
+                {totalDescent.toFixed(1)} מ'
+              </span>
+            </div>
           </div>
-          <div className="stat">
-            <span className="stat-label">Max Elevation:</span>
-            <span className="stat-value">
-              {Math.max(...elevationProfile.map(p => p.elevation)).toFixed(1)} m
-            </span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Elevation Range:</span>
-            <span className="stat-value">
-              {(Math.max(...elevationProfile.map(p => p.elevation)) -
-                Math.min(...elevationProfile.map(p => p.elevation))).toFixed(1)} m
-            </span>
-          </div>
-          <div className="stat">
-            <span className="stat-label">Total Distance:</span>
-            <span className="stat-value">
-              {elevationProfile[elevationProfile.length - 1]?.distance.toFixed(1)} m
-            </span>
-          </div>
-        </div>
-      )}
+        );
+      })()}
       {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && (
         <div
           className="hover-metadata-tooltip"
@@ -1775,37 +1874,37 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           {hoveredUtm ? (
             <>
               <div className="tooltip-section">
-                <span className="tooltip-label">UTM Zone:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
+                <span className="tooltip-label">אזור UTM:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
               </div>
               <div className="tooltip-section">
-                <span className="tooltip-label">Easting:</span> {hoveredUtm.easting.toFixed(1)}m
+                <span className="tooltip-label">מזרחית:</span> {hoveredUtm.easting.toFixed(1)}מ'
               </div>
               <div className="tooltip-section">
-                <span className="tooltip-label">Northing:</span> {hoveredUtm.northing.toFixed(1)}m
+                <span className="tooltip-label">צפונית:</span> {hoveredUtm.northing.toFixed(1)}מ'
               </div>
             </>
           ) : (
             <>
               <div className="tooltip-section">
-                <span className="tooltip-label">Lat:</span> {hoveredPoint.latitude.toFixed(6)}
+                <span className="tooltip-label">קו רוחב:</span> {hoveredPoint.latitude.toFixed(6)}
               </div>
               <div className="tooltip-section">
-                <span className="tooltip-label">Lng:</span> {hoveredPoint.longitude.toFixed(6)}
+                <span className="tooltip-label">קו אורך:</span> {hoveredPoint.longitude.toFixed(6)}
               </div>
             </>
           )}
           <div className="tooltip-divider" />
           <div className="tooltip-section">
-            <span className="tooltip-label">AGL Height:</span> {hoveredPoint.flightHeight?.toFixed(1)}m
+            <span className="tooltip-label">גובה AGL:</span> {hoveredPoint.flightHeight?.toFixed(1)}מ'
           </div>
           {hoveredPoint.minElevation !== undefined && (
             <div className="tooltip-section">
-              <span className="tooltip-label">H from Min:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.minElevation).toFixed(1)}m
+              <span className="tooltip-label">גובה ממינימום:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.minElevation).toFixed(1)}מ'
             </div>
           )}
           {hoveredPoint.maxElevation !== undefined && (
             <div className="tooltip-section">
-              <span className="tooltip-label">H from Max:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.maxElevation).toFixed(1)}m
+              <span className="tooltip-label">גובה ממקסימום:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.maxElevation).toFixed(1)}מ'
             </div>
           )}
         </div>

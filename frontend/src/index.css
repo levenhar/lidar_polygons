@@ -11,6 +11,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+  direction: rtl;
 }
 
 #root {
@@ -86,7 +87,7 @@ code {
 
 .tooltip-bubble {
   position: absolute;
-  left: var(--tt-left, 50%);
+  inset-inline-start: var(--tt-left, 50%);
   bottom: calc(100% + 10px);
   transform: translateY(2px);
   background: rgba(17, 24, 39, 0.96);
@@ -107,13 +108,13 @@ code {
 .tooltip-bubble::after {
   content: '';
   position: absolute;
-  left: var(--tt-arrow-left, 50%);
+  inset-inline-start: var(--tt-arrow-left, 50%);
   bottom: -6px;
   transform: translateX(-50%);
   width: 0;
   height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
+  border-inline-start: 6px solid transparent;
+  border-inline-end: 6px solid transparent;
   border-top: 6px solid rgba(17, 24, 39, 0.96);
 }
 
@@ -279,4 +280,44 @@ code {
   height: 1px;
   background: rgba(255, 255, 255, 0.1);
   margin: 4px 0;
+}
+
+/* RTL Support */
+[dir="rtl"] body {
+  direction: rtl;
+  text-align: right;
+}
+
+[dir="rtl"] * {
+  text-align: inherit;
+}
+
+/* Ensure inputs and buttons handle RTL properly */
+[dir="rtl"] input,
+[dir="rtl"] textarea,
+[dir="rtl"] select {
+  text-align: right;
+}
+
+/* Fix for number inputs in RTL */
+[dir="rtl"] input[type="number"] {
+  text-align: left;
+  direction: ltr;
+}
+
+/* Leaflet map controls RTL adjustments */
+[dir="rtl"] .leaflet-control-container .leaflet-top,
+[dir="rtl"] .leaflet-control-container .leaflet-bottom {
+  right: auto;
+  left: 0;
+}
+
+[dir="rtl"] .leaflet-control-container .leaflet-right {
+  right: auto;
+  left: 0;
+}
+
+[dir="rtl"] .leaflet-control-container .leaflet-left {
+  left: auto;
+  right: 0;
 }

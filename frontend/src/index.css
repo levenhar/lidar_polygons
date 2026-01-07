@@ -152,7 +152,8 @@ code {
 
 .btn-primary.active {
   /* Active/toggled-on state (used by Draw mode icon button) */
-  background: #16a34a; /* green = active mode */
+  background: #16a34a;
+  /* green = active mode */
   border: 2px solid #15803d;
   color: #ffffff;
 }
@@ -239,3 +240,43 @@ code {
 }
 
 
+
+/* Shared Hover Metadata Tooltip */
+.hover-metadata-tooltip {
+  position: fixed;
+  z-index: 5000;
+  background: rgba(17, 24, 39, 0.85);
+  backdrop-filter: blur(4px);
+  color: #ffffff;
+  padding: 10px 14px;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  font-size: 0.875rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.tooltip-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.tooltip-label {
+  color: #94a3b8;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.tooltip-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 4px 0;
+}

@@ -9,12 +9,15 @@
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "build": "cd frontend && npm run build"
   },
-  "keywords": ["lidar", "geospatial", "mission-planning", "dtm"],
+  "keywords": [
+    "lidar",
+    "geospatial",
+    "mission-planning",
+    "dtm"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {
     "concurrently": "^8.2.2"
   }
 }
-
-

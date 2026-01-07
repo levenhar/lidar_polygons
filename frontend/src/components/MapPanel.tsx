@@ -180,7 +180,7 @@ interface MapPanelProps {
   routes: FlightRoute[];
   activeRouteId: string;
   flightPath: Coordinate[];
-  onPathPointHover: (point: Coordinate | null) => void;
+  onPathPointHover: (point: Coordinate | null, distance?: number) => void;
   onPathChange: (path: Coordinate[]) => void;
   onAddPoint: (point: Coordinate) => void;
   onAddPoints: (points: Coordinate[]) => void;
@@ -207,6 +207,9 @@ interface MapPanelProps {
   editPointIndex?: number | null;
   onEditPointIndexChange?: (index: number | null) => void;
   hoveredElevationPoint?: ElevationPoint | null;
+  hoverSource?: 'map' | 'profile' | null;
+  showMetadata: boolean;
+  onShowMetadataChange: (show: boolean) => void;
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
@@ -240,7 +243,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
   canRedo,
   editPointIndex: externalEditPointIndex,
   onEditPointIndexChange,
-  hoveredElevationPoint
+  hoveredElevationPoint,
+  hoverSource,
+  showMetadata,
+  onShowMetadataChange
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -255,6 +261,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const markersRef = useRef<L.Marker[]>([]);
   const flightPathLineRef = useRef<L.Polyline | null>(null);
   const flightPathClickableLineRef = useRef<L.Polyline | null>(null);
+  const flightPathBufferRef = useRef<L.Polyline | null>(null);
   const segmentLengthLabelsRef = useRef<L.Marker[]>([]);
   const hoveredPointRef = useRef<number | null>(null);
   const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
@@ -274,6 +281,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const passiveRouteLinesRef = useRef<Record<string, L.Polyline>>({});
   const suggestedLinesRef = useRef<L.Polyline[]>([]);
   const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
+  const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
   const [editingRouteName, setEditingRouteName] = useState<string>('');
   const [dialog, setDialog] = useState<{
@@ -338,13 +346,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
       .replace('{x}', previewX)
       .replace('{y}', previewY)
       .replace('{s}', 'a'); // Use 'a' subdomain for OSM-style tiles
-    
+
     // Add token if available
     if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
       const separator = previewUrl.includes('?') ? '&' : '?';
       previewUrl = `${previewUrl}${separator}token=${mapTokenRef.current}`;
     }
-    
+
     return previewUrl;
   }, [getPreviewNumericValue]);
 
@@ -370,13 +378,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
 
     let urlWithToken = nextBaseMap.url;
-    
+
     // Only append token if it's not empty
     if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
       const separator = nextBaseMap.url.includes('?') ? '&' : '?';
       urlWithToken = `${nextBaseMap.url}${separator}token=${mapTokenRef.current}`;
     }
-    
+
     console.log('🗺️ New basemap URL:', urlWithToken);
     baseLayerRef.current = L.tileLayer(urlWithToken, tileLayerOptionsRef.current).addTo(map.current);
     setActiveBaseMapId(nextBaseMap.id);
@@ -407,7 +415,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         try {
           const httpsModule = await import('node:https');
           const httpsagent_f = new httpsModule.Agent({
-              rejectUnauthorized: false,
+            rejectUnauthorized: false,
           });
           return httpsagent_f
         } catch (error) {
@@ -418,11 +426,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
     if (!mapContainer.current || map.current) return;
 
-    initializeHttpAgent().then(async(httpsAgent_f) => {
+    initializeHttpAgent().then(async (httpsAgent_f) => {
       const response_crs = await fetch('/api/crs')
 
-      if (!response_crs.ok){
-        const errorData = await response_crs.json().catch(() => ({error: 'Unknown error'}));
+      if (!response_crs.ok) {
+        const errorData = await response_crs.json().catch(() => ({ error: 'Unknown error' }));
         throw new Error(errorData.error || 'Failed to get CRS for maps ${response.status}');
       }
       const crsResponse = await response_crs.json();
@@ -436,7 +444,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       } else {
         // Normalize the CRS string (handle both "EPSG4326" and "EPSG:4326" formats)
         const normalizedCrs = crsString.replace(':', '').toUpperCase();
-        
+
         // Map common CRS strings to Leaflet CRS objects
         // Use type assertion to access CRS dynamically, with fallback
         const crsKey = normalizedCrs as keyof typeof L.CRS;
@@ -451,7 +459,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (mapContainer.current) {
         map.current = L.map(mapContainer.current, {
           center: [31.50, 35.02], // israel defulat
-          zoom: 7 ,
+          zoom: 7,
           crs: leafletCrs
           // crs: L.CRS.EPSG4326
         });
@@ -459,16 +467,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       // Create option *after* httpsAgent_f is define
       const options: TileLayerOptionsWithAgent = {
-        maxZoom:19,
-        httpsAgent:httpsAgent_f,
+        maxZoom: 19,
+        httpsAgent: httpsAgent_f,
         noWrap: true // prevent repeated world copies when zoomed out
       };
       tileLayerOptionsRef.current = options;
 
       const response_token = await fetch('/api/token')
 
-      if (!response_token.ok){
-        const errorData = await response_token.json().catch(() => ({error: 'Unknown error'}));
+      if (!response_token.ok) {
+        const errorData = await response_token.json().catch(() => ({ error: 'Unknown error' }));
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
       const MAPS_TOKEN = await response_token.json();
@@ -477,8 +485,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       const response_url = await fetch('/api/url')
 
-      if (!response_url.ok){
-        const errorData = await response_url.json().catch(() => ({error: 'Unknown error'}));
+      if (!response_url.ok) {
+        const errorData = await response_url.json().catch(() => ({ error: 'Unknown error' }));
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
       const raw_url = await response_url.json();
@@ -512,7 +520,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
 
       console.log('🗺️ Available basemaps:', availableBaseMaps);
-      
+
       console.log('🔍 Checking dependencies:', {
         mapExists: !!map.current,
         baseMapsCount: availableBaseMaps.length,
@@ -523,13 +531,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (map.current && availableBaseMaps.length > 0 && tileLayerOptionsRef.current) {
         const initialBaseMap = availableBaseMaps[0];
         let initialUrl = initialBaseMap.url;
-        
+
         // Only append token if it's not empty
         if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
           const separator = initialBaseMap.url.includes('?') ? '&' : '?';
           initialUrl = `${initialBaseMap.url}${separator}token=${mapTokenRef.current}`;
         }
-        
+
         console.log('🗺️ Initializing basemap:', { id: initialBaseMap.id, url: initialUrl });
         baseLayerRef.current = L.tileLayer(initialUrl, tileLayerOptionsRef.current).addTo(map.current);
         setActiveBaseMapId(initialBaseMap.id);
@@ -537,7 +545,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       } else {
         console.error('❌ Cannot add basemap - missing dependencies');
       }
-      
+
       setBaseMaps(availableBaseMaps);
     });
 
@@ -562,13 +570,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (currentEditingIndex !== null && dtmLoaded) {
         const lng = e.latlng.lng;
         const lat = e.latlng.lat;
-        
+
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
           alert('Point must stay within DTM bounds.');
           return;
         }
-        
+
         const currentPoint = flightPath[currentEditingIndex];
         onUpdatePoint(currentEditingIndex, {
           lng,
@@ -588,10 +596,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const clickPoint = { lng: e.latlng.lng, lat: e.latlng.lat };
         let closestSegmentIndex = -1;
         let closestDistance = Infinity;
-        
+
         for (let i = 0; i < flightPath.length - 1; i++) {
           const result = findClosestPointOnLine(clickPoint, flightPath[i], flightPath[i + 1]);
-          
+
           // Check if click is close enough to the segment (100 meters threshold)
           if (result.distance < 100) {
             if (result.distance < closestDistance) {
@@ -600,7 +608,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             }
           }
         }
-        
+
         if (closestSegmentIndex >= 0) {
           setDialog({
             type: 'parallelOffset',
@@ -611,7 +619,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             offset: '50'
           });
           setDialogError(null);
-              } else {
+        } else {
           alert('Click closer to a line segment.');
         }
         return;
@@ -621,13 +629,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (isDrawing && dtmLoaded) {
         const lng = e.latlng.lng;
         const lat = e.latlng.lat;
-        
+
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
           alert('Point must be inside DTM bounds.');
           return;
         }
-        
+
         const newPoint: Coordinate = {
           lng,
           lat
@@ -662,6 +670,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
       map.current.removeLayer(flightPathClickableLineRef.current);
       flightPathClickableLineRef.current = null;
     }
+    if (flightPathBufferRef.current) {
+      map.current.removeLayer(flightPathBufferRef.current);
+      flightPathBufferRef.current = null;
+    }
 
     // Remove existing segment length labels
     segmentLengthLabelsRef.current.forEach((label) => label.remove());
@@ -672,10 +684,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
     // Convert coordinates to Leaflet format (lat, lng)
     const latlngs = flightPath.map(p => [p.lat, p.lng] as [number, number]);
 
+    // Add visual buffer line (footprint) - invisible but keeps size for clickable area calculation
+    flightPathBufferRef.current = L.polyline(latlngs, {
+      color: activeRouteColor,
+      weight: 20,
+      opacity: 0, // Hide the buffer as per user request
+      interactive: false,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(map.current);
+
     // Add invisible clickable line for line segment selection (wide stroke)
+    // We make this interactive and it will also cover the buffer area
     flightPathClickableLineRef.current = L.polyline(latlngs, {
       color: 'transparent',
-      weight: 20, // Wide invisible line for easier clicking
+      weight: 80,
       opacity: 0,
       interactive: true
     }).addTo(map.current);
@@ -745,11 +768,54 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     flightPathClickableLineRef.current.on('click', handleClickableLineClick);
 
-    // Add flight path line (will be on top)
+    // Add mousemove handler to flight path to sync with elevation profile
+    const handlePathMouseMove = (e: L.LeafletMouseEvent) => {
+      if (flightPath.length < 2) return;
+
+      const mousePt = { lng: e.latlng.lng, lat: e.latlng.lat };
+      let minSegDist = Infinity;
+      let hoveredDistance = 0;
+      let bestPoint = mousePt;
+
+      let currentCumulative = 0;
+      for (let i = 0; i < flightPath.length - 1; i++) {
+        const start = flightPath[i];
+        const end = flightPath[i + 1];
+        const segmentLen = calculateDistance(start, end);
+        const result = findClosestPointOnLine(mousePt, start, end);
+
+        if (result.distance < minSegDist) {
+          minSegDist = result.distance;
+          hoveredDistance = currentCumulative + result.t * segmentLen;
+          bestPoint = {
+            lng: start.lng + result.t * (end.lng - start.lng),
+            lat: start.lat + result.t * (end.lat - start.lat)
+          };
+        }
+        currentCumulative += segmentLen;
+      }
+
+      setMousePos({ x: (e as any).originalEvent.clientX, y: (e as any).originalEvent.clientY });
+      onPathPointHover(bestPoint, hoveredDistance);
+    };
+
+    flightPathClickableLineRef.current.on('mousemove', handlePathMouseMove);
+    flightPathClickableLineRef.current.on('mouseout', (e) => {
+      setMousePos(null);
+      const originalEvent = (e as any).originalEvent as MouseEvent;
+      const relatedTarget = originalEvent?.relatedTarget as HTMLElement;
+      if (relatedTarget && (relatedTarget.classList?.contains('flight-point-marker') || relatedTarget.closest?.('.flight-point-marker'))) {
+        return;
+      }
+      onPathPointHover(null);
+    });
+
+    // Add flight path line (will be on top visually)
     flightPathLineRef.current = L.polyline(latlngs, {
       color: activeRouteColor,
       weight: 3,
-      opacity: 0.8
+      opacity: 0.8,
+      interactive: false // Disable interaction to prevent flickering with the wide clickable layer
     }).addTo(map.current);
 
     // Add segment length labels at midpoints
@@ -777,6 +843,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       segmentLengthLabelsRef.current.push(labelMarker);
     }
+
+    // Force initial update of buffer weight
+    setTimeout(() => {
+      if (map.current) {
+        map.current.fire('zoomend');
+      }
+    }, 100);
 
     // Update cursor style for clickable line layer when in parallel line mode
     if (isParallelLineMode && flightPathClickableLineRef.current) {
@@ -811,17 +884,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
       el.addEventListener('mousedown', (e) => {
         // Only handle left mouse button (button 0)
         if (e.button !== 0) return;
-        
+
         e.preventDefault();
         e.stopPropagation();
-        
+
         // Start left-click drag mode
         isDraggingWithLeftClick = true;
         lastValidPosition = [point.lat, point.lng];
         el.style.cursor = 'grabbing';
         el.classList.add('is-dragging');
         marker.setZIndexOffset(1000);
-        
+
         // Prevent all map interactions while dragging
         if (map.current) {
           map.current.dragging.disable();
@@ -847,7 +920,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Handle mouse move to update marker position during drag
       const handleMouseMove = (e: MouseEvent) => {
         if (!isDraggingWithLeftClick || !map.current) return;
-        
+
         e.preventDefault();
         e.stopPropagation();
 
@@ -855,12 +928,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const latlng = map.current.mouseEventToLatLng(e as any);
         const lng = latlng.lng;
         const lat = latlng.lat;
-        
+
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
           return; // Don't update if outside bounds
         }
-        
+
         // Update marker position
         marker.setLatLng([lat, lng]);
         lastValidPosition = [lat, lng];
@@ -869,7 +942,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Handle mouse up to end drag
       const handleMouseUp = (e: MouseEvent) => {
         if (!isDraggingWithLeftClick) return;
-        
+
         e.preventDefault();
         e.stopPropagation();
 
@@ -887,12 +960,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
             onUpdatePoint(index, { lng: dropLng, lat: dropLat, height: point.height });
           }
         }
-        
+
         isDraggingWithLeftClick = false;
         el.style.cursor = 'pointer';
         el.classList.remove('is-dragging');
         marker.setZIndexOffset(0);
-        
+
         // Re-enable all map interactions
         if (map.current) {
           map.current.dragging.enable();
@@ -902,7 +975,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           map.current.boxZoom.enable();
           map.current.keyboard.enable();
         }
-        
+
         // Validate final position
         const finalLatLng = marker.getLatLng();
         if (!isPointWithinBounds(finalLatLng.lng, finalLatLng.lat)) {
@@ -916,7 +989,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Add event listeners to document for mouse move and up
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
-      
+
       // Store cleanup function
       marker.on('remove', () => {
         document.removeEventListener('mousemove', handleMouseMove);
@@ -928,7 +1001,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
         onPathPointHover(point);
       });
 
-      el.addEventListener('mouseleave', () => {
+      el.addEventListener('mouseleave', (e) => {
+        const relatedTarget = (e as any).relatedTarget as HTMLElement;
+        if (relatedTarget && (relatedTarget.classList?.contains('leaflet-interactive') || relatedTarget.tagName === 'path')) {
+          // Standard check for Leaflet: if we move to the line, don't clear
+          // This helps avoid flickering when transitioning between marker and line
+          // return; // But we need to clear the marker-specific hover state? 
+          // Actually let's just clear, the mousemove on line will pick it up.
+        }
         hoveredPointRef.current = null;
         onPathPointHover(null);
       });
@@ -953,6 +1033,52 @@ const MapPanel: React.FC<MapPanelProps> = ({
     externalEditPointIndex,
     activeRouteColor
   ]);
+
+  // Handle zoom-dependent buffer width
+  useEffect(() => {
+    if (!map.current) return;
+
+    const updateWeights = () => {
+      if (!map.current || !flightPathBufferRef.current || !flightPathClickableLineRef.current) return;
+
+      const center = map.current.getCenter();
+
+      // Calculate pixels per meter at current zoom and latitude
+      // We use a small offset to get local scale
+      const latlng1 = center;
+      const latlng2 = L.latLng(center.lat, center.lng + 0.01);
+      const distanceMeters = latlng1.distanceTo(latlng2);
+      if (distanceMeters === 0) return;
+
+      const p1 = map.current.latLngToLayerPoint(latlng1);
+      const p2 = map.current.latLngToLayerPoint(latlng2);
+      const pixels = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+      const pixelsPerMeter = pixels / distanceMeters;
+
+      // LiDAR footprint width = 2 * H * tan(FOV/2)
+      const bufferWidthMeters = 2 * nominalFlightHeight * Math.tan((fovDegrees / 2) * Math.PI / 180);
+      const weightPixels = bufferWidthMeters * pixelsPerMeter;
+
+      flightPathBufferRef.current.setStyle({ weight: weightPixels });
+      // Clickable area should be at least as wide as the buffer, with a generous minimum for usability
+      // Increased to 80px for a very smooth "catch" area
+      flightPathClickableLineRef.current.setStyle({ weight: Math.max(weightPixels, 80) });
+    };
+
+    map.current.on('zoomend', updateWeights);
+    map.current.on('moveend', updateWeights);
+
+    // Initial update
+    const timer = setTimeout(updateWeights, 150);
+
+    return () => {
+      clearTimeout(timer);
+      if (map.current) {
+        map.current.off('zoomend', updateWeights);
+        map.current.off('moveend', updateWeights);
+      }
+    };
+  }, [nominalFlightHeight, fovDegrees, flightPath]);
 
   // Render suggested parallel lines based on mission parameters
   useEffect(() => {
@@ -981,7 +1107,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const endHeight = end.height ?? nominalFlightHeight;
       const avgHeight = (startHeight + endHeight) / 2;
 
-      const swathWidth = 2 * avgHeight * Math.tan(fovRadians / 2);
+      // Calculate half-width based on user request (height * tan(fov/2))
+      const swathWidth = avgHeight * Math.tan(fovRadians / 2);
       const spacing = swathWidth * spacingFactor;
 
       if (!Number.isFinite(spacing) || spacing <= 0) continue;
@@ -1043,7 +1170,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           color: route.color,
           weight: 3,
           opacity: 0.6,
-          dashArray: '6 6'
+          dashArray: '6 6',
+          interactive: false
         }).addTo(map.current!);
       }
     });
@@ -1077,7 +1205,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       hoveredElevationMarkerRef.current = L.marker(
         [hoveredElevationPoint.latitude, hoveredElevationPoint.longitude],
-        { icon }
+        {
+          icon,
+          interactive: false // Disable interaction on the hover dot to prevent interaction dead-zones
+        }
       ).addTo(map.current);
     }
   }, [hoveredElevationPoint]);
@@ -1115,11 +1246,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (!dtmTransparencyControlRef.current || !map.current) return;
 
     const element = dtmTransparencyControlRef.current;
-    
+
     // Use Leaflet's built-in methods to prevent map interactions
     L.DomEvent.disableClickPropagation(element);
     L.DomEvent.disableScrollPropagation(element);
-    
+
     // Prevent drag events
     L.DomEvent.on(element, 'mousedown', L.DomEvent.stopPropagation);
     L.DomEvent.on(element, 'mouseup', L.DomEvent.stopPropagation);
@@ -1195,26 +1326,26 @@ const MapPanel: React.FC<MapPanelProps> = ({
         });
 
         const { width, height, data, min, max, bounds, isProjected, epsg, crs } = rasterData;
-        
+
         if (!data || !Array.isArray(data) || data.length === 0) {
           throw new Error('Invalid DTM data: empty or invalid data array');
         }
-        
+
         if (!bounds || !Array.isArray(bounds) || bounds.length !== 4) {
           throw new Error('Invalid DTM bounds');
         }
-        
+
         // Transform projected coordinates to WGS84 (lat/lon) if needed
         let transformedBounds = bounds;
-        
+
         if (isProjected) {
           console.log('DTM uses projected coordinates. Attempting coordinate transformation...');
           console.log('EPSG Code:', epsg);
           console.log('CRS Info:', crs);
-          
+
           // Try to determine source projection from EPSG code
           let sourceProj: string | null = null;
-          
+
           if (epsg) {
             // Use the EPSG code directly
             sourceProj = `EPSG:${epsg}`;
@@ -1224,35 +1355,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
             sourceProj = `EPSG:${crs.projectedCSType}`;
             console.log('Using source projection from CRS:', sourceProj);
           }
-          
+
           if (!sourceProj) {
             // Default to UTM Zone 36N (EPSG:32636) when no coordinate system is detected
             sourceProj = 'EPSG:32636';
             console.warn('Could not determine EPSG code from GeoTIFF metadata.');
             console.warn('Assuming UTM Zone 36N (EPSG:32636) as default coordinate system.');
           }
-          
+
           if (sourceProj) {
             try {
               // Transform bounds from projected to WGS84
               const [minX, minY, maxX, maxY] = bounds;
-              
+
               console.log(`Transforming from ${sourceProj} to EPSG:4326 (WGS84)...`);
-              
+
               // Transform all four corners
               const topLeft = proj4(sourceProj, 'EPSG:4326', [minX, maxY]);
               const topRight = proj4(sourceProj, 'EPSG:4326', [maxX, maxY]);
               const bottomRight = proj4(sourceProj, 'EPSG:4326', [maxX, minY]);
               const bottomLeft = proj4(sourceProj, 'EPSG:4326', [minX, minY]);
-              
+
               // Create new bounds from transformed coordinates
               const transformedMinX = Math.min(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
               const transformedMinY = Math.min(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
               const transformedMaxX = Math.max(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
               const transformedMaxY = Math.max(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
-              
+
               transformedBounds = [transformedMinX, transformedMinY, transformedMaxX, transformedMaxY];
-              
+
               console.log('Original bounds (projected):', bounds);
               console.log('Transformed bounds (WGS84):', transformedBounds);
               console.log('✅ Coordinate transformation successful!');
@@ -1282,18 +1413,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const noDataValue = rasterData.noDataValue;
         for (let i = 0; i < data.length; i++) {
           let elevation = data[i];
-          
+
           // Skip no-data values
           if (noDataValue !== null && noDataValue !== undefined && elevation === noDataValue) {
             elevation = min; // Use min for no-data to render as lowest elevation
           }
-          
+
           if (isNaN(elevation) || !isFinite(elevation)) {
             elevation = min;
           }
-          
+
           const normalized = (elevation - min) / range;
-          
+
           // Grayscale: black (low) -> white (high)
           // Convert normalized value (0-1) to grayscale (0-255)
           const gray = Math.floor(normalized * 255);
@@ -1395,7 +1526,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         img.onload = () => {
           console.log('DTM image loaded successfully, dimensions:', img.width, 'x', img.height);
           console.log('Image src length:', img.src.length);
-          
+
           // Wait for map to be fully loaded
           if (!map.current) {
             console.error('Map not initialized');
@@ -1452,11 +1583,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
 
-    // Check file size (199 MB = 199 * 1024 * 1024 bytes)
-    const maxSizeBytes = 199 * 1024 * 1024; // 199 MB
+    // Check file size (2 GB = 2048 * 1024 * 1024 bytes)
+    const maxSizeBytes = 2048 * 1024 * 1024; // 2 GB
     if (file.size > maxSizeBytes) {
-      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
-      alert(`File is ${fileSizeMB} MB (max 199). Use a smaller DTM.`);
+      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(0);
+      alert(`File is ${fileSizeMB} MB (max 2048). Use a smaller DTM.`);
       resetFileInput();
       return;
     }
@@ -1592,7 +1723,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleFitToDTM = () => {
     if (!map.current || !dtmBounds) return;
-    
+
     const [minX, minY, maxX, maxY] = dtmBounds;
     try {
       const imageBounds: L.LatLngBoundsExpression = [
@@ -1657,7 +1788,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const handleDtmOpacityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newOpacity = parseFloat(e.target.value);
     setDtmOpacity(newOpacity);
-    
+
     // Update the DTM overlay opacity if it exists
     if (dtmImageOverlayRef.current) {
       dtmImageOverlayRef.current.setOpacity(newOpacity);
@@ -1732,8 +1863,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
       onUpdatePoint(index, { ...point, height });
       resetDialog();
-        return;
-      }
+      return;
+    }
 
     if (dialog.type === 'azimuthDistance') {
       const azimuth = parseFloat(dialogValues.azimuth || '');
@@ -1755,8 +1886,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
       onAddPoint(newPoint);
       resetDialog();
-        return;
-      }
+      return;
+    }
 
     if (dialog.type === 'parallelOffset') {
       const offset = parseFloat(dialogValues.offset || '');
@@ -1814,40 +1945,40 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const northing = parseFloat(dialogValues.northing || '');
         const zone = parseInt(dialogValues.zone || '', 10);
         const hemisphere = (dialogValues.hemisphere || 'N').toUpperCase();
-      if (isNaN(easting) || isNaN(northing) || isNaN(zone)) {
+        if (isNaN(easting) || isNaN(northing) || isNaN(zone)) {
           setDialogError('UTM numbers only.');
-        return;
-      }
-      if (zone < 1 || zone > 60) {
+          return;
+        }
+        if (zone < 1 || zone > 60) {
           setDialogError('Zone 1-60.');
-        return;
-      }
-      if (hemisphere !== 'N' && hemisphere !== 'S') {
+          return;
+        }
+        if (hemisphere !== 'N' && hemisphere !== 'S') {
           setDialogError('Hemisphere N/S.');
-        return;
-      }
-      try {
-        const utmProjString = `+proj=utm +zone=${zone} +${hemisphere === 'N' ? 'north' : 'south'} +datum=WGS84 +units=m +no_defs`;
-        const wgs84Proj = '+proj=longlat +datum=WGS84 +no_defs';
-        const [transformedLng, transformedLat] = proj4(utmProjString, wgs84Proj, [easting, northing]);
-        lng = transformedLng;
-        lat = transformedLat;
-      } catch (transformError) {
-        console.error('Error transforming UTM coordinates:', transformError);
+          return;
+        }
+        try {
+          const utmProjString = `+proj=utm +zone=${zone} +${hemisphere === 'N' ? 'north' : 'south'} +datum=WGS84 +units=m +no_defs`;
+          const wgs84Proj = '+proj=longlat +datum=WGS84 +no_defs';
+          const [transformedLng, transformedLat] = proj4(utmProjString, wgs84Proj, [easting, northing]);
+          lng = transformedLng;
+          lat = transformedLat;
+        } catch (transformError) {
+          console.error('Error transforming UTM coordinates:', transformError);
           setDialogError('UTM convert failed.');
-        return;
+          return;
+        }
       }
-    }
 
       if (lng === null || lat === null) {
         setDialogError('Coordinates missing.');
-      return;
-    }
+        return;
+      }
 
       if (!isPointWithinBounds(lng, lat)) {
         setDialogError('Point outside DTM.');
-      return;
-    }
+        return;
+      }
 
       onAddPoint({ lng, lat });
       resetDialog();
@@ -1857,40 +1988,40 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (dialog.type === 'uTurn') {
       const radius = parseFloat(dialogValues.radius || '');
       const distance = parseFloat(dialogValues.distance || '');
-    if (isNaN(radius) || radius === 0) {
+      if (isNaN(radius) || radius === 0) {
         setDialogError('Radius non-zero.');
-      return;
-    }
+        return;
+      }
       if (isNaN(distance) || distance <= 0) {
         setDialogError('Distance > 0.');
         return;
       }
-    const side: UTurnSide = radius > 0 ? 'R' : 'L';
-    const radiusMeters = Math.abs(radius);
-    const prev = flightPath[flightPath.length - 2];
-    const start = flightPath[flightPath.length - 1];
-    const numUTurnPoints = 10;
-    const maxStartEndDistance = radiusMeters * 2;
+      const side: UTurnSide = radius > 0 ? 'R' : 'L';
+      const radiusMeters = Math.abs(radius);
+      const prev = flightPath[flightPath.length - 2];
+      const start = flightPath[flightPath.length - 1];
+      const numUTurnPoints = 10;
+      const maxStartEndDistance = radiusMeters * 2;
       const clampedDistance = Math.min(distance, maxStartEndDistance);
       if (distance > maxStartEndDistance) {
         setDialogError(`Distance capped at ${maxStartEndDistance}m.`);
       }
-    const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
-    if (pts.length !== numUTurnPoints) {
+      const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
+      if (pts.length !== numUTurnPoints) {
         setDialogError('Could not build U-turn.');
-      return;
-    }
-    const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
-    if (outOfBounds) {
+        return;
+      }
+      const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
+      if (outOfBounds) {
         setDialogError('U-turn outside DTM.');
-      return;
-    }
-    const startHeight = start.height;
-    const uTurnPoints: Coordinate[] =
-      startHeight !== undefined
-        ? pts.map(p => ({ ...p, height: startHeight }))
-        : pts;
-    onAddPoints(uTurnPoints);
+        return;
+      }
+      const startHeight = start.height;
+      const uTurnPoints: Coordinate[] =
+        startHeight !== undefined
+          ? pts.map(p => ({ ...p, height: startHeight }))
+          : pts;
+      onAddPoints(uTurnPoints);
       resetDialog();
     }
   };
@@ -2529,6 +2660,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 </button>
               </Tooltip>
             </div>
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip="Show/hide map hover metadata.">
+                <label className="switch" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={showMetadata}
+                    onChange={(e) => onShowMetadataChange(e.target.checked)}
+                  />
+                  <span className="switch-slider" />
+                  <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>Metadata</span>
+                </label>
+              </Tooltip>
+            </div>
           </div>
         </div>
       </div>
@@ -2556,8 +2700,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
             <div className="upload-progress-container">
               <div className="upload-progress-label">Uploading DTM: {uploadProgress}%</div>
               <div className="upload-progress-bar">
-                <div 
-                  className="upload-progress-fill" 
+                <div
+                  className="upload-progress-fill"
                   style={{ width: `${uploadProgress}%` }}
                 />
               </div>
@@ -2570,7 +2714,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
         )}
         {dtmLoaded && (
-          <div 
+          <div
             ref={dtmTransparencyControlRef}
             className="dtm-transparency-control"
           >
@@ -2596,8 +2740,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
             onClick={handleBaseMapButtonClick}
             title={`Switch to ${nextBaseMap.name}`}
           >
-            <div 
-              className="basemap-preview" 
+            <div
+              className="basemap-preview"
               style={{
                 backgroundImage: `url(${getPreviewTileUrl(nextBaseMap)})`
               }}
@@ -2605,6 +2749,36 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </button>
         )}
       </div>
+      {showMetadata && hoveredElevationPoint && mousePos && hoverSource === 'map' && (
+        <div
+          className="hover-metadata-tooltip"
+          style={{
+            left: mousePos.x + 15,
+            top: mousePos.y + 15
+          }}
+        >
+          <div className="tooltip-section">
+            <span className="tooltip-label">Lat:</span> {hoveredElevationPoint.latitude.toFixed(6)}
+          </div>
+          <div className="tooltip-section">
+            <span className="tooltip-label">Lng:</span> {hoveredElevationPoint.longitude.toFixed(6)}
+          </div>
+          <div className="tooltip-divider" />
+          <div className="tooltip-section">
+            <span className="tooltip-label">AGL Height:</span> {hoveredElevationPoint.flightHeight?.toFixed(1)}m
+          </div>
+          {hoveredElevationPoint.minElevation !== undefined && (
+            <div className="tooltip-section">
+              <span className="tooltip-label">H from Min:</span> {((hoveredElevationPoint.elevation + (hoveredElevationPoint.flightHeight || 0)) - hoveredElevationPoint.minElevation).toFixed(1)}m
+            </div>
+          )}
+          {hoveredElevationPoint.maxElevation !== undefined && (
+            <div className="tooltip-section">
+              <span className="tooltip-label">H from Max:</span> {((hoveredElevationPoint.elevation + (hoveredElevationPoint.flightHeight || 0)) - hoveredElevationPoint.maxElevation).toFixed(1)}m
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };

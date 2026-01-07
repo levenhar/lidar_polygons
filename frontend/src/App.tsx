@@ -476,7 +476,10 @@ function App() {
   return (
     <div className="app-container">
       <div className="app-header">
-        <h1>מתכנן משימות LiDAR</h1>
+        <div className="header-title-container">
+          <img src="/favicon.svg" alt="Logo" className="app-logo" />
+          <h1>מתכנן משימות LiDAR</h1>
+        </div>
         <div className="header-controls">
           <div className="header-group">
             <div className="group-title">פרמטרי טיסה</div>

@@ -16,3 +16,4 @@ package-lock.json
 .kml
 .venv/
 __pycache__/
+venv/

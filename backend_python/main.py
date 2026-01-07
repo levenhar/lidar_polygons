@@ -14,6 +14,10 @@ from math import radians, cos, sin, asin, sqrt
 import pyproj
 from pyproj import Transformer
 import logging
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -35,6 +39,13 @@ app.add_middleware(
 
 # Uploads directory - needs to be mounted or same path
 UPLOADS_DIR = os.environ.get("UPLOADS_DIR", "../backend/uploads")
+
+# DTM data directory - where source TIFF files are stored
+DTM_DATA_DIR = os.environ.get("DTM_DATA_DIR", UPLOADS_DIR)
+DTM_CACHE_DIR = os.environ.get("DTM_CACHE_DIR", os.path.join(DTM_DATA_DIR, "Cache"))
+
+logger.info(f"UPLOADS_DIR: {UPLOADS_DIR}")
+logger.info(f"DTM_DATA_DIR: {DTM_DATA_DIR}")
 
 class ElevationProfileRequest(BaseModel):
     coordinates: List[List[float]]
@@ -224,6 +235,68 @@ async def get_elevation_profile(request: ElevationProfileRequest):
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "service": "backend_python"}
+
+@app.get("/api/dtm/options")
+async def get_dtm_options():
+    """List available DTM files in the DTM_DATA_DIR"""
+    print(f"=== GET /api/dtm/options called ===")
+    print(f"DTM_DATA_DIR = {DTM_DATA_DIR}")
+    try:
+        logger.info(f"Scanning DTM_DATA_DIR: {DTM_DATA_DIR}")
+        print(f"Directory exists: {os.path.exists(DTM_DATA_DIR)}")
+        print(f"Directory contents: {os.listdir(DTM_DATA_DIR) if os.path.exists(DTM_DATA_DIR) else 'N/A'}")
+        
+        if not os.path.exists(DTM_DATA_DIR):
+            logger.warning(f"DTM_DATA_DIR does not exist: {DTM_DATA_DIR}")
+            return {"options": []}
+        
+        options = []
+        
+        # Scan for TIFF files
+        for filename in os.listdir(DTM_DATA_DIR):
+            if filename.lower().endswith(('.tif', '.tiff', '.geotiff')):
+                file_path = os.path.join(DTM_DATA_DIR, filename)
+                
+                # Skip if it's not a file
+                if not os.path.isfile(file_path):
+                    continue
+                
+                try:
+                    # Get file stats
+                    stats = os.stat(file_path)
+                    
+                    # Try to open and get metadata
+                    with rasterio.open(file_path) as src:
+                        bounds = src.bounds
+                        options.append({
+                            "id": filename,
+                            "displayName": filename,
+                            "name": filename,
+                            "sizeBytes": stats.st_size,
+                            "modifiedAt": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stats.st_mtime)),
+                            "bounds": {
+                                "minX": bounds.left,
+                                "minY": bounds.bottom,
+                                "maxX": bounds.right,
+                                "maxY": bounds.top
+                            },
+                            "resolution": {
+                                "width": src.width,
+                                "height": src.height
+                            },
+                            "crs": src.crs.to_string() if src.crs else None
+                        })
+                        logger.info(f"Found DTM file: {filename}")
+                except Exception as e:
+                    logger.warning(f"Could not read {filename}: {e}")
+                    continue
+        
+        logger.info(f"Found {len(options)} DTM files")
+        return {"options": options}
+        
+    except Exception as e:
+        logger.error(f"Error listing DTM options: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/dtm/{filename}/metadata")
 async def get_dtm_metadata(filename: str):

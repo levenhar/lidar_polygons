@@ -13,9 +13,42 @@ import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 
 
-type TileLayerOptionsWithAgent = TileLayerOptions & {
-  httpsAgent?: any;
-};
+type TileLayerOptionsWithAgent = TileLayerOptions;
+
+// DTM Options types
+interface DTMOption {
+  id: string;
+  displayName: string;
+  sizeBytes: number;
+  modifiedAt: string;
+}
+
+interface ClipResponse {
+  clippedId: string;
+  raster: {
+    crs: string;
+    bbox: number[];
+    width: number;
+    height: number;
+  };
+  tilesUrl: string;
+  metadataUrl: string;
+  dataUrl: string;
+}
+
+// AOI selection state
+type AOISelectionMethod = 'bbox' | 'polygon' | 'kml';
+
+interface AOIBounds {
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
+}
+
+interface AOIPolygon {
+  coordinates: [number, number][]; // [lon, lat] pairs
+}
 
 type IconName =
   | 'upload'
@@ -29,7 +62,14 @@ type IconName =
   | 'undo'
   | 'redo'
   | 'fit'
-  | 'home';
+  | 'home'
+  | 'folder'
+  | 'crop'
+  | 'search'
+  | 'close'
+  | 'rectangle'
+  | 'polygon'
+  | 'file';
 
 const Icon: React.FC<{ name: IconName }> = ({ name }) => {
   const common = {
@@ -138,6 +178,52 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M5 10v10h14V10" />
         </svg>
       );
+    case 'folder':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M3 7v12a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-7l-2-2H5a2 2 0 00-2 2z" />
+        </svg>
+      );
+    case 'crop':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M6 2v14a2 2 0 002 2h14" />
+          <path {...stroke} d="M18 22V8a2 2 0 00-2-2H2" />
+        </svg>
+      );
+    case 'search':
+      return (
+        <svg {...common}>
+          <circle {...stroke} cx="11" cy="11" r="8" />
+          <path {...stroke} d="M21 21l-4.35-4.35" />
+        </svg>
+      );
+    case 'close':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M18 6L6 18" />
+          <path {...stroke} d="M6 6l12 12" />
+        </svg>
+      );
+    case 'rectangle':
+      return (
+        <svg {...common}>
+          <rect {...stroke} x="3" y="3" width="18" height="18" rx="2" />
+        </svg>
+      );
+    case 'polygon':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 3L3 9l3 12h12l3-12z" />
+        </svg>
+      );
+    case 'file':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+          <path {...stroke} d="M14 2v6h6" />
+        </svg>
+      );
     default:
       return (
         <svg {...common}>
@@ -178,6 +264,7 @@ L.Icon.Default.mergeOptions({
 
 interface MapPanelProps {
   dtmSource: string | null;
+  clippedId?: string | null;
   routes: FlightRoute[];
   activeRouteId: string;
   flightPath: Coordinate[];
@@ -199,7 +286,7 @@ interface MapPanelProps {
   onShowAllRoutes: () => void;
   onHideNonActiveRoutes: () => void;
   onResetToSingleRoute: () => void;
-  onDtmLoad: (source: string, info?: any) => void;
+  onDtmLoad: (source: string, info?: any, clippedId?: string) => void;
   onDtmUnload: () => void;
   nominalFlightHeight: number;
   overlapPercentage: number;
@@ -218,6 +305,7 @@ interface MapPanelProps {
 
 const MapPanel: React.FC<MapPanelProps> = ({
   dtmSource,
+  clippedId: propClippedId,
   routes,
   activeRouteId,
   flightPath,
@@ -299,11 +387,281 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [dialogValues, setDialogValues] = useState<Record<string, string>>({});
   const [dialogError, setDialogError] = useState<string | null>(null);
 
+  // New DTM loading flow state
+  const [showDtmOptionsModal, setShowDtmOptionsModal] = useState(false);
+  const [dtmOptions, setDtmOptions] = useState<DTMOption[]>([]);
+  const [dtmOptionsLoading, setDtmOptionsLoading] = useState(false);
+  const [dtmOptionsError, setDtmOptionsError] = useState<string | null>(null);
+  const [dtmSearchQuery, setDtmSearchQuery] = useState('');
+  const [selectedDtmId, setSelectedDtmId] = useState<string | null>(null);
+  
+  // AOI selection state
+  const [isAoiSelectionMode, setIsAoiSelectionMode] = useState(false);
+  const [aoiSelectionMethod, setAoiSelectionMethod] = useState<AOISelectionMethod | null>(null);
+  const [aoiBounds, setAoiBounds] = useState<AOIBounds | null>(null);
+  const [aoiPolygon, setAoiPolygon] = useState<AOIPolygon | null>(null);
+  const aoiRectRef = useRef<L.Rectangle | null>(null);
+  const aoiPolygonRef = useRef<L.Polygon | null>(null);
+  const aoiPolygonPointsRef = useRef<[number, number][]>([]); // [lon, lat] pairs during drawing
+  const aoiMarkersRef = useRef<L.CircleMarker[]>([]);
+  const aoiFirstClickRef = useRef<L.LatLng | null>(null); // For two-click bbox
+  const kmlInputRef = useRef<HTMLInputElement | null>(null);
+  const [isClipping, setIsClipping] = useState(false);
+  const [activeClippedId, setActiveClippedId] = useState<string | null>(propClippedId || null);
+
   const resetDialog = () => {
     setDialog(null);
     setDialogValues({});
     setDialogError(null);
   };
+
+  // ============================================================================
+  // NEW DTM LOADING FLOW FUNCTIONS
+  // ============================================================================
+
+  // Fetch available DTM options from the server
+  const fetchDtmOptions = useCallback(async () => {
+    setDtmOptionsLoading(true);
+    setDtmOptionsError(null);
+    try {
+      const response = await fetch('/api/dtm/options');
+      if (!response.ok) {
+        throw new Error(`Failed to fetch DTM options: ${response.status}`);
+      }
+      const data = await response.json();
+      setDtmOptions(data.options || []);
+    } catch (error) {
+      console.error('Error fetching DTM options:', error);
+      setDtmOptionsError(error instanceof Error ? error.message : 'שגיאה בטעינת רשימת DTM');
+    } finally {
+      setDtmOptionsLoading(false);
+    }
+  }, []);
+
+  // Open DTM options modal
+  const handleOpenDtmOptionsModal = useCallback(() => {
+    setShowDtmOptionsModal(true);
+    setDtmSearchQuery('');
+    setSelectedDtmId(null);
+    fetchDtmOptions();
+  }, [fetchDtmOptions]);
+
+  // Close DTM options modal
+  const handleCloseDtmOptionsModal = useCallback(() => {
+    setShowDtmOptionsModal(false);
+    setSelectedDtmId(null);
+    setDtmSearchQuery('');
+  }, []);
+
+  // Select a DTM and enter AOI selection mode
+  const handleSelectDtm = useCallback((dtmId: string) => {
+    setSelectedDtmId(dtmId);
+    setShowDtmOptionsModal(false);
+    setIsAoiSelectionMode(true);
+    setAoiSelectionMethod(null); // Show method chooser first
+    setAoiBounds(null);
+    setAoiPolygon(null);
+    aoiPolygonPointsRef.current = [];
+    aoiFirstClickRef.current = null;
+    
+    // Clear any existing AOI shapes
+    if (aoiRectRef.current && map.current) {
+      map.current.removeLayer(aoiRectRef.current);
+      aoiRectRef.current = null;
+    }
+    if (aoiPolygonRef.current && map.current) {
+      map.current.removeLayer(aoiPolygonRef.current);
+      aoiPolygonRef.current = null;
+    }
+    // Clear markers
+    aoiMarkersRef.current.forEach(marker => {
+      if (map.current) map.current.removeLayer(marker);
+    });
+    aoiMarkersRef.current = [];
+  }, []);
+
+  // Cancel AOI selection
+  const handleCancelAoiSelection = useCallback(() => {
+    setIsAoiSelectionMode(false);
+    setSelectedDtmId(null);
+    setAoiSelectionMethod(null);
+    setAoiBounds(null);
+    setAoiPolygon(null);
+    aoiPolygonPointsRef.current = [];
+    aoiFirstClickRef.current = null;
+    
+    // Remove AOI shapes
+    if (aoiRectRef.current && map.current) {
+      map.current.removeLayer(aoiRectRef.current);
+      aoiRectRef.current = null;
+    }
+    if (aoiPolygonRef.current && map.current) {
+      map.current.removeLayer(aoiPolygonRef.current);
+      aoiPolygonRef.current = null;
+    }
+    // Clear markers
+    aoiMarkersRef.current.forEach(marker => {
+      if (map.current) map.current.removeLayer(marker);
+    });
+    aoiMarkersRef.current = [];
+  }, []);
+
+  // Clip the DTM to the selected AOI
+  const handleClipDtm = useCallback(async () => {
+    if (!selectedDtmId || (!aoiBounds && !aoiPolygon)) {
+      alert('בחר DTM ושרטט אזור עבודה.');
+      return;
+    }
+
+    setIsClipping(true);
+    try {
+      // Build AOI object based on selection method
+      let aoiPayload: { type: string; crs: string; bbox?: number[]; coordinates?: [number, number][] };
+      
+      if (aoiPolygon && aoiPolygon.coordinates.length >= 3) {
+        // Polygon AOI - close the ring if not already closed
+        const coords = [...aoiPolygon.coordinates];
+        const first = coords[0];
+        const last = coords[coords.length - 1];
+        if (first[0] !== last[0] || first[1] !== last[1]) {
+          coords.push(first);
+        }
+        aoiPayload = {
+          type: 'polygon',
+          crs: 'EPSG:4326',
+          coordinates: coords
+        };
+      } else if (aoiBounds) {
+        // Bbox AOI
+        aoiPayload = {
+          type: 'bbox',
+          crs: 'EPSG:4326',
+          bbox: [aoiBounds.minLon, aoiBounds.minLat, aoiBounds.maxLon, aoiBounds.maxLat]
+        };
+      } else {
+        alert('בחר אזור עבודה תקין.');
+        setIsClipping(false);
+        return;
+      }
+      
+      const response = await fetch('/api/dtm/clip', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          dtmId: selectedDtmId,
+          aoi: aoiPayload
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || errorData.error || `Clip failed: ${response.status}`);
+      }
+
+      const clipResult: ClipResponse = await response.json();
+      
+      // Store the clipped ID
+      setActiveClippedId(clipResult.clippedId);
+      
+      // Exit AOI selection mode
+      setIsAoiSelectionMode(false);
+      setSelectedDtmId(null);
+      setAoiSelectionMethod(null);
+      setAoiPolygon(null);
+      aoiPolygonPointsRef.current = [];
+      
+      // Remove AOI shapes
+      if (aoiRectRef.current && map.current) {
+        map.current.removeLayer(aoiRectRef.current);
+        aoiRectRef.current = null;
+      }
+      if (aoiPolygonRef.current && map.current) {
+        map.current.removeLayer(aoiPolygonRef.current);
+        aoiPolygonRef.current = null;
+      }
+      // Clear markers
+      aoiMarkersRef.current.forEach(marker => {
+        if (map.current) map.current.removeLayer(marker);
+      });
+      aoiMarkersRef.current = [];
+      
+      // Notify parent with the clipped DTM info
+      // Use the dataUrl as the dtmSource (for raster loading)
+      onDtmLoad(clipResult.dataUrl, {
+        bounds: {
+          minX: clipResult.raster.bbox[0],
+          minY: clipResult.raster.bbox[1],
+          maxX: clipResult.raster.bbox[2],
+          maxY: clipResult.raster.bbox[3]
+        },
+        resolution: {
+          width: clipResult.raster.width,
+          height: clipResult.raster.height
+        },
+        clippedId: clipResult.clippedId,
+        crs: clipResult.raster.crs
+      }, clipResult.clippedId);
+
+    } catch (error) {
+      console.error('Error clipping DTM:', error);
+      alert(`שגיאה בחיתוך DTM: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
+    } finally {
+      setIsClipping(false);
+    }
+  }, [selectedDtmId, aoiBounds, aoiPolygon, onDtmLoad]);
+
+  /*
+  // Delete clipped DTM from cache
+  const deleteClippedDtm = useCallback(async (clippedIdToDelete?: string) => {
+    const targetId = clippedIdToDelete || activeClippedId;
+    if (!targetId) return;
+
+    try {
+      await fetch(`/api/dtm/clipped/${targetId}`, {
+        method: 'DELETE'
+      });
+      console.log(`Deleted clipped DTM: ${targetId}`);
+    } catch (error) {
+      console.error('Error deleting clipped DTM:', error);
+    }
+  }, [activeClippedId]);
+  */
+
+  // Format file size for display
+  const formatFileSize = useCallback((bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }, []);
+
+  // Format date for display
+  const formatDate = useCallback((isoDate: string): string => {
+    try {
+      const date = new Date(isoDate);
+      return date.toLocaleDateString('he-IL', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return isoDate;
+    }
+  }, []);
+
+  // Filter DTM options based on search query
+  const filteredDtmOptions = useMemo(() => {
+    if (!dtmSearchQuery.trim()) return dtmOptions;
+    const query = dtmSearchQuery.toLowerCase();
+    return dtmOptions.filter(opt => 
+      opt.displayName.toLowerCase().includes(query) ||
+      opt.id.toLowerCase().includes(query)
+    );
+  }, [dtmOptions, dtmSearchQuery]);
 
   const activeRoute = routes.find((route) => route.id === activeRouteId) || routes[0];
   const activeRouteColor = activeRoute?.color || '#ff0000';
@@ -418,32 +776,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Initialize map
   useEffect(() => {
-    async function initializeHttpAgent() {
-      if (typeof window !== 'undefined') {
-        // We are in the browser no need for agent
-        return null
-      } else {
-        // We are in a Node.js env
-        try {
-          const httpsModule = await import('node:https');
-          const httpsagent_f = new httpsModule.Agent({
-            rejectUnauthorized: false,
-          });
-          return httpsagent_f
-        } catch (error) {
-          console.error("Failed to import node:https:", error);
-          return null // or undefined
-        }
-      }
-    }
     if (!mapContainer.current || map.current) return;
 
-    initializeHttpAgent().then(async (httpsAgent_f) => {
+    const initializeMap = async () => {
       const response_crs = await fetch('/api/crs')
 
       if (!response_crs.ok) {
-        const errorData = await response_crs.json().catch(() => ({ error: 'Unknown error' }));
-        throw new Error(errorData.error || 'Failed to get CRS for maps ${response.status}');
+        throw new Error(`Failed to get CRS for maps ${response_crs.status}`);
       }
       const crsResponse = await response_crs.json();
       const crsString = crsResponse.crs;
@@ -477,10 +816,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         });
       }
 
-      // Create option *after* httpsAgent_f is define
+      // Create options
       const options: TileLayerOptionsWithAgent = {
         maxZoom: 19,
-        httpsAgent: httpsAgent_f,
         noWrap: true // prevent repeated world copies when zoomed out
       };
       tileLayerOptionsRef.current = options;
@@ -559,7 +897,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
 
       setBaseMaps(availableBaseMaps);
-    });
+    };
+
+    initializeMap();
 
     return () => {
       if (map.current) {
@@ -572,11 +912,329 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, []);
 
+  // AOI selection mode handlers
+  useEffect(() => {
+    if (!map.current || !isAoiSelectionMode || !aoiSelectionMethod) return;
+
+    // Helper to add a marker for polygon points
+    const addPolygonMarker = (latlng: L.LatLng, isFirst: boolean = false) => {
+      const marker = L.circleMarker(latlng, {
+        radius: isFirst ? 8 : 6,
+        color: isFirst ? '#ef4444' : '#3b82f6',
+        fillColor: isFirst ? '#ef4444' : '#3b82f6',
+        fillOpacity: 0.8,
+        weight: 2
+      }).addTo(map.current!);
+      
+      if (isFirst) {
+        // Make first marker clickable to close polygon
+        marker.on('click', () => {
+          if (aoiPolygonPointsRef.current.length >= 3) {
+            // Close the polygon
+            setAoiPolygon({ coordinates: [...aoiPolygonPointsRef.current] });
+            // Update polygon style to show completion
+            if (aoiPolygonRef.current) {
+              aoiPolygonRef.current.setStyle({
+                color: '#22c55e',
+                dashArray: ''
+              });
+            }
+          }
+        });
+      }
+      
+      aoiMarkersRef.current.push(marker);
+    };
+
+    // Update the polygon preview
+    const updatePolygonPreview = () => {
+      if (aoiPolygonPointsRef.current.length < 2) return;
+      
+      const latlngs = aoiPolygonPointsRef.current.map(([lon, lat]) => [lat, lon] as [number, number]);
+      
+      if (aoiPolygonRef.current) {
+        aoiPolygonRef.current.setLatLngs(latlngs);
+      } else {
+        aoiPolygonRef.current = L.polygon(latlngs, {
+          color: '#3b82f6',
+          weight: 2,
+          fillColor: '#3b82f6',
+          fillOpacity: 0.2,
+          dashArray: '5, 5'
+        }).addTo(map.current!);
+      }
+    };
+
+    if (aoiSelectionMethod === 'bbox') {
+      // Two-click bounding box mode
+      const handleBboxClick = (e: L.LeafletMouseEvent) => {
+        if (!aoiFirstClickRef.current) {
+          // First click - store the start point
+          aoiFirstClickRef.current = e.latlng;
+          setAoiBounds(null);
+          
+          // Create initial rectangle at click point
+          if (aoiRectRef.current) {
+            map.current!.removeLayer(aoiRectRef.current);
+          }
+          
+          aoiRectRef.current = L.rectangle(
+            L.latLngBounds(e.latlng, e.latlng),
+            {
+              color: '#3b82f6',
+              weight: 2,
+              fillColor: '#3b82f6',
+              fillOpacity: 0.2,
+              dashArray: '5, 5'
+            }
+          ).addTo(map.current!);
+        } else {
+          // Second click - finalize the bbox
+          const start = aoiFirstClickRef.current;
+          const end = e.latlng;
+          
+          const minLat = Math.min(start.lat, end.lat);
+          const maxLat = Math.max(start.lat, end.lat);
+          const minLon = Math.min(start.lng, end.lng);
+          const maxLon = Math.max(start.lng, end.lng);
+          
+          // Check if area is large enough
+          if (Math.abs(maxLat - minLat) < 0.0001 || Math.abs(maxLon - minLon) < 0.0001) {
+            // Too small, reset
+            if (aoiRectRef.current) {
+              map.current!.removeLayer(aoiRectRef.current);
+              aoiRectRef.current = null;
+            }
+            aoiFirstClickRef.current = null;
+            setAoiBounds(null);
+            return;
+          }
+          
+          setAoiBounds({ minLon, minLat, maxLon, maxLat });
+          
+          // Update rectangle to final bounds with success style
+          if (aoiRectRef.current) {
+            aoiRectRef.current.setBounds([[minLat, minLon], [maxLat, maxLon]]);
+            aoiRectRef.current.setStyle({
+              color: '#22c55e',
+              dashArray: ''
+            });
+          }
+          
+          aoiFirstClickRef.current = null;
+        }
+      };
+
+      const handleBboxMouseMove = (e: L.LeafletMouseEvent) => {
+        if (!aoiFirstClickRef.current || !aoiRectRef.current) return;
+        const bounds = L.latLngBounds(aoiFirstClickRef.current, e.latlng);
+        aoiRectRef.current.setBounds(bounds);
+      };
+
+      map.current.on('click', handleBboxClick);
+      map.current.on('mousemove', handleBboxMouseMove);
+      map.current.getContainer().style.cursor = 'crosshair';
+
+      return () => {
+        if (map.current) {
+          map.current.off('click', handleBboxClick);
+          map.current.off('mousemove', handleBboxMouseMove);
+          map.current.getContainer().style.cursor = '';
+        }
+      };
+    } else if (aoiSelectionMethod === 'polygon') {
+      // Multi-click polygon mode
+      const handlePolygonClick = (e: L.LeafletMouseEvent) => {
+        const newPoint: [number, number] = [e.latlng.lng, e.latlng.lat];
+        
+        // Check if clicking near the first point to close the polygon
+        if (aoiPolygonPointsRef.current.length >= 3) {
+          const firstPoint = aoiPolygonPointsRef.current[0];
+          const dist = Math.sqrt(
+            Math.pow(e.latlng.lng - firstPoint[0], 2) + 
+            Math.pow(e.latlng.lat - firstPoint[1], 2)
+          );
+          // If within ~500m at equator (0.005 degrees), close the polygon
+          if (dist < 0.005) {
+            setAoiPolygon({ coordinates: [...aoiPolygonPointsRef.current] });
+            if (aoiPolygonRef.current) {
+              aoiPolygonRef.current.setStyle({
+                color: '#22c55e',
+                dashArray: ''
+              });
+            }
+            return;
+          }
+        }
+        
+        // Add the new point
+        aoiPolygonPointsRef.current.push(newPoint);
+        addPolygonMarker(e.latlng, aoiPolygonPointsRef.current.length === 1);
+        updatePolygonPreview();
+      };
+
+      const handlePolygonDblClick = (e: L.LeafletMouseEvent) => {
+        e.originalEvent.preventDefault();
+        e.originalEvent.stopPropagation();
+        
+        // Close polygon on double-click if we have at least 3 points
+        if (aoiPolygonPointsRef.current.length >= 3) {
+          setAoiPolygon({ coordinates: [...aoiPolygonPointsRef.current] });
+          if (aoiPolygonRef.current) {
+            aoiPolygonRef.current.setStyle({
+              color: '#22c55e',
+              dashArray: ''
+            });
+          }
+        }
+      };
+
+      // Disable double-click zoom while drawing
+      map.current.doubleClickZoom.disable();
+      map.current.on('click', handlePolygonClick);
+      map.current.on('dblclick', handlePolygonDblClick);
+      map.current.getContainer().style.cursor = 'crosshair';
+
+      return () => {
+        if (map.current) {
+          map.current.doubleClickZoom.enable();
+          map.current.off('click', handlePolygonClick);
+          map.current.off('dblclick', handlePolygonDblClick);
+          map.current.getContainer().style.cursor = '';
+        }
+      };
+    }
+    // KML mode doesn't need map click handlers - it uses file upload
+  }, [isAoiSelectionMode, aoiSelectionMethod]);
+
+  // KML file handler
+  const handleKmlFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target?.result as string;
+      try {
+        // Parse KML to extract polygon coordinates
+        const parser = new DOMParser();
+        const kmlDoc = parser.parseFromString(content, 'text/xml');
+        
+        // Look for coordinates in Polygon elements
+        const coordinatesElements = kmlDoc.getElementsByTagName('coordinates');
+        
+        if (coordinatesElements.length === 0) {
+          alert('לא נמצאו קואורדינטות בקובץ KML');
+          return;
+        }
+
+        // Get the first coordinates element
+        const coordsText = coordinatesElements[0].textContent?.trim() || '';
+        const coordPairs = coordsText.split(/\s+/).filter(s => s.length > 0);
+        
+        const coordinates: [number, number][] = [];
+        for (const pair of coordPairs) {
+          const [lon, lat] = pair.split(',').map(Number);
+          if (!isNaN(lon) && !isNaN(lat)) {
+            coordinates.push([lon, lat]);
+          }
+        }
+
+        if (coordinates.length < 3) {
+          alert('הפוליגון בקובץ KML חייב להכיל לפחות 3 נקודות');
+          return;
+        }
+
+        // Store the polygon
+        setAoiPolygon({ coordinates });
+        aoiPolygonPointsRef.current = coordinates;
+
+        // Draw the polygon on map
+        if (map.current) {
+          // Clear existing shapes
+          if (aoiPolygonRef.current) {
+            map.current.removeLayer(aoiPolygonRef.current);
+          }
+          aoiMarkersRef.current.forEach(marker => map.current!.removeLayer(marker));
+          aoiMarkersRef.current = [];
+
+          const latlngs = coordinates.map(([lon, lat]) => [lat, lon] as [number, number]);
+          aoiPolygonRef.current = L.polygon(latlngs, {
+            color: '#22c55e',
+            weight: 2,
+            fillColor: '#22c55e',
+            fillOpacity: 0.2
+          }).addTo(map.current);
+
+          // Zoom to the polygon
+          map.current.fitBounds(aoiPolygonRef.current.getBounds(), { padding: [50, 50] });
+        }
+      } catch (error) {
+        console.error('Error parsing KML:', error);
+        alert('שגיאה בקריאת קובץ KML');
+      }
+    };
+    reader.readAsText(file);
+    
+    // Reset input so same file can be selected again
+    event.target.value = '';
+  }, []);
+
+  // Reset AOI selection (for re-drawing)
+  const handleResetAoiSelection = useCallback(() => {
+    setAoiBounds(null);
+    setAoiPolygon(null);
+    aoiPolygonPointsRef.current = [];
+    aoiFirstClickRef.current = null;
+    
+    // Clear shapes
+    if (aoiRectRef.current && map.current) {
+      map.current.removeLayer(aoiRectRef.current);
+      aoiRectRef.current = null;
+    }
+    if (aoiPolygonRef.current && map.current) {
+      map.current.removeLayer(aoiPolygonRef.current);
+      aoiPolygonRef.current = null;
+    }
+    aoiMarkersRef.current.forEach(marker => {
+      if (map.current) map.current.removeLayer(marker);
+    });
+    aoiMarkersRef.current = [];
+  }, []);
+
+  // Cleanup clipped DTM on unload or navigation
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      if (activeClippedId) {
+        // Use sendBeacon for reliable cleanup on page unload
+        const payload = JSON.stringify({ clippedId: activeClippedId });
+        const blob = new Blob([payload], { type: 'application/json' });
+        navigator.sendBeacon('/api/dtm/cleanup', blob);
+      }
+    };
+
+    const handlePageHide = (event: PageTransitionEvent) => {
+      if (event.persisted) return;
+      handleBeforeUnload();
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
+  }, [activeClippedId]);
+
   // Set up click handler for adding points, editing points, and parallel line creation
   useEffect(() => {
     if (!map.current) return;
 
     const handleClick = (e: L.LeafletMouseEvent) => {
+      // Skip if in AOI selection mode
+      if (isAoiSelectionMode) return;
+      
       // If editing a point, move it to the new location
       const currentEditingIndex = externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
       if (currentEditingIndex !== null && dtmLoaded) {
@@ -663,7 +1321,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current.off('click', handleClick);
       }
     };
-  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints]);
+  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints, isAoiSelectionMode]);
 
   // Update flight path on map
   useEffect(() => {
@@ -2499,15 +3157,29 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 style={{ display: 'none' }}
                 disabled={dtmLoaded}
               />
-              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי.' : 'טעינת DTM (GeoTIFF).'}>
+              {/* New: Load DTM from server options */}
+              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי.' : 'בחר DTM מהשרת.'}>
+                <button
+                  onClick={handleOpenDtmOptionsModal}
+                  className={`btn btn-primary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
+                  disabled={dtmLoaded || isAoiSelectionMode}
+                  aria-label="טעינת DTM מהשרת"
+                  type="button"
+                >
+                  <Icon name="folder" />
+                  <span className="sr-only">טעינת DTM מהשרת</span>
+                </button>
+              </Tooltip>
+              {/* Legacy: Upload DTM file */}
+              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי.' : 'העלאת קובץ DTM (GeoTIFF).'}>
                 <label
                   htmlFor="dtm-upload"
                   className={`btn btn-secondary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
                   style={dtmLoaded ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
-                  aria-label="טעינת DTM"
+                  aria-label="העלאת DTM"
                 >
                   <Icon name="upload" />
-                  <span className="sr-only">טעינת DTM</span>
+                  <span className="sr-only">העלאת DTM</span>
                 </label>
               </Tooltip>
               <Tooltip
@@ -2869,6 +3541,242 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <span className="tooltip-label">גובה מהמקסימום:</span> {((hoveredElevationPoint.elevation + (hoveredElevationPoint.flightHeight || 0)) - hoveredElevationPoint.maxElevation).toFixed(1)}m
             </div>
           )}
+        </div>
+      )}
+
+      {/* DTM Options Modal */}
+      {showDtmOptionsModal && (
+        <div className="dtm-modal-overlay" onClick={handleCloseDtmOptionsModal}>
+          <div className="dtm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="dtm-modal-header">
+              <h2>בחר קובץ DTM</h2>
+              <button
+                type="button"
+                className="btn btn-icon btn-tertiary"
+                onClick={handleCloseDtmOptionsModal}
+                aria-label="סגור"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+            
+            <div className="dtm-modal-search">
+              <Icon name="search" />
+              <input
+                type="text"
+                placeholder="חיפוש קובץ DTM..."
+                value={dtmSearchQuery}
+                onChange={(e) => setDtmSearchQuery(e.target.value)}
+                autoFocus
+              />
+            </div>
+
+            <div className="dtm-modal-content">
+              {dtmOptionsLoading && (
+                <div className="dtm-modal-loading">
+                  <div className="loading-spinner" />
+                  <span>טוען רשימת DTM...</span>
+                </div>
+              )}
+              
+              {dtmOptionsError && (
+                <div className="dtm-modal-error">
+                  <span>⚠️ {dtmOptionsError}</span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={fetchDtmOptions}
+                  >
+                    נסה שוב
+                  </button>
+                </div>
+              )}
+              
+              {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length === 0 && (
+                <div className="dtm-modal-empty">
+                  {dtmSearchQuery ? (
+                    <span>לא נמצאו קבצים התואמים לחיפוש "{dtmSearchQuery}"</span>
+                  ) : (
+                    <span>לא נמצאו קבצי DTM בתיקייה. ודא ש-DTM_DATA_DIR מוגדר נכון.</span>
+                  )}
+                </div>
+              )}
+              
+              {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length > 0 && (
+                <div className="dtm-options-list">
+                  {filteredDtmOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="dtm-option-item"
+                      onClick={() => handleSelectDtm(option.id)}
+                    >
+                      <div className="dtm-option-icon">
+                        <Icon name="folder" />
+                      </div>
+                      <div className="dtm-option-info">
+                        <div className="dtm-option-name">{option.displayName}</div>
+                        <div className="dtm-option-meta">
+                          <span>{formatFileSize(option.sizeBytes)}</span>
+                          <span>•</span>
+                          <span>{formatDate(option.modifiedAt)}</span>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            <div className="dtm-modal-footer">
+              <span className="dtm-modal-count">
+                {dtmOptions.length} קבצים זמינים
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AOI Selection Overlay */}
+      {isAoiSelectionMode && (
+        <div className="aoi-selection-overlay">
+          <div className="aoi-selection-panel">
+            <div className="aoi-selection-header">
+              <Icon name="crop" />
+              <div className="aoi-selection-title">
+                <h3>בחר אזור עבודה (AOI)</h3>
+                <span className="aoi-selection-dtm">{selectedDtmId}</span>
+              </div>
+            </div>
+            
+            {/* Method Selection */}
+            {!aoiSelectionMethod && (
+              <div className="aoi-method-selection">
+                <span className="aoi-method-label">בחר שיטת בחירה:</span>
+                <div className="aoi-method-options">
+                  <button
+                    type="button"
+                    className="aoi-method-btn"
+                    onClick={() => setAoiSelectionMethod('bbox')}
+                  >
+                    <Icon name="rectangle" />
+                    <span>מלבן (שתי לחיצות)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="aoi-method-btn"
+                    onClick={() => setAoiSelectionMethod('polygon')}
+                  >
+                    <Icon name="polygon" />
+                    <span>פוליגון (נקודות מרובות)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="aoi-method-btn"
+                    onClick={() => setAoiSelectionMethod('kml')}
+                  >
+                    <Icon name="file" />
+                    <span>טעינה מקובץ KML</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Active Method Instructions */}
+            {aoiSelectionMethod && (
+              <div className="aoi-selection-instructions">
+                {aoiSelectionMethod === 'bbox' && !aoiBounds && (
+                  <span>לחץ על המפה לקביעת הפינה הראשונה, ואז לחץ שוב לקביעת הפינה השנייה</span>
+                )}
+                {aoiSelectionMethod === 'polygon' && !aoiPolygon && (
+                  <span>לחץ על המפה להוספת נקודות. לחץ פעמיים או לחץ על הנקודה הראשונה לסגירת הפוליגון</span>
+                )}
+                {aoiSelectionMethod === 'kml' && !aoiPolygon && (
+                  <div className="aoi-kml-upload">
+                    <input
+                      ref={kmlInputRef}
+                      type="file"
+                      accept=".kml,.kmz"
+                      onChange={handleKmlFileSelect}
+                      style={{ display: 'none' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => kmlInputRef.current?.click()}
+                    >
+                      <Icon name="upload" />
+                      בחר קובץ KML
+                    </button>
+                  </div>
+                )}
+                
+                {/* Show bounds info when bbox is selected */}
+                {aoiBounds && (
+                  <div className="aoi-bounds-info">
+                    <div>מינ' רוחב: {aoiBounds.minLat.toFixed(6)}</div>
+                    <div>מקס' רוחב: {aoiBounds.maxLat.toFixed(6)}</div>
+                    <div>מינ' אורך: {aoiBounds.minLon.toFixed(6)}</div>
+                    <div>מקס' אורך: {aoiBounds.maxLon.toFixed(6)}</div>
+                  </div>
+                )}
+                
+                {/* Show polygon info when polygon is selected */}
+                {aoiPolygon && (
+                  <div className="aoi-polygon-info">
+                    <div>מספר נקודות: {aoiPolygon.coordinates.length}</div>
+                    <div className="aoi-polygon-ready">✓ פוליגון מוכן</div>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            <div className="aoi-selection-actions">
+              {aoiSelectionMethod && (aoiBounds || aoiPolygon) && (
+                <button
+                  type="button"
+                  className="btn btn-tertiary"
+                  onClick={handleResetAoiSelection}
+                  disabled={isClipping}
+                >
+                  שרטט מחדש
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleCancelAoiSelection}
+                disabled={isClipping}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleClipDtm}
+                disabled={(!aoiBounds && !aoiPolygon) || isClipping}
+              >
+                {isClipping ? (
+                  <>
+                    <div className="loading-spinner-small" />
+                    חותך...
+                  </>
+                ) : (
+                  'טען אזור נבחר'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clipping Progress Overlay */}
+      {isClipping && (
+        <div className="upload-progress-overlay">
+          <div className="upload-progress-container">
+            <div className="loading-spinner" />
+            <div className="upload-progress-label">חותך DTM לאזור הנבחר...</div>
+          </div>
         </div>
       )}
     </div>

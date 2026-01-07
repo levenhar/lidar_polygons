@@ -51,11 +51,16 @@ export function useElevationProfile() {
       const resolutionRadiusToUse = resolutionRadius ?? safetyRadiusToUse;
       console.log(`Calculating elevation profile with safety radius ${safetyRadiusToUse}m and resolution radius ${resolutionRadiusToUse}m`);
       
+      // Check if dtmSource is a clipped DTM URL and extract clippedId
+      const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
+      const clippedId = clippedIdMatch ? clippedIdMatch[1] : undefined;
+      
       const response = await axios.post('/api/elevation-profile', {
         coordinates,
         dtmPath: dtmSource,
         safetyRadiusMeters: safetyRadiusToUse, // User-configurable radius for min (safety)
-        resolutionRadiusMeters: resolutionRadiusToUse // User-configurable radius for max (resolution)
+        resolutionRadiusMeters: resolutionRadiusToUse, // User-configurable radius for max (resolution)
+        ...(clippedId && { clippedId }) // Pass clippedId if available for faster processing
       });
 
       // Helper function to interpolate flight height for any point along the path

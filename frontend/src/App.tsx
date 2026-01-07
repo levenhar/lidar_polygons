@@ -34,6 +34,7 @@ interface DTMInfo {
     maxX: number;
     maxY: number;
   };
+  clippedId?: string;
 }
 
 const CLIMB_PRESETS = climbPresetData as ClimbPreset[];
@@ -61,6 +62,7 @@ function App() {
   const [dtmSource, setDtmSource] = useState<string | null>(null);
   // @ts-ignore
   const [dtmInfo, setDtmInfo] = useState<DTMInfo | null>(null);
+  const [activeClippedId, setActiveClippedId] = useState<string | null>(null);
   const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(250);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
@@ -274,23 +276,39 @@ function App() {
     });
   }, [climbRequests, fullProfileResult.points]);
 
-  const deleteDtmOnServer = useCallback(async (pathToDelete?: string, keepalive: boolean = false) => {
-    const target = pathToDelete || dtmSource;
-    if (!target) return;
+  const deleteDtmOnServer = useCallback(async (pathToDelete?: string, clippedIdToDelete?: string, keepalive: boolean = false) => {
+    const targetPath = pathToDelete || dtmSource;
+    const targetClippedId = clippedIdToDelete || activeClippedId;
 
-    try {
-      await fetch('/api/dtm/cleanup', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ path: target }),
-        keepalive
-      });
-    } catch (error) {
-      console.error('Failed to delete DTM on server:', error);
+    // If we have a clipped ID, delete that first
+    if (targetClippedId) {
+      try {
+        await fetch(`/api/dtm/clipped/${targetClippedId}`, {
+          method: 'DELETE',
+          keepalive
+        });
+        console.log(`Deleted clipped DTM: ${targetClippedId}`);
+      } catch (error) {
+        console.error('Failed to delete clipped DTM on server:', error);
+      }
     }
-  }, [dtmSource]);
+
+    // Also cleanup legacy uploaded files if applicable
+    if (targetPath && !targetPath.includes('/api/dtm/clipped/')) {
+      try {
+        await fetch('/api/dtm/cleanup', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ path: targetPath }),
+          keepalive
+        });
+      } catch (error) {
+        console.error('Failed to delete DTM on server:', error);
+      }
+    }
+  }, [dtmSource, activeClippedId]);
 
   const handlePathPointHover = useCallback((point: Coordinate | null, distance?: number) => {
     setSelectedPoint(point);
@@ -362,32 +380,42 @@ function App() {
     setHoverSource(point ? 'profile' : null);
   }, []);
 
-  const handleDtmLoad = useCallback((source: string, info?: any) => {
+  const handleDtmLoad = useCallback((source: string, info?: any, clippedId?: string) => {
+    // If loading a new DTM and we have an existing clippedId, delete the old one first
+    if (activeClippedId && clippedId && activeClippedId !== clippedId) {
+      deleteDtmOnServer(undefined, activeClippedId);
+    }
+    
     setDtmSource(source);
+    if (clippedId) {
+      setActiveClippedId(clippedId);
+    }
     if (info) {
       setDtmInfo({
         path: source,
-        bounds: info.bounds
+        bounds: info.bounds,
+        clippedId: clippedId || info.clippedId
       });
     }
-  }, []);
+  }, [activeClippedId, deleteDtmOnServer]);
 
   const handleDtmUnload = useCallback(() => {
-    if (dtmSource) {
-      deleteDtmOnServer(dtmSource).catch((error) => {
+    if (dtmSource || activeClippedId) {
+      deleteDtmOnServer(dtmSource || undefined, activeClippedId || undefined).catch((error) => {
         console.error('Failed to clean up DTM cache:', error);
       });
     }
     setDtmSource(null);
     setDtmInfo(null);
+    setActiveClippedId(null);
     // Clear routes when unloading DTM (keep only the first route)
     resetToSingleRoute();
-  }, [dtmSource, deleteDtmOnServer, resetToSingleRoute]);
+  }, [dtmSource, activeClippedId, deleteDtmOnServer, resetToSingleRoute]);
 
   // Warn users that refreshing will clear points and unload the DTM; only clean up on confirmed unload.
   React.useEffect(() => {
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!dtmSource && flightPath.length === 0) return;
+      if (!dtmSource && !activeClippedId && flightPath.length === 0) return;
 
       const warning = 'רענון ימחק את כל הנקודות ויפרוק את ה‑DTM. להמשיך?';
       event.preventDefault();
@@ -397,11 +425,20 @@ function App() {
 
     const handlePageHide = (event: PageTransitionEvent) => {
       if (event.persisted) return;
-      if (!dtmSource) return;
-
-      const payload = JSON.stringify({ path: dtmSource });
-      const blob = new Blob([payload], { type: 'application/json' });
-      navigator.sendBeacon('/api/dtm/cleanup', blob);
+      
+      // Cleanup clipped DTM if exists
+      if (activeClippedId) {
+        const payload = JSON.stringify({ clippedId: activeClippedId });
+        const blob = new Blob([payload], { type: 'application/json' });
+        navigator.sendBeacon('/api/dtm/cleanup', blob);
+      }
+      
+      // Cleanup legacy uploaded DTM if applicable
+      if (dtmSource && !dtmSource.includes('/api/dtm/clipped/')) {
+        const payload = JSON.stringify({ path: dtmSource });
+        const blob = new Blob([payload], { type: 'application/json' });
+        navigator.sendBeacon('/api/dtm/cleanup', blob);
+      }
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -410,7 +447,7 @@ function App() {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handlePageHide);
     };
-  }, [dtmSource, flightPath.length]);
+  }, [dtmSource, activeClippedId, flightPath.length]);
 
   const handleSetFlightHeight = useCallback((pointIndex: number) => {
     if (pointIndex < 0 || pointIndex >= flightPath.length) return;
@@ -611,6 +648,7 @@ function App() {
       <div className="app-panels">
         <MapPanel
           dtmSource={dtmSource}
+          clippedId={activeClippedId}
           routes={routes}
           activeRouteId={activeRouteId}
           flightPath={flightPath}

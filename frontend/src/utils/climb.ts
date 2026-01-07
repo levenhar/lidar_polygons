@@ -16,6 +16,12 @@ export interface ClimbPreset extends ClimbConfig {
   description?: string;
 }
 
+export interface ClimbPreset extends ClimbConfig {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface BaseAltitudeSample {
   distance: number;
   baseAltitude: number;

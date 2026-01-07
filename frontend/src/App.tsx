@@ -63,6 +63,27 @@ function presetToConfig(preset?: ClimbPreset): ClimbConfig {
   };
 }
 
+const CLIMB_PRESETS = climbPresetData as ClimbPreset[];
+
+const FALLBACK_CLIMB_CONFIG: ClimbConfig = {
+  climbRatio: 4.08,
+  descentRatio: 8.16,
+  allowTurnsDuringClimb: false,
+  linkRatios: false,
+  vertexProximityMeters: 30
+};
+
+function presetToConfig(preset?: ClimbPreset): ClimbConfig {
+  const source = preset ?? FALLBACK_CLIMB_CONFIG;
+  return {
+    climbRatio: source.climbRatio,
+    descentRatio: source.descentRatio,
+    allowTurnsDuringClimb: source.allowTurnsDuringClimb,
+    linkRatios: source.linkRatios,
+    vertexProximityMeters: source.vertexProximityMeters
+  };
+}
+
 function App() {
   const [dtmSource, setDtmSource] = useState<string | null>(null);
   // @ts-ignore
@@ -989,6 +1010,16 @@ function App() {
 
   const handleUpdatePoint = useCallback((index: number, point: Coordinate) => {
     setEditQueue((prev) => [...prev, { type: 'update', index, point }]);
+  }, []);
+
+  const handleSelectClimbPreset = useCallback((presetId: string) => {
+    const preset = CLIMB_PRESETS.find((p) => p.id === presetId);
+    if (preset) {
+      setClimbConfig(presetToConfig(preset));
+      setSelectedClimbPresetId(presetId);
+    } else {
+      setSelectedClimbPresetId('custom');
+    }
   }, []);
 
   const handleSelectClimbPreset = useCallback((presetId: string) => {

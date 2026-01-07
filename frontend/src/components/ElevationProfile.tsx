@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { ElevationPoint, Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import './ElevationProfile.css';
 import { ClimbConfig, computeClimbProfile, BaseAltitudeSample } from '../utils/climb';
+import { latLngToUTM } from '../utils/coordinates';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   const common = {
@@ -154,6 +155,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number } | null>(null);
   const climbContextMenuRef = useRef<HTMLDivElement | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
+  const hoveredUtm = useMemo(() => {
+    if (!hoveredPoint) return null;
+    return latLngToUTM(hoveredPoint.latitude, hoveredPoint.longitude);
+  }, [hoveredPoint]);
 
   useEffect(() => {
     if (!climbContextMenu) return;
@@ -1701,12 +1706,28 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             top: mousePos.y + 15
           }}
         >
-          <div className="tooltip-section">
-            <span className="tooltip-label">Lat:</span> {hoveredPoint.latitude.toFixed(6)}
-          </div>
-          <div className="tooltip-section">
-            <span className="tooltip-label">Lng:</span> {hoveredPoint.longitude.toFixed(6)}
-          </div>
+          {hoveredUtm ? (
+            <>
+              <div className="tooltip-section">
+                <span className="tooltip-label">UTM Zone:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
+              </div>
+              <div className="tooltip-section">
+                <span className="tooltip-label">Easting:</span> {hoveredUtm.easting.toFixed(1)}m
+              </div>
+              <div className="tooltip-section">
+                <span className="tooltip-label">Northing:</span> {hoveredUtm.northing.toFixed(1)}m
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="tooltip-section">
+                <span className="tooltip-label">Lat:</span> {hoveredPoint.latitude.toFixed(6)}
+              </div>
+              <div className="tooltip-section">
+                <span className="tooltip-label">Lng:</span> {hoveredPoint.longitude.toFixed(6)}
+              </div>
+            </>
+          )}
           <div className="tooltip-divider" />
           <div className="tooltip-section">
             <span className="tooltip-label">AGL Height:</span> {hoveredPoint.flightHeight?.toFixed(1)}m

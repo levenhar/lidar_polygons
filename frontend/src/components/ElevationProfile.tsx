@@ -2915,37 +2915,37 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           {hoveredUtm ? (
             <>
               <div className="tooltip-section">
-                <span className="tooltip-label">UTM Zone:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
+                <span className="tooltip-label">אזור UTM:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
               </div>
               <div className="tooltip-section">
-                <span className="tooltip-label">Easting:</span> {hoveredUtm.easting.toFixed(1)}m
+                <span className="tooltip-label">מזרחית:</span> {hoveredUtm.easting.toFixed(1)}מ'
               </div>
               <div className="tooltip-section">
-                <span className="tooltip-label">Northing:</span> {hoveredUtm.northing.toFixed(1)}m
+                <span className="tooltip-label">צפונית:</span> {hoveredUtm.northing.toFixed(1)}מ'
               </div>
             </>
           ) : (
             <>
               <div className="tooltip-section">
-                <span className="tooltip-label">Lat:</span> {hoveredPoint.latitude.toFixed(6)}
+                <span className="tooltip-label">קו רוחב:</span> {hoveredPoint.latitude.toFixed(6)}
               </div>
               <div className="tooltip-section">
-                <span className="tooltip-label">Lng:</span> {hoveredPoint.longitude.toFixed(6)}
+                <span className="tooltip-label">קו אורך:</span> {hoveredPoint.longitude.toFixed(6)}
               </div>
             </>
           )}
           <div className="tooltip-divider" />
           <div className="tooltip-section">
-            <span className="tooltip-label">AGL Height:</span> {hoveredPoint.flightHeight?.toFixed(1)}m
+            <span className="tooltip-label">גובה AGL:</span> {hoveredPoint.flightHeight?.toFixed(1)}מ'
           </div>
           {hoveredPoint.minElevation !== undefined && (
             <div className="tooltip-section">
-              <span className="tooltip-label">H from Min:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.minElevation).toFixed(1)}m
+              <span className="tooltip-label">גובה ממינימום:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.minElevation).toFixed(1)}מ'
             </div>
           )}
           {hoveredPoint.maxElevation !== undefined && (
             <div className="tooltip-section">
-              <span className="tooltip-label">H from Max:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.maxElevation).toFixed(1)}m
+              <span className="tooltip-label">גובה ממקסימום:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.maxElevation).toFixed(1)}מ'
             </div>
           )}
         </div>

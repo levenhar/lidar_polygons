@@ -1,0 +1,43 @@
+[
+  {
+    "id": "standard-mapping",
+    "name": "Standard mapping",
+    "description": "Balanced climb (4.08) with conservative descent (8.16) and 30m turn buffer.",
+    "climbRatio": 4.08,
+    "descentRatio": 8.16,
+    "allowTurnsDuringClimb": false,
+    "linkRatios": false,
+    "vertexProximityMeters": 30
+  },
+  {
+    "id": "gentle-linked",
+    "name": "Gentle linked",
+    "description": "Gentle slopes with linked ratios and turns allowed; tighter 25m vertex buffer.",
+    "climbRatio": 6,
+    "descentRatio": 6,
+    "allowTurnsDuringClimb": true,
+    "linkRatios": true,
+    "vertexProximityMeters": 25
+  },
+  {
+    "id": "aggressive-short",
+    "name": "Aggressive short legs",
+    "description": "Steeper climb/descent for short routes; turns paused with a 20m buffer.",
+    "climbRatio": 3,
+    "descentRatio": 3.5,
+    "allowTurnsDuringClimb": false,
+    "linkRatios": false,
+    "vertexProximityMeters": 20
+  },
+  {
+    "id": "wide-turn-buffer",
+    "name": "Wide turn buffer",
+    "description": "Standard ratios with a larger 60m no-climb zone around turns.",
+    "climbRatio": 4.08,
+    "descentRatio": 8.16,
+    "allowTurnsDuringClimb": false,
+    "linkRatios": false,
+    "vertexProximityMeters": 60
+  }
+]
+

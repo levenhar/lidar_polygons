@@ -3,7 +3,8 @@ import MapPanel from './components/MapPanel';
 import ElevationProfile from './components/ElevationProfile';
 import { useFlightPath } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
-import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, computeClimbProfile } from './utils/climb';
+import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
+import climbPresetData from './config/climbPresets.json';
 import './App.css';
 
 export interface Coordinate {
@@ -35,6 +36,27 @@ interface DTMInfo {
   };
 }
 
+const CLIMB_PRESETS = climbPresetData as ClimbPreset[];
+
+const FALLBACK_CLIMB_CONFIG: ClimbConfig = {
+  climbRatio: 4.08,
+  descentRatio: 8.16,
+  allowTurnsDuringClimb: false,
+  linkRatios: false,
+  vertexProximityMeters: 30
+};
+
+function presetToConfig(preset?: ClimbPreset): ClimbConfig {
+  const source = preset ?? FALLBACK_CLIMB_CONFIG;
+  return {
+    climbRatio: source.climbRatio,
+    descentRatio: source.descentRatio,
+    allowTurnsDuringClimb: source.allowTurnsDuringClimb,
+    linkRatios: source.linkRatios,
+    vertexProximityMeters: source.vertexProximityMeters
+  };
+}
+
 function App() {
   const [dtmSource, setDtmSource] = useState<string | null>(null);
   // @ts-ignore
@@ -51,15 +73,12 @@ function App() {
   const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);
   const [hoverSource, setHoverSource] = useState<'map' | 'profile' | null>(null);
   const [showMetadata, setShowMetadata] = useState(true);
+  const [showClimbLabels, setShowClimbLabels] = useState(true);
 
-  const [climbConfig, setClimbConfig] = useState<ClimbConfig>({
-    climbRatio: 4.08,
-    descentRatio: 8.16,
-    allowTurnsDuringClimb: false,
-    linkRatios: false,
-    vertexProximityMeters: 30
-  });
+  const [selectedClimbPresetId, setSelectedClimbPresetId] = useState<string>(CLIMB_PRESETS[0]?.id ?? 'custom');
+  const [climbConfig, setClimbConfig] = useState<ClimbConfig>(presetToConfig(CLIMB_PRESETS[0]));
   const [climbRequests, setClimbRequests] = useState<{ endDistance: number; climbAmount: number }[]>([]);
+  const prevGeometryRef = React.useRef<{ lat: number; lng: number }[] | null>(null);
 
   // @ts-ignore
   const {
@@ -128,6 +147,24 @@ function App() {
       nominalFlightHeight
     };
   }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights]);
+
+  // Clear climb requests whenever the flight path geometry changes (point added/moved/removed)
+  React.useEffect(() => {
+    const currentGeometry = flightPath.map((p) => ({ lat: p.lat, lng: p.lng }));
+    const prevGeometry = prevGeometryRef.current;
+
+    if (prevGeometry) {
+      const geometryChanged =
+        prevGeometry.length !== currentGeometry.length ||
+        prevGeometry.some((p, idx) => p.lat !== currentGeometry[idx]?.lat || p.lng !== currentGeometry[idx]?.lng);
+
+      if (geometryChanged && climbRequests.length > 0) {
+        setClimbRequests([]);
+      }
+    }
+
+    prevGeometryRef.current = currentGeometry;
+  }, [flightPath, climbRequests.length]);
 
   const fullProfileResult = React.useMemo(() => {
     if (elevationProfile.length === 0) return { points: [], warnings: [] };
@@ -212,6 +249,30 @@ function App() {
       warnings: allWarnings
     };
   }, [elevationProfile, nominalFlightHeight, flightPath, climbRequests, climbConfig]);
+
+  const climbMarkers = React.useMemo(() => {
+    if (!fullProfileResult.points.length || climbRequests.length === 0) return [];
+
+    return climbRequests.map((climb) => {
+      // Find the closest profile point to the climb end distance
+      let closest = fullProfileResult.points[0];
+      let minDelta = Math.abs(closest.distance - climb.endDistance);
+      for (const p of fullProfileResult.points) {
+        const delta = Math.abs(p.distance - climb.endDistance);
+        if (delta < minDelta) {
+          minDelta = delta;
+          closest = p;
+        }
+      }
+
+      const sign = climb.climbAmount >= 0 ? '+' : '';
+      return {
+        lat: closest.latitude,
+        lng: closest.longitude,
+        label: `${sign}${climb.climbAmount.toFixed(0)}m`
+      };
+    });
+  }, [climbRequests, fullProfileResult.points]);
 
   const deleteDtmOnServer = useCallback(async (pathToDelete?: string, keepalive: boolean = false) => {
     const target = pathToDelete || dtmSource;
@@ -373,6 +434,16 @@ function App() {
   const handleEditPointRequest = useCallback((pointIndex: number) => {
     setEditPointIndex(pointIndex);
     alert(`Editing point ${pointIndex + 1}. Click the map to move it.`);
+  }, []);
+
+  const handleSelectClimbPreset = useCallback((presetId: string) => {
+    const preset = CLIMB_PRESETS.find((p) => p.id === presetId);
+    if (preset) {
+      setClimbConfig(presetToConfig(preset));
+      setSelectedClimbPresetId(presetId);
+    } else {
+      setSelectedClimbPresetId('custom');
+    }
   }, []);
 
   // Handle keyboard shortcuts for undo/redo
@@ -557,6 +628,9 @@ function App() {
           onResetToSingleRoute={resetToSingleRoute}
           onDtmLoad={handleDtmLoad}
           onDtmUnload={handleDtmUnload}
+          climbMarkers={climbMarkers}
+          showClimbLabels={showClimbLabels}
+          onShowClimbLabelsChange={setShowClimbLabels}
           nominalFlightHeight={nominalFlightHeight}
           overlapPercentage={overlapPercentage}
           fovDegrees={fovDegrees}
@@ -586,6 +660,9 @@ function App() {
           onElevationPointHover={handleElevationPointHover}
           hoveredPoint={hoveredElevationPoint}
           hoverSource={hoverSource}
+          climbPresets={CLIMB_PRESETS}
+          selectedClimbPresetId={selectedClimbPresetId}
+          onSelectClimbPreset={handleSelectClimbPreset}
           climbConfig={climbConfig}
           setClimbConfig={setClimbConfig}
           climbRequests={climbRequests}

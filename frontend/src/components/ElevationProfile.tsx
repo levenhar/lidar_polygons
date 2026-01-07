@@ -4,7 +4,7 @@ import { ElevationPoint, Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import './ElevationProfile.css';
-import { ClimbConfig, computeClimbProfile, BaseAltitudeSample } from '../utils/climb';
+import { ClimbConfig, computeClimbProfile, BaseAltitudeSample, ClimbPreset } from '../utils/climb';
 import { latLngToUTM } from '../utils/coordinates';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
@@ -83,6 +83,14 @@ const TrashIcon: React.FC = () => {
   );
 };
 
+const toDraft = (config: ClimbConfig) => ({
+  climbRatio: config.climbRatio.toString(),
+  descentRatio: config.descentRatio.toString(),
+  allowTurnsDuringClimb: config.allowTurnsDuringClimb,
+  linkRatios: config.linkRatios,
+  vertexProximityMeters: config.vertexProximityMeters.toString()
+});
+
 interface ElevationProfileProps {
   elevationProfile: ElevationPoint[];
   loading: boolean;
@@ -98,6 +106,9 @@ interface ElevationProfileProps {
   onElevationPointHover?: (point: ElevationPoint | null) => void;
   hoveredPoint?: ElevationPoint | null;
   hoverSource?: 'map' | 'profile' | null;
+  climbPresets: ClimbPreset[];
+  selectedClimbPresetId: string;
+  onSelectClimbPreset: (presetId: string) => void;
   climbConfig: ClimbConfig;
   setClimbConfig: React.Dispatch<React.SetStateAction<ClimbConfig>>;
   climbRequests: { endDistance: number; climbAmount: number }[];
@@ -121,6 +132,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   onElevationPointHover,
   hoveredPoint,
   hoverSource,
+  climbPresets,
+  selectedClimbPresetId,
+  onSelectClimbPreset,
   climbConfig,
   setClimbConfig,
   climbRequests,
@@ -143,13 +157,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     allowTurnsDuringClimb: boolean;
     linkRatios: boolean;
     vertexProximityMeters: string;
-  }>({
-    climbRatio: climbConfig.climbRatio.toString(),
-    descentRatio: climbConfig.descentRatio.toString(),
-    allowTurnsDuringClimb: climbConfig.allowTurnsDuringClimb,
-    linkRatios: climbConfig.linkRatios,
-    vertexProximityMeters: climbConfig.vertexProximityMeters.toString()
-  });
+  }>(() => toDraft(climbConfig));
   const [climbConfigError, setClimbConfigError] = useState<string | null>(null);
   const [climbValidationPopup, setClimbValidationPopup] = useState<string | null>(null);
   const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number } | null>(null);
@@ -159,6 +167,37 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (!hoveredPoint) return null;
     return latLngToUTM(hoveredPoint.latitude, hoveredPoint.longitude);
   }, [hoveredPoint]);
+
+  const selectedPreset = useMemo(
+    () => climbPresets.find((p) => p.id === selectedClimbPresetId),
+    [climbPresets, selectedClimbPresetId]
+  );
+
+  const markCustomPreset = useCallback(() => {
+    onSelectClimbPreset('custom');
+  }, [onSelectClimbPreset]);
+
+  const handlePresetChange = useCallback(
+    (presetId: string) => {
+      onSelectClimbPreset(presetId);
+      const preset = climbPresets.find((p) => p.id === presetId);
+      if (preset) {
+        setClimbConfigDraft(toDraft(preset));
+        setClimbConfigError(null);
+      } else {
+        setClimbConfigDraft(toDraft(climbConfig));
+      }
+    },
+    [climbPresets, climbConfig, onSelectClimbPreset]
+  );
+
+  const handleAllowTurnsChange = useCallback(
+    (checked: boolean) => {
+      markCustomPreset();
+      setClimbConfigDraft((prev) => ({ ...prev, allowTurnsDuringClimb: checked }));
+    },
+    [markCustomPreset]
+  );
 
   useEffect(() => {
     if (!climbContextMenu) return;
@@ -1276,13 +1315,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   }, []);
 
   const openClimbConfig = useCallback(() => {
-    setClimbConfigDraft({
-      climbRatio: climbConfig.climbRatio.toString(),
-      descentRatio: climbConfig.descentRatio.toString(),
-      allowTurnsDuringClimb: climbConfig.allowTurnsDuringClimb,
-      linkRatios: climbConfig.linkRatios,
-      vertexProximityMeters: climbConfig.vertexProximityMeters.toString()
-    });
+    setClimbConfigDraft(toDraft(climbConfig));
     setClimbConfigError(null);
     setIsClimbConfigOpen(true);
   }, [climbConfig]);
@@ -1308,9 +1341,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       linkRatios: climbConfigDraft.linkRatios,
       vertexProximityMeters: proximity
     });
+    onSelectClimbPreset('custom');
     setIsClimbConfigOpen(false);
     setClimbConfigError(null);
-  }, [climbConfigDraft]);
+  }, [climbConfigDraft, onSelectClimbPreset]);
 
   const exportPNG = () => {
     if (!svgRef.current) return;
@@ -1564,12 +1598,32 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <button className="climb-modal__close" onClick={() => setIsClimbConfigOpen(false)}>×</button>
             </div>
             <div className="climb-modal__body">
+              <label className="climb-modal__label" htmlFor="climb-preset-select">Preset</label>
+              <select
+                id="climb-preset-select"
+                value={selectedClimbPresetId}
+                onChange={(e) => handlePresetChange(e.target.value)}
+                className="climb-modal__input"
+              >
+                <option value="custom">Custom (edit below)</option>
+                {climbPresets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name}
+                  </option>
+                ))}
+              </select>
+              <div className="climb-modal__hint">
+                {selectedClimbPresetId === 'custom'
+                  ? 'Edit fields below to define your own climb behavior.'
+                  : selectedPreset?.description || 'Preset loaded from climbPresets.json.'}
+              </div>
               <label className="climb-modal__toggle">
                 <input
                   type="checkbox"
                   checked={climbConfigDraft.linkRatios}
                   onChange={(e) => {
                     const linked = e.target.checked;
+                    markCustomPreset();
                     setClimbConfigDraft((prev) => ({
                       ...prev,
                       linkRatios: linked,
@@ -1588,14 +1642,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 step="0.1"
                 min="0.1"
                 value={climbConfigDraft.climbRatio}
-                onChange={(e) => setClimbConfigDraft((prev) => ({
-                  ...prev,
-                  climbRatio: e.target.value,
-                  // If linked, update descent ratio as well
-                  descentRatio: prev.linkRatios ? e.target.value : prev.descentRatio
-                }))}
+                onChange={(e) => {
+                  markCustomPreset();
+                  setClimbConfigDraft((prev) => ({
+                    ...prev,
+                    climbRatio: e.target.value,
+                    // If linked, update descent ratio as well
+                    descentRatio: prev.linkRatios ? e.target.value : prev.descentRatio
+                  }));
+                }}
                 className="climb-modal__input"
               />
+
               <label className="climb-modal__label" htmlFor="descent-ratio-input">Descent Ratio (Horizontal m / 1m Down)</label>
               <input
                 id="descent-ratio-input"
@@ -1603,10 +1661,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 step="0.1"
                 min="0.1"
                 value={climbConfigDraft.descentRatio}
-                onChange={(e) => setClimbConfigDraft((prev) => ({ ...prev, descentRatio: e.target.value }))}
+                onChange={(e) => {
+                  markCustomPreset();
+                  setClimbConfigDraft((prev) => ({ ...prev, descentRatio: e.target.value }));
+                }}
                 className="climb-modal__input"
                 disabled={climbConfigDraft.linkRatios}
               />
+
               <label className="climb-modal__label" htmlFor="vertex-proximity-input">Vertex Proximity (meters)</label>
               <input
                 id="vertex-proximity-input"
@@ -1614,14 +1676,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 step="1"
                 min="0"
                 value={climbConfigDraft.vertexProximityMeters}
-                onChange={(e) => setClimbConfigDraft((prev) => ({ ...prev, vertexProximityMeters: e.target.value }))}
+                onChange={(e) => {
+                  markCustomPreset();
+                  setClimbConfigDraft((prev) => ({ ...prev, vertexProximityMeters: e.target.value }));
+                }}
                 className="climb-modal__input"
               />
+
               <label className="climb-modal__toggle">
                 <input
                   type="checkbox"
                   checked={climbConfigDraft.allowTurnsDuringClimb}
-                  onChange={(e) => setClimbConfigDraft((prev) => ({ ...prev, allowTurnsDuringClimb: e.target.checked }))}
+                  onChange={(e) => handleAllowTurnsChange(e.target.checked)}
                 />
                 Allow climb through turns (otherwise, climb pauses until the turn ends)
               </label>

@@ -181,6 +181,9 @@ interface MapPanelProps {
   routes: FlightRoute[];
   activeRouteId: string;
   flightPath: Coordinate[];
+  climbMarkers: { lat: number; lng: number; label: string }[];
+  showClimbLabels: boolean;
+  onShowClimbLabelsChange: (show: boolean) => void;
   onPathPointHover: (point: Coordinate | null, distance?: number) => void;
   onPathChange: (path: Coordinate[]) => void;
   onAddPoint: (point: Coordinate) => void;
@@ -242,6 +245,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onRedo,
   canUndo,
   canRedo,
+  climbMarkers,
+  onShowClimbLabelsChange,
+  showClimbLabels,
   editPointIndex: externalEditPointIndex,
   onEditPointIndexChange,
   hoveredElevationPoint,
@@ -260,6 +266,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [dtmBounds, setDtmBounds] = useState<number[] | null>(null);
   const [dtmOpacity, setDtmOpacity] = useState<number>(0.1); // Default 90% transparency (10% opacity)
   const markersRef = useRef<L.Marker[]>([]);
+  const climbMarkersRef = useRef<L.Marker[]>([]);
   const flightPathLineRef = useRef<L.Polyline | null>(null);
   const flightPathClickableLineRef = useRef<L.Polyline | null>(null);
   const flightPathBufferRef = useRef<L.Polyline | null>(null);
@@ -666,6 +673,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
 
+    climbMarkersRef.current.forEach(marker => marker.remove());
+    climbMarkersRef.current = [];
+
     // Remove existing flight path lines
     if (flightPathLineRef.current) {
       map.current.removeLayer(flightPathLineRef.current);
@@ -848,6 +858,41 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       segmentLengthLabelsRef.current.push(labelMarker);
     }
+
+    // Add climb end markers with optional labels
+    climbMarkers.forEach((climb) => {
+      const dotIcon = L.divIcon({
+        className: 'climb-marker-dot',
+        html: '<span class="climb-marker-dot__circle"></span>',
+        iconSize: [16, 16],
+        iconAnchor: [8, 8]
+      });
+
+      const dotMarker = L.marker([climb.lat, climb.lng], {
+        icon: dotIcon,
+        interactive: false,
+        zIndexOffset: 620
+      }).addTo(map.current!);
+
+      climbMarkersRef.current.push(dotMarker);
+
+      if (showClimbLabels) {
+        const labelIcon = L.divIcon({
+          className: 'climb-marker-label',
+          html: `<span class="climb-marker-label__text">${climb.label}</span>`,
+          iconSize: [1, 1],
+          iconAnchor: [0, -4]
+        });
+
+        const labelMarker = L.marker([climb.lat, climb.lng], {
+          icon: labelIcon,
+          interactive: false,
+          zIndexOffset: 610
+        }).addTo(map.current!);
+
+        climbMarkersRef.current.push(labelMarker);
+      }
+    });
 
     // Force initial update of buffer weight
     setTimeout(() => {
@@ -1036,7 +1081,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
     nominalFlightHeight,
     editingPointIndex,
     externalEditPointIndex,
-    activeRouteColor
+    activeRouteColor,
+    climbMarkers,
+    showClimbLabels
   ]);
 
   // Handle zoom-dependent buffer width
@@ -2665,16 +2712,36 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 </button>
               </Tooltip>
             </div>
-            <div className="group-column group-column-icons">
+            <div
+              className="group-column group-column-icons"
+              style={{ display: 'flex', flexDirection: 'row', gap: '12px', alignItems: 'center' }}
+            >
               <Tooltip tooltip="Show/hide map hover metadata.">
-                <label className="switch" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <label
+                  className="switch"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
+                >
                   <input
                     type="checkbox"
                     checked={showMetadata}
                     onChange={(e) => onShowMetadataChange(e.target.checked)}
                   />
                   <span className="switch-slider" />
-                  <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>Metadata</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>Metadata</span>
+                </label>
+              </Tooltip>
+              <Tooltip tooltip="Show/hide climb labels near climb markers.">
+                <label
+                  className="switch"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showClimbLabels}
+                    onChange={(e) => onShowClimbLabelsChange(e.target.checked)}
+                  />
+                  <span className="switch-slider" />
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>Climb labels</span>
                 </label>
               </Tooltip>
             </div>

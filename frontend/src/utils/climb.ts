@@ -8,6 +8,12 @@ export interface ClimbConfig {
   vertexProximityMeters: number; // distance from vertex where climbing is paused
 }
 
+export interface ClimbPreset extends ClimbConfig {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface BaseAltitudeSample {
   distance: number;
   baseAltitude: number;

@@ -77,16 +77,29 @@ const getPreviewConfig = () => {
 };
 
 // Clear cached uploads on restart to avoid serving stale files
-// Clear cached uploads on restart to avoid serving stale files
 const clearUploadsDirectory = async () => {
   try {
     if (existsSync(uploadsDir)) {
-      // Readdir and unlink each file instead of removing the directory itself
+      // Readdir and remove each file/directory instead of removing the directory itself
       // This preserves the directory inode which is important for Docker bind mounts
-      const { readdir } = await import('fs/promises');
+      const { readdir, rm, stat } = await import('fs/promises');
       const files = await readdir(uploadsDir);
       await Promise.all(
-        files.map(file => unlink(join(uploadsDir, file)).catch(e => console.error(`Failed to delete ${file}:`, e)))
+        files.map(async (file) => {
+          const filePath = join(uploadsDir, file);
+          try {
+            const stats = await stat(filePath);
+            if (stats.isDirectory()) {
+              // Use rm with recursive for directories
+              await rm(filePath, { recursive: true, force: true });
+            } else {
+              // Use unlink for files
+              await unlink(filePath);
+            }
+          } catch (e) {
+            console.error(`Failed to delete ${file}:`, e);
+          }
+        })
       );
     } else {
       mkdirSync(uploadsDir, { recursive: true });

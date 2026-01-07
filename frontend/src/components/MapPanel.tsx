@@ -4214,6 +4214,242 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
         </div>
       )}
+
+      {/* DTM Options Modal */}
+      {showDtmOptionsModal && (
+        <div className="dtm-modal-overlay" onClick={handleCloseDtmOptionsModal}>
+          <div className="dtm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="dtm-modal-header">
+              <h2>בחר קובץ DTM</h2>
+              <button
+                type="button"
+                className="btn btn-icon btn-tertiary"
+                onClick={handleCloseDtmOptionsModal}
+                aria-label="סגור"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+            
+            <div className="dtm-modal-search">
+              <Icon name="search" />
+              <input
+                type="text"
+                placeholder="חיפוש קובץ DTM..."
+                value={dtmSearchQuery}
+                onChange={(e) => setDtmSearchQuery(e.target.value)}
+                autoFocus
+              />
+            </div>
+
+            <div className="dtm-modal-content">
+              {dtmOptionsLoading && (
+                <div className="dtm-modal-loading">
+                  <div className="loading-spinner" />
+                  <span>טוען רשימת DTM...</span>
+                </div>
+              )}
+              
+              {dtmOptionsError && (
+                <div className="dtm-modal-error">
+                  <span>⚠️ {dtmOptionsError}</span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={fetchDtmOptions}
+                  >
+                    נסה שוב
+                  </button>
+                </div>
+              )}
+              
+              {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length === 0 && (
+                <div className="dtm-modal-empty">
+                  {dtmSearchQuery ? (
+                    <span>לא נמצאו קבצים התואמים לחיפוש "{dtmSearchQuery}"</span>
+                  ) : (
+                    <span>לא נמצאו קבצי DTM בתיקייה. ודא ש-DTM_DATA_DIR מוגדר נכון.</span>
+                  )}
+                </div>
+              )}
+              
+              {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length > 0 && (
+                <div className="dtm-options-list">
+                  {filteredDtmOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="dtm-option-item"
+                      onClick={() => handleSelectDtm(option.id)}
+                    >
+                      <div className="dtm-option-icon">
+                        <Icon name="folder" />
+                      </div>
+                      <div className="dtm-option-info">
+                        <div className="dtm-option-name">{option.displayName}</div>
+                        <div className="dtm-option-meta">
+                          <span>{formatFileSize(option.sizeBytes)}</span>
+                          <span>•</span>
+                          <span>{formatDate(option.modifiedAt)}</span>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            <div className="dtm-modal-footer">
+              <span className="dtm-modal-count">
+                {dtmOptions.length} קבצים זמינים
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AOI Selection Overlay */}
+      {isAoiSelectionMode && (
+        <div className="aoi-selection-overlay">
+          <div className="aoi-selection-panel">
+            <div className="aoi-selection-header">
+              <Icon name="crop" />
+              <div className="aoi-selection-title">
+                <h3>בחר אזור עבודה (AOI)</h3>
+                <span className="aoi-selection-dtm">{selectedDtmId}</span>
+              </div>
+            </div>
+            
+            {/* Method Selection */}
+            {!aoiSelectionMethod && (
+              <div className="aoi-method-selection">
+                <span className="aoi-method-label">בחר שיטת בחירה:</span>
+                <div className="aoi-method-options">
+                  <button
+                    type="button"
+                    className="aoi-method-btn"
+                    onClick={() => setAoiSelectionMethod('bbox')}
+                  >
+                    <Icon name="rectangle" />
+                    <span>מלבן (שתי לחיצות)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="aoi-method-btn"
+                    onClick={() => setAoiSelectionMethod('polygon')}
+                  >
+                    <Icon name="polygon" />
+                    <span>פוליגון (נקודות מרובות)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="aoi-method-btn"
+                    onClick={() => setAoiSelectionMethod('kml')}
+                  >
+                    <Icon name="file" />
+                    <span>טעינה מקובץ KML</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Active Method Instructions */}
+            {aoiSelectionMethod && (
+              <div className="aoi-selection-instructions">
+                {aoiSelectionMethod === 'bbox' && !aoiBounds && (
+                  <span>לחץ על המפה לקביעת הפינה הראשונה, ואז לחץ שוב לקביעת הפינה השנייה</span>
+                )}
+                {aoiSelectionMethod === 'polygon' && !aoiPolygon && (
+                  <span>לחץ על המפה להוספת נקודות. לחץ פעמיים או לחץ על הנקודה הראשונה לסגירת הפוליגון</span>
+                )}
+                {aoiSelectionMethod === 'kml' && !aoiPolygon && (
+                  <div className="aoi-kml-upload">
+                    <input
+                      ref={kmlInputRef}
+                      type="file"
+                      accept=".kml,.kmz"
+                      onChange={handleKmlFileSelect}
+                      style={{ display: 'none' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => kmlInputRef.current?.click()}
+                    >
+                      <Icon name="upload" />
+                      בחר קובץ KML
+                    </button>
+                  </div>
+                )}
+                
+                {/* Show bounds info when bbox is selected */}
+                {aoiBounds && (
+                  <div className="aoi-bounds-info">
+                    <div>מינ' רוחב: {aoiBounds.minLat.toFixed(6)}</div>
+                    <div>מקס' רוחב: {aoiBounds.maxLat.toFixed(6)}</div>
+                    <div>מינ' אורך: {aoiBounds.minLon.toFixed(6)}</div>
+                    <div>מקס' אורך: {aoiBounds.maxLon.toFixed(6)}</div>
+                  </div>
+                )}
+                
+                {/* Show polygon info when polygon is selected */}
+                {aoiPolygon && (
+                  <div className="aoi-polygon-info">
+                    <div>מספר נקודות: {aoiPolygon.coordinates.length}</div>
+                    <div className="aoi-polygon-ready">✓ פוליגון מוכן</div>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            <div className="aoi-selection-actions">
+              {aoiSelectionMethod && (aoiBounds || aoiPolygon) && (
+                <button
+                  type="button"
+                  className="btn btn-tertiary"
+                  onClick={handleResetAoiSelection}
+                  disabled={isClipping}
+                >
+                  שרטט מחדש
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleCancelAoiSelection}
+                disabled={isClipping}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleClipDtm}
+                disabled={(!aoiBounds && !aoiPolygon) || isClipping}
+              >
+                {isClipping ? (
+                  <>
+                    <div className="loading-spinner-small" />
+                    חותך...
+                  </>
+                ) : (
+                  'טען אזור נבחר'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clipping Progress Overlay */}
+      {isClipping && (
+        <div className="upload-progress-overlay">
+          <div className="upload-progress-container">
+            <div className="loading-spinner" />
+            <div className="upload-progress-label">חותך DTM לאזור הנבחר...</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

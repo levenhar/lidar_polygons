@@ -370,6 +370,13 @@ async def get_elevation_at_point(request: ElevationAtPointRequest):
         logger.error(f"Error getting elevation at point: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+# DTM data directory - where source TIFF files are stored
+DTM_DATA_DIR = os.environ.get("DTM_DATA_DIR", UPLOADS_DIR)
+DTM_CACHE_DIR = os.environ.get("DTM_CACHE_DIR", os.path.join(DTM_DATA_DIR, "Cache"))
+
+logger.info(f"UPLOADS_DIR: {UPLOADS_DIR}")
+logger.info(f"DTM_DATA_DIR: {DTM_DATA_DIR}")
+
 class ElevationProfileRequest(BaseModel):
     coordinates: List[List[float]]
     dtmPath: str

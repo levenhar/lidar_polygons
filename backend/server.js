@@ -628,6 +628,187 @@ app.post('/api/dtm/clipped/:clippedId/upload', async (req, res) => {
   }
 });
 
+// ============================================================================
+// NEW DTM ENDPOINTS (proxy to Python backend)
+// ============================================================================
+
+// GET /api/dtm/options - List available DTM files
+app.get('/api/dtm/options', async (req, res) => {
+  try {
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/options`, {
+      headers: {
+        'If-None-Match': req.headers['if-none-match'] || ''
+      }
+    });
+
+    // Forward ETag and Cache-Control headers
+    const etag = response.headers.get('ETag');
+    const cacheControl = response.headers.get('Cache-Control');
+    
+    if (etag) res.setHeader('ETag', etag);
+    if (cacheControl) res.setHeader('Cache-Control', cacheControl);
+
+    if (response.status === 304) {
+      return res.status(304).end();
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching DTM options:', error);
+    res.status(500).json({ error: 'Failed to fetch DTM options', details: error.message });
+  }
+});
+
+// POST /api/dtm/clip - Clip DTM to AOI
+app.post('/api/dtm/clip', async (req, res) => {
+  try {
+    console.log('Clipping DTM with params:', JSON.stringify(req.body));
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clip`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(req.body)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Python clip error:', errorText);
+      return res.status(response.status).json({ error: errorText });
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Error clipping DTM:', error);
+    res.status(500).json({ error: 'Failed to clip DTM', details: error.message });
+  }
+});
+
+// GET /api/dtm/clipped/:clippedId/metadata - Get clipped DTM metadata
+app.get('/api/dtm/clipped/:clippedId/metadata', async (req, res) => {
+  try {
+    const { clippedId } = req.params;
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}/metadata`);
+
+    const cacheControl = response.headers.get('Cache-Control');
+    if (cacheControl) res.setHeader('Cache-Control', cacheControl);
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: 'Metadata not found' });
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching clipped metadata:', error);
+    res.status(500).json({ error: 'Failed to fetch metadata', details: error.message });
+  }
+});
+
+// GET /api/dtm/clipped/:clippedId/raster - Get clipped DTM raster data
+app.get('/api/dtm/clipped/:clippedId/raster', async (req, res) => {
+  try {
+    const { clippedId } = req.params;
+    console.log(`Fetching raster data for clipped DTM: ${clippedId}`);
+
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}/raster`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Python raster error:', errorText);
+      return res.status(response.status).json({ error: errorText });
+    }
+
+    res.setHeader('Content-Type', response.headers.get('Content-Type') || 'application/json');
+
+    if (response.body) {
+      const { Readable } = await import('node:stream');
+      Readable.fromWeb(response.body).pipe(res);
+    } else {
+      res.status(204).end();
+    }
+  } catch (error) {
+    console.error('Error fetching clipped raster:', error);
+    res.status(500).json({ error: 'Failed to fetch raster', details: error.message });
+  }
+});
+
+// GET /api/dtm/clipped/:clippedId/image.png - Get rendered PNG image
+app.get('/api/dtm/clipped/:clippedId/image.png', async (req, res) => {
+  try {
+    const { clippedId } = req.params;
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}/image.png`);
+
+    const cacheControl = response.headers.get('Cache-Control');
+    if (cacheControl) res.setHeader('Cache-Control', cacheControl);
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: 'Image not found' });
+    }
+
+    res.setHeader('Content-Type', 'image/png');
+
+    if (response.body) {
+      const { Readable } = await import('node:stream');
+      Readable.fromWeb(response.body).pipe(res);
+    } else {
+      res.status(204).end();
+    }
+  } catch (error) {
+    console.error('Error fetching clipped image:', error);
+    res.status(500).json({ error: 'Failed to fetch image', details: error.message });
+  }
+});
+
+// GET /api/dtm/clipped/:clippedId/tiles/:z/:x/:y.png - Get map tiles
+app.get('/api/dtm/clipped/:clippedId/tiles/:z/:x/:y.png', async (req, res) => {
+  try {
+    const { clippedId, z, x, y } = req.params;
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}/tiles/${z}/${x}/${y}.png`);
+
+    const cacheControl = response.headers.get('Cache-Control');
+    if (cacheControl) res.setHeader('Cache-Control', cacheControl);
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: 'Tile not found' });
+    }
+
+    res.setHeader('Content-Type', 'image/png');
+
+    if (response.body) {
+      const { Readable } = await import('node:stream');
+      Readable.fromWeb(response.body).pipe(res);
+    } else {
+      res.status(204).end();
+    }
+  } catch (error) {
+    console.error('Error fetching tile:', error);
+    res.status(500).json({ error: 'Failed to fetch tile', details: error.message });
+  }
+});
+
+// DELETE /api/dtm/clipped/:clippedId - Delete clipped DTM
+app.delete('/api/dtm/clipped/:clippedId', async (req, res) => {
+  try {
+    const { clippedId } = req.params;
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}`, {
+      method: 'DELETE'
+    });
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('Error deleting clipped DTM:', error);
+    res.status(500).json({ error: 'Failed to delete clipped DTM', details: error.message });
+  }
+});
+
 // Get DTM metadata endpoint
 app.get('/api/dtm/:filename/metadata', async (req, res) => {
   try {

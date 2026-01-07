@@ -2912,12 +2912,28 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             top: mousePos.y + 15
           }}
         >
-          <div className="tooltip-section">
-            <span className="tooltip-label">Lat:</span> {hoveredPoint.latitude.toFixed(6)}
-          </div>
-          <div className="tooltip-section">
-            <span className="tooltip-label">Lng:</span> {hoveredPoint.longitude.toFixed(6)}
-          </div>
+          {hoveredUtm ? (
+            <>
+              <div className="tooltip-section">
+                <span className="tooltip-label">UTM Zone:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
+              </div>
+              <div className="tooltip-section">
+                <span className="tooltip-label">Easting:</span> {hoveredUtm.easting.toFixed(1)}m
+              </div>
+              <div className="tooltip-section">
+                <span className="tooltip-label">Northing:</span> {hoveredUtm.northing.toFixed(1)}m
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="tooltip-section">
+                <span className="tooltip-label">Lat:</span> {hoveredPoint.latitude.toFixed(6)}
+              </div>
+              <div className="tooltip-section">
+                <span className="tooltip-label">Lng:</span> {hoveredPoint.longitude.toFixed(6)}
+              </div>
+            </>
+          )}
           <div className="tooltip-divider" />
           <div className="tooltip-section">
             <span className="tooltip-label">AGL Height:</span> {hoveredPoint.flightHeight?.toFixed(1)}m

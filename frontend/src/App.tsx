@@ -514,7 +514,7 @@ function App() {
     <div className="app-container">
       <div className="app-header">
         <div className="header-title-container">
-          <img src="/favicon.svg" alt="Logo" className="app-logo" />
+          <img src="/favicon.png" alt="Logo" className="app-logo" />
           <h1>מתכנן משימות LiDAR</h1>
         </div>
         <div className="header-controls">

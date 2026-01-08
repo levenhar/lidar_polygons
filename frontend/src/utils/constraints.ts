@@ -243,28 +243,28 @@ export function getNearestConstraints(
 
   if (!leftConstraint && !rightConstraint) {
     limitingSide = 'none';
-    limitingReasons.push('No constraints found');
+    limitingReasons.push('לא נמצאו אילוצים');
   } else if (leftLimits && rightLimits && leftConstraint && rightConstraint) {
     limitingSide = 'both';
-    const leftType = leftConstraint.type === 'turn' ? 'Turn' : 'Climb Point';
-    const rightType = rightConstraint.type === 'turn' ? 'Turn' : 'Climb Point';
-    limitingReasons.push(`Limited by left ${leftType} at -${dL.toFixed(1)}m`);
-    limitingReasons.push(`Limited by right ${rightType} at +${dR.toFixed(1)}m`);
+    const leftType = leftConstraint.type === 'turn' ? 'פנייה' : 'נקודת עלייה';
+    const rightType = rightConstraint.type === 'turn' ? 'פנייה' : 'נקודת עלייה';
+    limitingReasons.push(`מוגבל על ידי ${leftType} משמאל ב-${dL.toFixed(1)} מ'`);
+    limitingReasons.push(`מוגבל על ידי ${rightType} מימין ב-${dR.toFixed(1)} מ'`);
   } else if (leftLimits && leftConstraint) {
     limitingSide = 'left';
-    const leftType = leftConstraint.type === 'turn' ? 'Turn' : 'Climb Point';
-    limitingReasons.push(`Limited by left ${leftType} at -${dL.toFixed(1)}m`);
+    const leftType = leftConstraint.type === 'turn' ? 'פנייה' : 'נקודת עלייה';
+    limitingReasons.push(`מוגבל על ידי ${leftType} משמאל ב-${dL.toFixed(1)} מ'`);
   } else if (rightLimits && rightConstraint) {
     limitingSide = 'right';
-    const rightType = rightConstraint.type === 'turn' ? 'Turn' : 'Climb Point';
-    limitingReasons.push(`Limited by right ${rightType} at +${dR.toFixed(1)}m`);
+    const rightType = rightConstraint.type === 'turn' ? 'פנייה' : 'נקודת עלייה';
+    limitingReasons.push(`מוגבל על ידי ${rightType} מימין ב-${dR.toFixed(1)} מ'`);
   } else {
     // Edge case: limited by route boundary
     limitingSide = 'none';
     if (dL <= dR) {
-      limitingReasons.push(`Limited by route start at -${dL.toFixed(1)}m`);
+      limitingReasons.push(`מוגבל על ידי התחלת המסלול ב-${dL.toFixed(1)} מ'`);
     } else {
-      limitingReasons.push(`Limited by route end at +${dR.toFixed(1)}m`);
+      limitingReasons.push(`מוגבל על ידי סיום המסלול ב-${dR.toFixed(1)} מ'`);
     }
   }
 

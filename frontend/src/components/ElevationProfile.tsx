@@ -724,11 +724,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // Add axes
     const xAxis = d3.axisBottom(currentXScale)
       .ticks(10)
-      .tickFormat(d => `${d}m`);
+      .tickFormat(d => `${d} מ'`);
 
     const yAxis = d3.axisRight(currentYScale)
       .ticks(10)
-      .tickFormat(d => `${d}m`)
+      .tickFormat(d => `${d} מ'`)
       .tickPadding(40);
 
     const xAxisGroup = g.append('g')
@@ -849,7 +849,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('paint-order', 'stroke')
       .text(d => {
         const sign = d.climbAmount >= 0 ? '+' : '';
-        return `${sign}${d.climbAmount.toFixed(0)}m`;
+        return `${sign}${d.climbAmount.toFixed(0)} מ'`;
       });
 
     // Add legend under the graph area
@@ -1308,11 +1308,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
       if (minDist < climbConfig.vertexProximityMeters) {
         const msg = intervalsOverlap
-          ? `New climb (${newClimbStart.toFixed(1)}m - ${newClimbEnd.toFixed(1)}m) overlaps with existing climb ` +
-          `(${existingStart.toFixed(1)}m - ${existingEnd.toFixed(1)}m). Climbs cannot overlap.`
-          : `New climb (${newClimbStart.toFixed(1)}m - ${newClimbEnd.toFixed(1)}m) is too close to existing climb ` +
-          `(${existingStart.toFixed(1)}m - ${existingEnd.toFixed(1)}m). ` +
-          `Minimum distance required: ${climbConfig.vertexProximityMeters}m (current: ${minDist.toFixed(1)}m).`;
+          ? `New climb (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') overlaps with existing climb ` +
+          `(${existingStart.toFixed(1)} מ' - ${existingEnd.toFixed(1)} מ'). Climbs cannot overlap.`
+          : `New climb (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') is too close to existing climb ` +
+          `(${existingStart.toFixed(1)} מ' - ${existingEnd.toFixed(1)} מ'). ` +
+          `Minimum distance required: ${climbConfig.vertexProximityMeters} מ' (current: ${minDist.toFixed(1)} מ').`;
         console.log('VALIDATION FAILED:', msg);
         setClimbAmountError(msg);
         setClimbValidationPopup(msg);
@@ -1516,7 +1516,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const exportCSV = () => {
     if (elevationProfile.length === 0) return;
 
-    const headers = ['Distance (m)', 'Ground Elevation (m)', 'Flight Altitude (m)', 'AGL (m)', 'Longitude', 'Latitude'];
+    const headers = ['Distance (מ\')', 'Ground Elevation (מ\')', 'Flight Altitude (מ\')', 'AGL (מ\')', 'Longitude', 'Latitude'];
     const rows = elevationProfile.map((point) => {
       const flightAltitude = point.plannedAltitude ?? (point.elevation + nominalFlightHeight);
       const agl = flightAltitude - point.elevation;
@@ -1684,8 +1684,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); }}>×</button>
             </div>
             <div className="climb-modal__body">
-              <div className="climb-modal__label">מרחק סיום העלייה</div>
-              <div className="climb-modal__hint">{pendingClimbEnd !== null ? `${pendingClimbEnd.toFixed(1)} מ'` : 'לחץ על הפרופיל כדי לבחור נקודת סיום עלייה.'}</div>
               <label className="climb-modal__label" htmlFor="climb-amount-input">שינוי בגובה (מ')</label>
               <input
                 id="climb-amount-input"
@@ -1715,11 +1713,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </div>
             <div className="climb-modal__actions">
               <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbAmountOpen(false)}>ביטול</button>
-              {(climbRequests.length > 0 || climbWarnings.length > 0) && (
-                <span className="warning-badge" title={climbWarnings.join('\n')}>
-                  {climbWarnings.length}
-                </span>
-              )}
               <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>החל עלייה</button>
             </div>
           </div>

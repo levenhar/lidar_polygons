@@ -2912,42 +2912,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             top: mousePos.y + 15
           }}
         >
-          {hoveredUtm ? (
-            <>
-              <div className="tooltip-section">
-                <span className="tooltip-label">אזור UTM:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
-              </div>
-              <div className="tooltip-section">
-                <span className="tooltip-label">מזרחית:</span> {hoveredUtm.easting.toFixed(1)}מ'
-              </div>
-              <div className="tooltip-section">
-                <span className="tooltip-label">צפונית:</span> {hoveredUtm.northing.toFixed(1)}מ'
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="tooltip-section">
-                <span className="tooltip-label">קו רוחב:</span> {hoveredPoint.latitude.toFixed(6)}
-              </div>
-              <div className="tooltip-section">
-                <span className="tooltip-label">קו אורך:</span> {hoveredPoint.longitude.toFixed(6)}
-              </div>
-            </>
-          )}
-          <div className="tooltip-divider" />
-          <div className="tooltip-section">
-            <span className="tooltip-label">גובה AGL:</span> {hoveredPoint.flightHeight?.toFixed(1)}מ'
-          </div>
-          {hoveredPoint.minElevation !== undefined && (
-            <div className="tooltip-section">
-              <span className="tooltip-label">גובה ממינימום:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.minElevation).toFixed(1)}מ'
-            </div>
-          )}
-          {hoveredPoint.maxElevation !== undefined && (
-            <div className="tooltip-section">
-              <span className="tooltip-label">גובה ממקסימום:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.maxElevation).toFixed(1)}מ'
-            </div>
-          )}
+          <CoordinateTooltip point={hoveredPoint} utm={hoveredUtm} />
         </div>
       )}
     </div>

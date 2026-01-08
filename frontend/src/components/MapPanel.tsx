@@ -1025,6 +1025,38 @@ const MapPanel: React.FC<MapPanelProps> = ({
     });
   }, [mousePos, showMetadata, hoveredElevationPoint, hoverSource]);
 
+  // Calculate tooltip position to keep it on screen
+  useLayoutEffect(() => {
+    if (!mousePos || !tooltipRef.current || !showMetadata || !hoveredElevationPoint || hoverSource !== 'map') {
+      setTooltipPosition(null);
+      return;
+    }
+
+    // Use requestAnimationFrame to ensure the tooltip is rendered and measured
+    requestAnimationFrame(() => {
+      if (!tooltipRef.current) return;
+      const tooltipRect = tooltipRef.current.getBoundingClientRect();
+      const windowWidth = window.innerWidth;
+      const padding = 8;
+      const offset = 15;
+
+      let left = mousePos.x + offset;
+      
+      // Check if tooltip would go off the right edge of the screen
+      if (left + tooltipRect.width > windowWidth - padding) {
+        // Position at the start of the window with padding
+        left = padding;
+      }
+
+      // Also check if it would go off the left edge (shouldn't happen, but just in case)
+      if (left < padding) {
+        left = padding;
+      }
+
+      setTooltipPosition({ left, top: mousePos.y + offset });
+    });
+  }, [mousePos, showMetadata, hoveredElevationPoint, hoverSource]);
+
   // AOI selection mode handlers
   useEffect(() => {
     if (!map.current || !isAoiSelectionMode || !aoiSelectionMethod) return;
@@ -3967,10 +3999,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
       )}
       {isInfoMode && mousePos && cursorElevation && (
         <div
+          ref={tooltipRef}
           className="hover-metadata-tooltip"
           style={{
-            left: mousePos.x + 15,
-            top: mousePos.y + 15
+            left: tooltipPosition?.left ?? mousePos.x + 15,
+            top: tooltipPosition?.top ?? mousePos.y + 15,
+            visibility: tooltipPosition ? 'visible' : 'hidden'
           }}
         >
           <div className="tooltip-section">

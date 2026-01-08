@@ -2906,10 +2906,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       )}
       {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && (
         <div
+          ref={tooltipRef}
           className="hover-metadata-tooltip"
           style={{
-            left: mousePos.x + 15,
-            top: mousePos.y + 15
+            left: tooltipPosition?.left ?? mousePos.x + 15,
+            top: tooltipPosition?.top ?? mousePos.y + 15,
+            visibility: tooltipPosition ? 'visible' : 'hidden'
           }}
         >
           <CoordinateTooltip point={hoveredPoint} utm={hoveredUtm} />

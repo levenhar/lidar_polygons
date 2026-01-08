@@ -7,6 +7,7 @@ import { Coordinate, ElevationPoint } from '../App';
 import { FlightRoute } from '../hooks/useFlightPath';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
+import CoordinateTooltip from './CoordinateTooltip';
 import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
 import './MapPanel.css';
@@ -911,6 +912,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
       mapTokenRef.current = null;
     };
   }, []);
+
+  // Clear hover state when mouse leaves the map container
+  useEffect(() => {
+    if (!map.current) return;
+
+    const mapContainer = map.current.getContainer();
+    const handleMouseLeave = () => {
+      setMousePos(null);
+      if (hoverSource === 'map') {
+        onPathPointHover(null);
+      }
+    };
+
+    mapContainer.addEventListener('mouseleave', handleMouseLeave);
+
+    return () => {
+      mapContainer.removeEventListener('mouseleave', handleMouseLeave);
+    };
+  }, [hoverSource, onPathPointHover]);
 
   // AOI selection mode handlers
   useEffect(() => {
@@ -1908,8 +1928,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       hoveredElevationMarkerRef.current = null;
     }
 
-    // Add new marker if there's a hovered elevation point
-    if (hoveredElevationPoint) {
+    // Add new marker if there's a hovered elevation point (from either map or profile)
+    if (hoveredElevationPoint && (hoverSource === 'map' || hoverSource === 'profile')) {
       const icon = L.divIcon({
         className: 'hovered-elevation-marker',
         html: '<div style="background-color: #9B59B6; width: 14px; height: 14px; border-radius: 50%; border: 2px solid black; box-shadow: 0 0 6px rgba(155,89,182,0.8);"></div>',
@@ -1925,7 +1945,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
       ).addTo(map.current);
     }
-  }, [hoveredElevationPoint]);
+  }, [hoveredElevationPoint, hoverSource]);
 
   // Exit drawing mode if DTM is unloaded
   useEffect(() => {
@@ -3505,42 +3525,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             top: mousePos.y + 15
           }}
         >
-          {hoveredUtm ? (
-            <>
-              <div className="tooltip-section">
-                <span className="tooltip-label">אזור UTM:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
-              </div>
-              <div className="tooltip-section">
-                <span className="tooltip-label">איסטינג:</span> {hoveredUtm.easting.toFixed(1)}m
-              </div>
-              <div className="tooltip-section">
-                <span className="tooltip-label">נורת'ינג:</span> {hoveredUtm.northing.toFixed(1)}m
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="tooltip-section">
-                <span className="tooltip-label">קו רוחב:</span> {hoveredElevationPoint.latitude.toFixed(6)}
-              </div>
-              <div className="tooltip-section">
-                <span className="tooltip-label">קו אורך:</span> {hoveredElevationPoint.longitude.toFixed(6)}
-              </div>
-            </>
-          )}
-          <div className="tooltip-divider" />
-          <div className="tooltip-section">
-            <span className="tooltip-label">גובה AGL:</span> {hoveredElevationPoint.flightHeight?.toFixed(1)}m
-          </div>
-          {hoveredElevationPoint.minElevation !== undefined && (
-            <div className="tooltip-section">
-              <span className="tooltip-label">גובה מהמינימום:</span> {((hoveredElevationPoint.elevation + (hoveredElevationPoint.flightHeight || 0)) - hoveredElevationPoint.minElevation).toFixed(1)}m
-            </div>
-          )}
-          {hoveredElevationPoint.maxElevation !== undefined && (
-            <div className="tooltip-section">
-              <span className="tooltip-label">גובה מהמקסימום:</span> {((hoveredElevationPoint.elevation + (hoveredElevationPoint.flightHeight || 0)) - hoveredElevationPoint.maxElevation).toFixed(1)}m
-            </div>
-          )}
+          <CoordinateTooltip point={hoveredElevationPoint} utm={hoveredUtm} />
         </div>
       )}
 

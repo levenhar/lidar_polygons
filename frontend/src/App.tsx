@@ -613,8 +613,14 @@ function App() {
               <div className="group-column">
                 <button
                   onClick={exportGeoJSON}
-                  className="btn btn-secondary"
+                  className={`btn btn-secondary ${flightPath.length < 2 ? 'disabled' : ''}`}
                   disabled={flightPath.length < 2}
+                  style={{
+                    ...(flightPath.length < 2 ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
+                    fontSize: '1rem',
+                    fontWeight: 400,
+                    fontFamily: 'inherit'
+                  }}
                   title={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
                 >
                   ייצוא מסלול
@@ -635,7 +641,12 @@ function App() {
                 <label
                   htmlFor="import-geojson"
                   className={`btn btn-secondary ${!dtmSource ? 'disabled' : ''}`}
-                  style={!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
+                  style={{
+                    ...(!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
+                    fontSize: '1rem',
+                    fontWeight: 400,
+                    fontFamily: 'inherit'
+                  }}
                   title={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
                 >
                   העלאת מסלול

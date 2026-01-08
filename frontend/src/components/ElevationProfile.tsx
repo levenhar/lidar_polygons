@@ -3,9 +3,13 @@ import * as d3 from 'd3';
 import { ElevationPoint, Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
+import CoordinateTooltip from './CoordinateTooltip';
+import ClimbConstraints1DGraph from './ClimbConstraints1DGraph';
 import './ElevationProfile.css';
+import './ClimbConstraints1DGraph.css';
 import { ClimbConfig, computeClimbProfile, BaseAltitudeSample, ClimbPreset } from '../utils/climb';
 import { latLngToUTM } from '../utils/coordinates';
+import { computeCumulativeDistances } from '../utils/constraints';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   const common = {
@@ -144,6 +148,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const clipPathIdRef = useRef(`elevation-clip-${Math.random().toString(36).slice(2, 8)}`);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [isClimbConfigOpen, setIsClimbConfigOpen] = useState(false);
@@ -172,6 +177,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     () => climbPresets.find((p) => p.id === selectedClimbPresetId),
     [climbPresets, selectedClimbPresetId]
   );
+
+  // Precompute cumulative distances at each vertex for constraint calculations
+  const vertexDistances = useMemo(() => {
+    return computeCumulativeDistances(flightPath);
+  }, [flightPath]);
+
+  // Get total route length from elevation profile
+  const totalRouteLength = useMemo(() => {
+    if (elevationProfile.length === 0) return 0;
+    return elevationProfile[elevationProfile.length - 1].distance;
+  }, [elevationProfile]);
 
   const markCustomPreset = useCallback(() => {
     onSelectClimbPreset('custom');
@@ -243,7 +259,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const svg = d3.select(svgRef.current);
     svg.selectAll('*').remove(); // Clear previous render
 
-    const margin = { top: 20, right: 30, bottom: 110, left: 80 };
+    const margin = { top: 20, right: 80, bottom: 110, left: 30 };
     const legendWidth = 0; // Move legend under the plot
     const width = containerRef.current.clientWidth - margin.left - margin.right - legendWidth;
     const height = 400 - margin.top - margin.bottom;
@@ -271,7 +287,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // Create scales
     const baseXScale = d3.scaleLinear()
       .domain(d3.extent(elevationProfile, d => d.distance) as [number, number])
-      .range([0, width]);
+      .range([width, 0]);
 
     const plannedAltitudes = elevationProfile.map((p) => p.plannedAltitude || (p.elevation + nominalFlightHeight));
     const baseAltitudes = elevationProfile.map((p) => p.baseAltitude || (p.elevation + nominalFlightHeight));
@@ -297,15 +313,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .map(d => d.maxElevation)
       .filter((v): v is number => v !== undefined);
 
-    // Calculate max elevation including safety line (maxElevation + safetyHeight)
-    const maxWithSafety = allMaxElevations.length > 0
-      ? Math.max(...allMaxElevations.map(e => e + safetyHeight))
-      : 0;
+    // Calculate max elevation including safety line (maxElevation + safetyHeight or elevation + safetyHeight)
+    const maxWithSafety = Math.max(
+      ...(allMaxElevations.length > 0 
+        ? allMaxElevations.map(e => e + safetyHeight)
+        : elevationProfile.map(d => d.elevation + safetyHeight))
+    );
 
-    // Calculate max elevation including resolution line (minElevation + resolutionHeight)
-    const maxWithResolution = allMinElevations.length > 0
-      ? Math.max(...allMinElevations.map(e => e + resolutionHeight))
-      : 0;
+    // Calculate max elevation including resolution line (minElevation + resolutionHeight or elevation + resolutionHeight)
+    const maxWithResolution = Math.max(
+      ...(allMinElevations.length > 0
+        ? allMinElevations.map(e => e + resolutionHeight)
+        : elevationProfile.map(d => d.elevation + resolutionHeight))
+    );
 
     const maxElevation = Math.max(
       ...elevationProfile.map(d => d.elevation),
@@ -441,7 +461,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .tickSize(-height)
       .tickFormat(() => '');
 
-    const yAxisGrid = d3.axisLeft(currentYScale)
+    const yAxisGrid = d3.axisRight(currentYScale)
       .ticks(10)
       .tickSize(-width)
       .tickFormat(() => '');
@@ -458,6 +478,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('stroke', '#ddd')
       .attr('stroke-width', 0.5)
       .attr('stroke-dasharray', '3,3')
+      .attr('transform', `translate(${width},0)`)
       .call(yAxisGrid);
 
     // Draw min/max elevation range bars (behind everything else)
@@ -696,6 +717,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('text-anchor', 'middle')
       .attr('fill', '#666')
       .style('font-size', '12px')
+      .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
       .style('font-weight', '500')
       .text(d => d.index + 1);
 
@@ -704,22 +726,27 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .ticks(10)
       .tickFormat(d => `${d}m`);
 
-    const yAxis = d3.axisLeft(currentYScale)
+    const yAxis = d3.axisRight(currentYScale)
       .ticks(10)
-      .tickFormat(d => `${d}m`);
+      .tickFormat(d => `${d}m`)
+      .tickPadding(40);
 
     const xAxisGroup = g.append('g')
       .attr('transform', `translate(0,${height})`)
       .call(xAxis);
 
     xAxisGroup.selectAll('text')
-      .style('font-size', '12px');
+      .style('font-size', '12px')
+      .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif');
 
     const yAxisGroup = g.append('g')
+      .attr('transform', `translate(${width},0)`)
       .call(yAxis);
 
     yAxisGroup.selectAll('text')
-      .style('font-size', '12px');
+      .style('font-size', '12px')
+      .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
+      .attr('dx', '-0.5em');
 
     // Axis labels (outside axis groups to avoid being cleared on zoom redraw)
     g.append('text')
@@ -729,17 +756,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill', 'black')
       .style('text-anchor', 'middle')
       .style('font-size', '14px')
+      .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
       .text('מרחק (מטרים)');
 
-    g.append('text')
-      .attr('class', 'y-axis-label')
-      .attr('transform', 'rotate(-90)')
-      .attr('y', -60)
-      .attr('x', -height / 2)
-      .attr('fill', 'black')
-      .style('text-anchor', 'middle')
-      .style('font-size', '14px')
-      .text('גובה (מטרים)');
 
     // Highlight selected point (only for user-imported points, not interpolated ones)
     if (selectedPoint && flightPath.length > 0) {
@@ -823,6 +842,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('text-anchor', 'middle')
       .attr('fill', '#6f42c1')
       .attr('font-size', '12px')
+      .attr('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
       .attr('font-weight', 'bold')
       .attr('stroke', '#ffffff')
       .attr('stroke-width', '3')
@@ -844,47 +864,57 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       { label: `רזולוציה (+${resolutionHeight}מ')`, color: '#16A34A', style: 'dashed' }
     ];
 
-    // Calculate the width of the longest label
+    // Calculate the width of each label and total width
     const tempText = svg.append('text')
       .style('font-size', '14px')
+      .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
       .style('visibility', 'hidden');
 
-    let maxTextWidth = 0;
+    const spacing = 30;
+    const lineWidth = 100;
+    const lineToTextGap = 10;
+    const itemWidths: number[] = [];
+    let totalLegendWidth = 0;
+
     legendData.forEach(item => {
       tempText.text(item.label);
       const textWidth = (tempText.node() as SVGTextElement)?.getBBox().width || 0;
-      if (textWidth > maxTextWidth) {
-        maxTextWidth = textWidth;
-      }
+      const itemWidth = lineWidth + lineToTextGap + textWidth;
+      itemWidths.push(itemWidth);
+      totalLegendWidth += itemWidth;
     });
+    totalLegendWidth += spacing * (legendData.length - 1); // Add spacing between items
     tempText.remove();
 
-    // Layout legend items horizontally
-    let currentX = 0;
-    const spacing = 30;
+    // Layout legend items horizontally from right to left
+    let currentX = width - totalLegendWidth; // Start from the right
 
-    legendData.forEach((item) => {
+    legendData.forEach((item, index) => {
       const legendItem = legend.append('g')
         .attr('transform', `translate(${currentX}, 0)`);
 
+      // Line marker on the left
       legendItem.append('line')
         .attr('x1', 0)
-        .attr('x2', 20)
+        .attr('x2', lineWidth)
         .attr('y1', 0)
         .attr('y2', 0)
         .attr('stroke', item.color)
         .attr('stroke-width', item.style === 'dashed' ? 3 : 2)
         .attr('stroke-dasharray', item.style === 'dashed' ? '8,5' : '0');
 
-      const labelText = legendItem.append('text')
-        .attr('x', 25)
+      // Text label right after the line marker
+      legendItem.append('text')
+        .attr('class', 'legend-text')
+        .attr('x', lineWidth + lineToTextGap)
         .attr('y', 4)
         .attr('fill', 'black')
         .style('font-size', '14px')
+        .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
+        .style('text-anchor', 'end')
         .text(item.label);
 
-      const textWidth = (labelText.node() as SVGTextElement)?.getBBox().width || 0;
-      currentX += 25 + textWidth + spacing;
+      currentX += itemWidths[index] + spacing;
     });
 
     // Interaction overlay captures zoom/pan and hover without showing a visible layer
@@ -918,8 +948,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         yGridGroup.call(yAxisGrid);
         xAxisGroup.call(xAxis);
         yAxisGroup.call(yAxis);
-        xAxisGroup.selectAll('text').style('font-size', '12px');
-        yAxisGroup.selectAll('text').style('font-size', '12px');
+        xAxisGroup.selectAll('text')
+          .style('font-size', '12px')
+          .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif');
+        yAxisGroup.selectAll('text')
+          .style('font-size', '12px')
+          .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
+          .attr('dx', '-0.5em');
 
         groundPath.attr('d', groundLine);
         // baseFlightPathLine.attr('d', baseFlightLine);
@@ -1368,7 +1403,22 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const elevationRange = maxElevation - minElevation;
     const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
 
+    // Change legend text-anchor to 'start' for PNG export
+    const legendTexts = svgRef.current.querySelectorAll('.legend-text');
+    const originalTextAnchors: string[] = [];
+    legendTexts.forEach((text, index) => {
+      const svgText = text as SVGTextElement;
+      originalTextAnchors[index] = svgText.style.textAnchor || 'end';
+      svgText.style.textAnchor = 'start';
+    });
+
     const svgData = new XMLSerializer().serializeToString(svgRef.current);
+
+    // Restore original text-anchor for web display
+    legendTexts.forEach((text, index) => {
+      const svgText = text as SVGTextElement;
+      svgText.style.textAnchor = originalTextAnchors[index];
+    });
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
     const img = new Image();
@@ -1500,8 +1550,27 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     onSetFlightHeight(pointIndex);
   };
 
+  // Clear hover state when mouse leaves the entire panel
+  useEffect(() => {
+    if (!panelRef.current) return;
+
+    const handleMouseLeave = () => {
+      setMousePos(null);
+      if (hoverSource === 'profile' && onElevationPointHover) {
+        onElevationPointHover(null);
+      }
+    };
+
+    const panel = panelRef.current;
+    panel.addEventListener('mouseleave', handleMouseLeave);
+
+    return () => {
+      panel.removeEventListener('mouseleave', handleMouseLeave);
+    };
+  }, [hoverSource, onElevationPointHover]);
+
   return (
-    <div className="elevation-panel">
+    <div className="elevation-panel" ref={panelRef}>
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
@@ -1632,6 +1701,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 {climbConfig.allowTurnsDuringClimb ? ' העלייה נמשכת דרך פניות.' : ' העלייה נעצרת בזמן פניה.'}
               </div>
               {climbAmountError && <div className="climb-modal__error">{climbAmountError}</div>}
+              
+              {/* Climb Constraints 1D Graph */}
+              {pendingClimbEnd !== null && totalRouteLength > 0 && (
+                <ClimbConstraints1DGraph
+                  selectedDistance={pendingClimbEnd}
+                  totalRouteLength={totalRouteLength}
+                  vertexDistances={vertexDistances}
+                  climbRequests={climbRequests}
+                  config={climbConfig}
+                />
+              )}
             </div>
             <div className="climb-modal__actions">
               <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbAmountOpen(false)}>ביטול</button>
@@ -1871,42 +1951,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             top: mousePos.y + 15
           }}
         >
-          {hoveredUtm ? (
-            <>
-              <div className="tooltip-section">
-                <span className="tooltip-label">אזור UTM:</span> {hoveredUtm.zone}{hoveredUtm.hemisphere}
-              </div>
-              <div className="tooltip-section">
-                <span className="tooltip-label">מזרחית:</span> {hoveredUtm.easting.toFixed(1)}מ'
-              </div>
-              <div className="tooltip-section">
-                <span className="tooltip-label">צפונית:</span> {hoveredUtm.northing.toFixed(1)}מ'
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="tooltip-section">
-                <span className="tooltip-label">קו רוחב:</span> {hoveredPoint.latitude.toFixed(6)}
-              </div>
-              <div className="tooltip-section">
-                <span className="tooltip-label">קו אורך:</span> {hoveredPoint.longitude.toFixed(6)}
-              </div>
-            </>
-          )}
-          <div className="tooltip-divider" />
-          <div className="tooltip-section">
-            <span className="tooltip-label">גובה AGL:</span> {hoveredPoint.flightHeight?.toFixed(1)}מ'
-          </div>
-          {hoveredPoint.minElevation !== undefined && (
-            <div className="tooltip-section">
-              <span className="tooltip-label">גובה ממינימום:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.minElevation).toFixed(1)}מ'
-            </div>
-          )}
-          {hoveredPoint.maxElevation !== undefined && (
-            <div className="tooltip-section">
-              <span className="tooltip-label">גובה ממקסימום:</span> {((hoveredPoint.elevation + (hoveredPoint.flightHeight || 0)) - hoveredPoint.maxElevation).toFixed(1)}מ'
-            </div>
-          )}
+          <CoordinateTooltip point={hoveredPoint} utm={hoveredUtm} />
         </div>
       )}
     </div>

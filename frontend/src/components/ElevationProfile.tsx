@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { ElevationPoint, Coordinate } from '../App';
 import ContextMenu from './ContextMenu';
@@ -9,7 +9,7 @@ import './ElevationProfile.css';
 import './ClimbConstraints1DGraph.css';
 import { ClimbConfig, computeClimbProfile, BaseAltitudeSample, ClimbPreset } from '../utils/climb';
 import { latLngToUTM } from '../utils/coordinates';
-import { computeCumulativeDistances } from '../utils/constraints';
+import { computeCumulativeDistances, getNearestConstraints } from '../utils/constraints';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   const common = {
@@ -168,6 +168,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number } | null>(null);
   const climbContextMenuRef = useRef<HTMLDivElement | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number } | null>(null);
   const hoveredUtm = useMemo(() => {
     if (!hoveredPoint) return null;
     return latLngToUTM(hoveredPoint.latitude, hoveredPoint.longitude);
@@ -183,11 +185,68 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     return computeCumulativeDistances(flightPath);
   }, [flightPath]);
 
+  // Function to check if a location is within a forbidden climb area (climb area + buffer)
+  const isLocationInForbiddenClimbArea = useCallback((distance: number): { isValid: boolean; message: string | null } => {
+    for (const existingClimb of climbRequests) {
+      const existingRatio = existingClimb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const existingRequiredHorizontal = Math.abs(existingClimb.climbAmount) * existingRatio;
+      const existingStart = Math.max(0, existingClimb.endDistance - existingRequiredHorizontal);
+      const existingEnd = existingClimb.endDistance;
+      
+      // Calculate forbidden area: climb area + buffer before and after
+      const forbiddenStart = existingStart - climbConfig.vertexProximityMeters;
+      const forbiddenEnd = existingEnd + climbConfig.vertexProximityMeters;
+      
+      // Check if the location falls within the forbidden area
+      if (distance >= forbiddenStart && distance <= forbiddenEnd) {
+        const msg = `לא ניתן ליצור נקודת עלייה ב-${distance.toFixed(1)} מ'. מיקום זה נמצא באזור האסור של עלייה קיימת ` +
+          `(${existingStart.toFixed(1)} מ' - ${existingEnd.toFixed(1)} מ') והחיץ שלה (±${climbConfig.vertexProximityMeters} מ').`;
+        return { isValid: false, message: msg };
+      }
+    }
+    return { isValid: true, message: null };
+  }, [climbRequests, climbConfig]);
+
   // Get total route length from elevation profile
   const totalRouteLength = useMemo(() => {
     if (elevationProfile.length === 0) return 0;
     return elevationProfile[elevationProfile.length - 1].distance;
   }, [elevationProfile]);
+
+  // Calculate max climb/descent values for display
+  const maxValues = useMemo(() => {
+    if (pendingClimbEnd === null || totalRouteLength === 0 || vertexDistances.length === 0) {
+      return { maxClimbUp: 0, maxDescend: 0 };
+    }
+    
+    const constraintResult = getNearestConstraints(
+      pendingClimbEnd,
+      climbConfig,
+      vertexDistances,
+      climbRequests,
+      totalRouteLength
+    );
+    
+    const { left, right } = constraintResult;
+    
+    // Calculate distances to constraints with buffer (same logic as ClimbConstraints1DGraph)
+    const distanceToLeftConstraint = left 
+      ? Math.max(0, pendingClimbEnd - left.distance - climbConfig.vertexProximityMeters)
+      : Math.max(0, pendingClimbEnd - climbConfig.vertexProximityMeters);
+    const distanceToRightConstraint = right
+      ? Math.max(0, right.distance - pendingClimbEnd - climbConfig.vertexProximityMeters)
+      : Math.max(0, (totalRouteLength - pendingClimbEnd) - climbConfig.vertexProximityMeters);
+    
+    // Use the minimum distance to the nearest limiting constraint
+    const dAvail = Math.min(distanceToLeftConstraint, distanceToRightConstraint);
+    
+    // Calculate maximum climb/descent based on available distance to constraints
+    // Always round down (floor) to ensure we don't exceed the limit
+    const maxClimbUp = Math.floor((dAvail / climbConfig.climbRatio) * 10) / 10;
+    const maxDescend = Math.floor((dAvail / climbConfig.descentRatio) * 10) / 10;
+    
+    return { maxClimbUp, maxDescend };
+  }, [pendingClimbEnd, totalRouteLength, vertexDistances, climbConfig, climbRequests]);
 
   const markCustomPreset = useCallback(() => {
     onSelectClimbPreset('custom');
@@ -214,6 +273,38 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     },
     [markCustomPreset]
   );
+
+  // Calculate tooltip position to keep it on screen
+  useLayoutEffect(() => {
+    if (!mousePos || !tooltipRef.current || !showMetadata || !hoveredPoint || hoverSource !== 'profile') {
+      setTooltipPosition(null);
+      return;
+    }
+
+    // Use requestAnimationFrame to ensure the tooltip is rendered and measured
+    requestAnimationFrame(() => {
+      if (!tooltipRef.current) return;
+      const tooltipRect = tooltipRef.current.getBoundingClientRect();
+      const windowWidth = window.innerWidth;
+      const padding = 8;
+      const offset = 15;
+
+      let left = mousePos.x + offset;
+      
+      // Check if tooltip would go off the right edge of the screen
+      if (left + tooltipRect.width > windowWidth - padding) {
+        // Position at the start of the window with padding
+        left = padding;
+      }
+
+      // Also check if it would go off the left edge (shouldn't happen, but just in case)
+      if (left < padding) {
+        left = padding;
+      }
+
+      setTooltipPosition({ left, top: mousePos.y + offset });
+    });
+  }, [mousePos, showMetadata, hoveredPoint, hoverSource]);
 
   useEffect(() => {
     if (!climbContextMenu) return;
@@ -363,6 +454,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     let climbAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
     */
     let climbEndMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
+    let climbStartMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbLabels: d3.Selection<SVGTextElement, any, any, any> | null = null;
     const profileWithPlan = elevationProfile.map((p) => {
       const planned = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
@@ -831,6 +923,31 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('stroke-width', 2)
       .style('cursor', 'context-menu');
 
+    // Add start markers for each climb point
+    const startMarkersData = climbRequests.map((c) => {
+      const activeRatio = c.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const requiredHorizontal = Math.abs(c.climbAmount) * activeRatio;
+      const startDistance = Math.max(0, c.endDistance - requiredHorizontal);
+      return { startDistance, endDistance: c.endDistance, climbAmount: c.climbAmount };
+    });
+
+    climbStartMarkers = chartArea.selectAll<SVGGElement, any>('.climb-start-marker')
+      .data(startMarkersData)
+      .enter()
+      .append('g')
+      .attr('class', 'climb-start-marker');
+
+    climbStartMarkers.append('rect')
+      .attr('x', d => currentXScale(d.startDistance) - 4)
+      .attr('y', d => currentYScale(getPlannedAltitudeAtDistance(d.startDistance)) - 4)
+      .attr('width', 8)
+      .attr('height', 8)
+      .attr('fill', '#6f42c1')
+      .attr('stroke', '#ffffff')
+      .attr('stroke-width', 2)
+      .attr('rx', 1)
+      .style('cursor', 'default');
+
     // Add climb amount labels
     climbLabels = chartArea.selectAll<SVGTextElement, any>('.climb-label')
       .data(endMarkersData)
@@ -1046,6 +1163,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           .attr('cx', (d: any) => currentXScale(d.endDistance))
           .attr('cy', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)));
 
+        climbStartMarkers?.selectAll<SVGRectElement, any>('rect')
+          .attr('x', (d: any) => currentXScale(d.startDistance) - 4)
+          .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.startDistance)) - 4);
+
         climbLabels
           ?.attr('x', (d: any) => currentXScale(d.endDistance))
           .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)) - 8);
@@ -1082,7 +1203,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         }, profileWithPlan[0]);
       }
 
-      setPendingClimbEnd(closestPoint.distance);
+      const clickedDistance = closestPoint.distance;
+      
+      // Validate that the location is not within a forbidden climb area
+      const validation = isLocationInForbiddenClimbArea(clickedDistance);
+      if (!validation.isValid) {
+        setClimbValidationPopup(validation.message || 'לא ניתן ליצור נקודת עלייה במיקום זה.');
+        return;
+      }
+      
+      setPendingClimbEnd(clickedDistance);
       setClimbAmountInput('');
       setClimbAmountError(null);
       setIsClimbAmountOpen(true);
@@ -1201,7 +1331,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     onElevationPointHover,
     hoveredPoint,
     activeClimbStartDistance,
-    getPlannedAltitudeAtDistance
+    getPlannedAltitudeAtDistance,
+    isLocationInForbiddenClimbArea,
+    climbRequests,
+    climbConfig
   ]);
 
   const handleConfirmClimb = useCallback(() => {
@@ -1606,7 +1739,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   <ClimbIcon />
                 </button>
               </Tooltip>
-              <Tooltip tooltip={climbRequests.length ? 'הסר את כל העליות.' : 'טרם הוגדרה עלייה.'}>
+              <Tooltip tooltip={climbRequests.length ? 'הסר את כל העליות' : 'טרם הוגדרה עלייה'}>
                 <button
                   onClick={handleRemoveClimb}
                   disabled={climbRequests.length === 0}
@@ -1622,7 +1755,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           <div className="control-group">
             <div className="group-title">ייצוא</div>
             <div className="group-buttons">
-              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין.' : 'ייצא את תרשים הגובה כ-PNG.'}>
+              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין' : 'ייצא את תרשים הגובה כ-PNG'}>
                 <button
                   onClick={exportPNG}
                   disabled={elevationProfile.length === 0}
@@ -1634,7 +1767,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   <span className="sr-only">ייצוא PNG</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין.' : 'ייצא את נתוני הגובה כ-CSV.'}>
+              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין' : 'ייצא את נתוני הגובה כ-CSV'}>
                 <button
                   onClick={exportCSV}
                   disabled={elevationProfile.length === 0}
@@ -1684,7 +1817,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); }}>×</button>
             </div>
             <div className="climb-modal__body">
-              <label className="climb-modal__label" htmlFor="climb-amount-input">שינוי בגובה (מ')</label>
+              <div className="climb-modal__title-row">
+                
+                <label className="climb-modal__label" htmlFor="climb-amount-input">שינוי בגובה (מ')</label>
+                <div className="climb-modal__config-name">
+                  {selectedPreset ? `תבנית: ${selectedPreset.name}` : 'תבנית: מותאם אישית'}
+                </div>
+              </div>
               <input
                 id="climb-amount-input"
                 type="number"
@@ -1694,9 +1833,26 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 onChange={(e) => setClimbAmountInput(e.target.value)}
                 className="climb-modal__input"
               />
+              {/* Maximum values display */}
+              {pendingClimbEnd !== null && totalRouteLength > 0 && (
+                <div className="climb-modal__max-values">
+                  <div className="climb-modal__max-value">
+                    <span className="climb-modal__max-label">עלייה מקס':</span>
+                    <span className="climb-modal__max-number">
+                      {maxValues.maxClimbUp.toFixed(1)} מ'
+                    </span>
+                  </div>
+                  <div className="climb-modal__max-value">
+                    <span className="climb-modal__max-label">ירידה מקס':</span>
+                    <span className="climb-modal__max-number">
+                      {maxValues.maxDescend.toFixed(1)} מ'
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="climb-modal__hint">
-                העלייה מתחילה מוקדם יותר ביחס {parseFloat(climbAmountInput) > 0 ? climbConfig.climbRatio : climbConfig.descentRatio}:1 (אופקי:אנכי) כדי להסתיים בנקודה זו.
-                {climbConfig.allowTurnsDuringClimb ? ' העלייה נמשכת דרך פניות.' : ' העלייה נעצרת בזמן פניה.'}
+                יחס {parseFloat(climbAmountInput) > 0 ? climbConfig.climbRatio : climbConfig.descentRatio} : 1 (אופקי:אנכי).
+                {climbConfig.allowTurnsDuringClimb ? '  מאפשר עליה דרך פניות.' : '  אין עליה דרך פניות.'}
               </div>
               {climbAmountError && <div className="climb-modal__error">{climbAmountError}</div>}
               
@@ -1938,10 +2094,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       })()}
       {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && (
         <div
+          ref={tooltipRef}
           className="hover-metadata-tooltip"
           style={{
-            left: mousePos.x + 15,
-            top: mousePos.y + 15
+            left: tooltipPosition?.left ?? mousePos.x + 15,
+            top: tooltipPosition?.top ?? mousePos.y + 15,
+            visibility: tooltipPosition ? 'visible' : 'hidden'
           }}
         >
           <CoordinateTooltip point={hoveredPoint} utm={hoveredUtm} />

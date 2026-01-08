@@ -106,16 +106,7 @@ code {
 }
 
 .tooltip-bubble::after {
-  content: '';
-  position: absolute;
-  inset-inline-start: var(--tt-arrow-left, 50%);
-  bottom: -6px;
-  transform: translateX(-50%);
-  width: 0;
-  height: 0;
-  border-inline-start: 6px solid transparent;
-  border-inline-end: 6px solid transparent;
-  border-top: 6px solid rgba(17, 24, 39, 0.96);
+  display: none;
 }
 
 .tooltip-wrap:hover .tooltip-bubble,
@@ -300,7 +291,7 @@ code {
 }
 
 /* Fix for number inputs in RTL */
-[dir="rtl"] input[type="number"] {
+[dir="rtl"] input[type="number"]:not(.modern-input) {
   text-align: left;
   direction: ltr;
 }

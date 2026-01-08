@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import MapPanel from './components/MapPanel';
 import ElevationProfile from './components/ElevationProfile';
+import ExportSettingsModal from './components/ExportSettingsModal';
 import { useFlightPath } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
 import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
@@ -79,8 +80,34 @@ function App() {
 
   const [selectedClimbPresetId, setSelectedClimbPresetId] = useState<string>(CLIMB_PRESETS[0]?.id ?? 'custom');
   const [climbConfig, setClimbConfig] = useState<ClimbConfig>(presetToConfig(CLIMB_PRESETS[0]));
-  const [climbRequests, setClimbRequests] = useState<{ endDistance: number; climbAmount: number }[]>([]);
-  const prevGeometryRef = React.useRef<{ lat: number; lng: number }[] | null>(null);
+  const [showExportModal, setShowExportModal] = useState<boolean>(false);
+  
+  // Load climb requests from localStorage on mount
+  const loadClimbRequestsFromStorage = React.useCallback(() => {
+    try {
+      const stored = localStorage.getItem('climbRequestsByRoute');
+      if (stored) {
+        return JSON.parse(stored) as Record<string, { endDistance: number; climbAmount: number }[]>;
+      }
+    } catch (error) {
+      console.error('Failed to load climb requests from localStorage:', error);
+    }
+    return {};
+  }, []);
+  
+  // Store climb requests per route ID
+  const [climbRequestsByRoute, setClimbRequestsByRoute] = useState<Record<string, { endDistance: number; climbAmount: number }[]>>(loadClimbRequestsFromStorage);
+  // Track previous geometry per route ID to detect geometry changes for each route independently
+  const prevGeometryByRouteRef = React.useRef<Record<string, { lat: number; lng: number }[]>>({});
+  
+  // Save climb requests to localStorage whenever they change
+  React.useEffect(() => {
+    try {
+      localStorage.setItem('climbRequestsByRoute', JSON.stringify(climbRequestsByRoute));
+    } catch (error) {
+      console.error('Failed to save climb requests to localStorage:', error);
+    }
+  }, [climbRequestsByRoute]);
 
   // @ts-ignore
   const {
@@ -101,13 +128,27 @@ function App() {
     insertPoints,
     setFlightPath,
     resetToSingleRoute,
-    exportGeoJSON,
-    importGeoJSON,
+    exportKML,
+    importKML,
     undo,
     redo,
     canUndo,
     canRedo
   } = useFlightPath();
+
+  // Get climb requests for the active route
+  const climbRequests = React.useMemo(() => {
+    return climbRequestsByRoute[activeRouteId] || [];
+  }, [climbRequestsByRoute, activeRouteId]);
+  
+  // Set climb requests for the active route
+  const setClimbRequests = React.useCallback((updater: React.SetStateAction<{ endDistance: number; climbAmount: number }[]>) => {
+    setClimbRequestsByRoute((prev) => {
+      const current = prev[activeRouteId] || [];
+      const next = typeof updater === 'function' ? updater(current) : updater;
+      return { ...prev, [activeRouteId]: next };
+    });
+  }, [activeRouteId]);
 
   const { elevationProfile, loading, calculateProfile, refreshFlightHeights } = useElevationProfile();
 
@@ -150,10 +191,11 @@ function App() {
     };
   }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights]);
 
-  // Clear climb requests whenever the flight path geometry changes (point added/moved/removed)
+  // Clear climb requests for active route whenever the flight path geometry changes (point added/moved/removed)
+  // Only clear if the geometry of the CURRENT active route actually changed
   React.useEffect(() => {
     const currentGeometry = flightPath.map((p) => ({ lat: p.lat, lng: p.lng }));
-    const prevGeometry = prevGeometryRef.current;
+    const prevGeometry = prevGeometryByRouteRef.current[activeRouteId];
 
     if (prevGeometry) {
       const geometryChanged =
@@ -165,8 +207,9 @@ function App() {
       }
     }
 
-    prevGeometryRef.current = currentGeometry;
-  }, [flightPath, climbRequests.length]);
+    // Update the stored geometry for this specific route
+    prevGeometryByRouteRef.current[activeRouteId] = currentGeometry;
+  }, [flightPath, activeRouteId, climbRequests.length, setClimbRequests]);
 
   const fullProfileResult = React.useMemo(() => {
     if (elevationProfile.length === 0) return { points: [], warnings: [] };
@@ -255,26 +298,58 @@ function App() {
   const climbMarkers = React.useMemo(() => {
     if (!fullProfileResult.points.length || climbRequests.length === 0) return [];
 
-    return climbRequests.map((climb) => {
+    const markers: { lat: number; lng: number; label: string; type: 'start' | 'end' }[] = [];
+
+    climbRequests.forEach((climb) => {
+      // Calculate start distance
+      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
+      const startDistance = Math.max(0, climb.endDistance - requiredHorizontal);
+
+      // Find the closest profile point to the climb start distance
+      let closestStart = fullProfileResult.points[0];
+      let minDeltaStart = Math.abs(closestStart.distance - startDistance);
+      for (const p of fullProfileResult.points) {
+        const delta = Math.abs(p.distance - startDistance);
+        if (delta < minDeltaStart) {
+          minDeltaStart = delta;
+          closestStart = p;
+        }
+      }
+
       // Find the closest profile point to the climb end distance
-      let closest = fullProfileResult.points[0];
-      let minDelta = Math.abs(closest.distance - climb.endDistance);
+      let closestEnd = fullProfileResult.points[0];
+      let minDeltaEnd = Math.abs(closestEnd.distance - climb.endDistance);
       for (const p of fullProfileResult.points) {
         const delta = Math.abs(p.distance - climb.endDistance);
-        if (delta < minDelta) {
-          minDelta = delta;
-          closest = p;
+        if (delta < minDeltaEnd) {
+          minDeltaEnd = delta;
+          closestEnd = p;
         }
       }
 
       const sign = climb.climbAmount >= 0 ? '+' : '';
-      return {
-        lat: closest.latitude,
-        lng: closest.longitude,
-        label: `${sign}${climb.climbAmount.toFixed(0)}m`
-      };
+      const label = `${sign}${climb.climbAmount.toFixed(0)}m`;
+
+      // Add start marker
+      markers.push({
+        lat: closestStart.latitude,
+        lng: closestStart.longitude,
+        label: '',
+        type: 'start'
+      });
+
+      // Add end marker
+      markers.push({
+        lat: closestEnd.latitude,
+        lng: closestEnd.longitude,
+        label: label,
+        type: 'end'
+      });
     });
-  }, [climbRequests, fullProfileResult.points]);
+
+    return markers;
+  }, [climbRequests, fullProfileResult.points, climbConfig]);
 
   const deleteDtmOnServer = useCallback(async (pathToDelete?: string, clippedIdToDelete?: string, keepalive: boolean = false) => {
     const targetPath = pathToDelete || dtmSource;
@@ -612,7 +687,14 @@ function App() {
             <div className="group-columns">
               <div className="group-column">
                 <button
-                  onClick={exportGeoJSON}
+                  onClick={() => {
+                    const routesWithPoints = routes.filter(route => route.points.length >= 2);
+                    if (routesWithPoints.length > 1) {
+                      setShowExportModal(true);
+                    } else {
+                      exportKML(climbRequests, climbRequestsByRoute);
+                    }
+                  }}
                   className={`btn btn-secondary ${flightPath.length < 2 ? 'disabled' : ''}`}
                   disabled={flightPath.length < 2}
                   style={{
@@ -627,19 +709,43 @@ function App() {
                 </button>
                 <input
                   type="file"
-                  accept=".geojson,.json"
-                  onChange={(e) => {
+                  accept=".kml"
+                  onChange={async (e) => {
                     const file = e.target.files?.[0];
                     if (file) {
-                      importGeoJSON(file);
+                      const result = await importKML(file);
+                      if (result) {
+                        // Set climb requests for each imported route
+                        setClimbRequestsByRoute((prev) => {
+                          const next = { ...prev };
+                          result.routes.forEach((route) => {
+                            // Associate climb requests with the first route (as per current importKML logic)
+                            // If we have climb requests and this is the first route, assign them
+                            if (result.climbRequests.length > 0 && route.id === result.routes[0]?.id) {
+                              next[route.id] = result.climbRequests;
+                            } else if (!next[route.id]) {
+                              next[route.id] = [];
+                            }
+                          });
+                          // Save to localStorage
+                          try {
+                            localStorage.setItem('climbRequestsByRoute', JSON.stringify(next));
+                          } catch (error) {
+                            console.error('Failed to save climb requests to localStorage after import:', error);
+                          }
+                          return next;
+                        });
+                      }
+                      // Reset input so same file can be imported again
+                      e.target.value = '';
                     }
                   }}
                   style={{ display: 'none' }}
-                  id="import-geojson"
+                  id="import-kml"
                   disabled={!dtmSource}
                 />
                 <label
-                  htmlFor="import-geojson"
+                  htmlFor="import-kml"
                   className={`btn btn-secondary ${!dtmSource ? 'disabled' : ''}`}
                   style={{
                     ...(!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
@@ -674,7 +780,21 @@ function App() {
           onActiveRouteChange={setActiveRoute}
           onRenameRoute={renameRoute}
           onToggleRouteVisibility={toggleRouteVisibility}
-          onDeleteRoute={deleteRoute}
+          onDeleteRoute={(routeId) => {
+            deleteRoute(routeId);
+            // Remove climb requests for the deleted route
+            setClimbRequestsByRoute((prev) => {
+              const next = { ...prev };
+              delete next[routeId];
+              // Also remove from localStorage
+              try {
+                localStorage.setItem('climbRequestsByRoute', JSON.stringify(next));
+              } catch (error) {
+                console.error('Failed to update localStorage after route deletion:', error);
+              }
+              return next;
+            });
+          }}
           onShowAllRoutes={showAllRoutes}
           onHideNonActiveRoutes={hideNonActiveRoutes}
           onResetToSingleRoute={resetToSingleRoute}
@@ -723,6 +843,15 @@ function App() {
           showMetadata={showMetadata}
         />
       </div>
+      <ExportSettingsModal
+        isOpen={showExportModal}
+        routes={routes}
+        activeRouteId={activeRouteId}
+        onClose={() => setShowExportModal(false)}
+        onExport={(selectedRouteIds) => {
+          exportKML(climbRequests, climbRequestsByRoute, selectedRouteIds);
+        }}
+      />
     </div>
   );
 }

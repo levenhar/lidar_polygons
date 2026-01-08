@@ -241,10 +241,7 @@ export function getNearestConstraints(
   const leftLimits = Math.abs(dL - dAvail) < tolerance;
   const rightLimits = Math.abs(dR - dAvail) < tolerance;
 
-  if (!leftConstraint && !rightConstraint) {
-    limitingSide = 'none';
-    limitingReasons.push('לא נמצאו אילוצים');
-  } else if (leftLimits && rightLimits && leftConstraint && rightConstraint) {
+  if (leftLimits && rightLimits && leftConstraint && rightConstraint) {
     limitingSide = 'both';
     const leftType = leftConstraint.type === 'turn' ? 'פנייה' : 'נקודת עלייה';
     const rightType = rightConstraint.type === 'turn' ? 'פנייה' : 'נקודת עלייה';

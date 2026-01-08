@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 // @ts-ignore - proj4 types may not be perfect
@@ -269,7 +269,7 @@ interface MapPanelProps {
   routes: FlightRoute[];
   activeRouteId: string;
   flightPath: Coordinate[];
-  climbMarkers: { lat: number; lng: number; label: string }[];
+  climbMarkers: { lat: number; lng: number; label: string; type: 'start' | 'end' }[];
   showClimbLabels: boolean;
   onShowClimbLabelsChange: (show: boolean) => void;
   onPathPointHover: (point: Coordinate | null, distance?: number) => void;
@@ -379,6 +379,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const suggestedLinesRef = useRef<L.Polyline[]>([]);
   const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
   const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number } | null>(null);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
   const [editingRouteName, setEditingRouteName] = useState<string>('');
   const [dialog, setDialog] = useState<{
@@ -931,6 +933,38 @@ const MapPanel: React.FC<MapPanelProps> = ({
       mapContainer.removeEventListener('mouseleave', handleMouseLeave);
     };
   }, [hoverSource, onPathPointHover]);
+
+  // Calculate tooltip position to keep it on screen
+  useLayoutEffect(() => {
+    if (!mousePos || !tooltipRef.current || !showMetadata || !hoveredElevationPoint || hoverSource !== 'map') {
+      setTooltipPosition(null);
+      return;
+    }
+
+    // Use requestAnimationFrame to ensure the tooltip is rendered and measured
+    requestAnimationFrame(() => {
+      if (!tooltipRef.current) return;
+      const tooltipRect = tooltipRef.current.getBoundingClientRect();
+      const windowWidth = window.innerWidth;
+      const padding = 8;
+      const offset = 15;
+
+      let left = mousePos.x + offset;
+      
+      // Check if tooltip would go off the right edge of the screen
+      if (left + tooltipRect.width > windowWidth - padding) {
+        // Position at the start of the window with padding
+        left = padding;
+      }
+
+      // Also check if it would go off the left edge (shouldn't happen, but just in case)
+      if (left < padding) {
+        left = padding;
+      }
+
+      setTooltipPosition({ left, top: mousePos.y + offset });
+    });
+  }, [mousePos, showMetadata, hoveredElevationPoint, hoverSource]);
 
   // AOI selection mode handlers
   useEffect(() => {
@@ -1541,11 +1575,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
       segmentLengthLabelsRef.current.push(labelMarker);
     }
 
-    // Add climb end markers with optional labels
+    // Add climb markers (both start and end) with optional labels
     climbMarkers.forEach((climb) => {
+      const isStart = climb.type === 'start';
+      const iconClass = isStart ? 'climb-marker-dot climb-marker-dot--start' : 'climb-marker-dot';
+      const iconHtml = isStart 
+        ? '<span class="climb-marker-dot__square"></span>'
+        : '<span class="climb-marker-dot__circle"></span>';
+
       const dotIcon = L.divIcon({
-        className: 'climb-marker-dot',
-        html: '<span class="climb-marker-dot__circle"></span>',
+        className: iconClass,
+        html: iconHtml,
         iconSize: [16, 16],
         iconAnchor: [8, 8]
       });
@@ -1558,7 +1598,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       climbMarkersRef.current.push(dotMarker);
 
-      if (showClimbLabels) {
+      // Only show labels for end markers
+      if (showClimbLabels && !isStart && climb.label) {
         const labelIcon = L.divIcon({
           className: 'climb-marker-label',
           html: `<span class="climb-marker-label__text">${climb.label}</span>`,
@@ -3100,7 +3141,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                         />
                         <span className="switch-slider" aria-hidden />
                       </label>
-                      <Tooltip tooltip={routes.length <= 1 ? 'השאר לפחות מסלול אחד.' : 'מחק מסלול.'}>
+                      <Tooltip tooltip={routes.length <= 1 ? 'השאר לפחות מסלול אחד' : 'מחק מסלול'}>
                         <button
                           type="button"
                           className="btn btn-destructive btn-icon btn-compact"
@@ -3178,7 +3219,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 disabled={dtmLoaded}
               />
               {/* New: Load DTM from server options */}
-              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי.' : 'בחר DTM מהשרת.'}>
+              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי' : 'בחר DTM מהשרת'}>
                 <button
                   onClick={handleOpenDtmOptionsModal}
                   className={`btn btn-primary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
@@ -3191,7 +3232,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 </button>
               </Tooltip>
               {/* Legacy: Upload DTM file */}
-              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי.' : 'העלאת קובץ DTM (GeoTIFF).'}>
+              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי' : 'העלאת קובץ DTM (GeoTIFF)'}>
                 <label
                   htmlFor="dtm-upload"
                   className={`btn btn-secondary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
@@ -3205,8 +3246,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip
                 tooltip={
                   !dtmSource || !dtmLoaded
-                    ? 'לא נטען DTM.'
-                    : 'פרוק DTM ונקה מסלולים.'
+                    ? 'לא נטען DTM'
+                    : 'פרוק DTM ונקה מסלולים'
                 }
               >
                 <button
@@ -3222,7 +3263,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               </Tooltip>
             </div>
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={flightPath.length === 0 ? 'אין נקודות למחיקה.' : 'נקה את כל הנקודות.'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'אין נקודות למחיקה' : 'נקה את כל הנקודות'}>
                 <button
                   onClick={handleDeleteAllPoints}
                   className="btn btn-destructive btn-icon"
@@ -3242,7 +3283,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">אפשרויות תכנון</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה.' : isDrawing ? 'עצור שרטוט.' : 'צייר מסלול (קליק על המפה).'}>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : isDrawing ? 'עצור שרטוט' : 'צייר מסלול (קליק על המפה)'}>
                 <button
                   onClick={() => {
                     setIsDrawing(!isDrawing);
@@ -3264,12 +3305,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'טען DTM תחילה.'
+                    ? 'טען DTM תחילה'
                     : flightPath.length < 2
-                      ? 'הוסף לפחות שתי נקודות תחילה.'
+                      ? 'הוסף לפחות שתי נקודות תחילה'
                       : isParallelLineMode
-                        ? 'עצור מצב קו מקביל.'
-                        : 'קו מקביל: לחץ על מקטע, קבע היסט.'
+                        ? 'עצור מצב קו מקביל'
+                        : 'קו מקביל: לחץ על מקטע, קבע היסט'
                 }
               >
                 <button
@@ -3295,10 +3336,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'טען DTM תחילה.'
+                    ? 'טען DTM תחילה'
                     : flightPath.length === 0
-                      ? 'הוסף נקודה תחילה.'
-                      : 'הוסף נקודה לפי אזימוט + מרחק.'
+                      ? 'הוסף נקודה תחילה'
+                      : 'הוסף נקודה לפי אזימוט + מרחק'
                 }
               >
                 <button
@@ -3312,7 +3353,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">אזימוט + מרחק</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה.' : 'הוסף נקודה לפי קואורדינטות.'}>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : 'הוסף נקודה לפי קואורדינטות'}>
                 <button
                   onClick={handleCreatePointFromCoordinates}
                   className="btn btn-secondary btn-icon"
@@ -3327,10 +3368,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'טען DTM תחילה.'
+                    ? 'טען DTM תחילה'
                     : flightPath.length < 2
-                      ? 'הוסף לפחות שתי נקודות תחילה.'
-                      : 'הוסף פרסה עם רדיוס + מרחק.'
+                      ? 'הוסף לפחות שתי נקודות תחילה'
+                      : 'הוסף פרסה עם רדיוס + מרחק'
                 }
               >
                 <button
@@ -3352,7 +3393,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">היסטוריה</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה.' : 'בטל (Ctrl+Z).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה' : 'בטל (Ctrl+Z)'}>
                 <button
                   onClick={onUndo}
                   disabled={!canUndo || flightPath.length === 0}
@@ -3364,7 +3405,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">בטל</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה.' : 'בצע שוב (Ctrl+Y או Ctrl+Shift+Z).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה' : 'בצע שוב (Ctrl+Y או Ctrl+Shift+Z)'}>
                 <button
                   onClick={onRedo}
                   disabled={!canRedo || flightPath.length === 0}
@@ -3384,7 +3425,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">בקרות תצוגה</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה.' : 'התאם תצוגה ל‑DTM.'}>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : 'התאם תצוגה ל‑DTM'}>
                 <button
                   onClick={handleFitToDTM}
                   className="btn btn-tertiary btn-icon"
@@ -3396,7 +3437,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">התאם ל‑DTM</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip="אפס תצוגת מפה לברירת מחדל.">
+              <Tooltip tooltip="אפס תצוגת מפה לברירת מחדל">
                 <button
                   onClick={handleResetView}
                   className="btn btn-tertiary btn-icon"
@@ -3412,7 +3453,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               className="group-column group-column-icons"
               style={{ display: 'flex', flexDirection: 'row', gap: '12px', alignItems: 'center' }}
             >
-              <Tooltip tooltip="הצג/הסתר נתונים בזמן ריחוף.">
+              <Tooltip tooltip="הצג/הסתר נתונים בזמן ריחוף">
                 <label
                   className="switch"
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
@@ -3426,7 +3467,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>נתונים</span>
                 </label>
               </Tooltip>
-              <Tooltip tooltip="הצג/הסתר תוויות טיפוס ליד סמני טיפוס.">
+              <Tooltip tooltip="הצג/הסתר תוויות טיפוס ליד סמני טיפוס">
                 <label
                   className="switch"
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
@@ -3519,10 +3560,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
       </div>
       {showMetadata && hoveredElevationPoint && mousePos && hoverSource === 'map' && (
         <div
+          ref={tooltipRef}
           className="hover-metadata-tooltip"
           style={{
-            left: mousePos.x + 15,
-            top: mousePos.y + 15
+            left: tooltipPosition?.left ?? mousePos.x + 15,
+            top: tooltipPosition?.top ?? mousePos.y + 15,
+            visibility: tooltipPosition ? 'visible' : 'hidden'
           }}
         >
           <CoordinateTooltip point={hoveredElevationPoint} utm={hoveredUtm} />

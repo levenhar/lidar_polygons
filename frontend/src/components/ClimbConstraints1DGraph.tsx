@@ -68,16 +68,6 @@ const ClimbConstraints1DGraph: React.FC<ClimbConstraints1DGraphProps> = ({
   const graphData = useMemo(() => {
     const { dL, dR, left, right } = constraintResult;
     
-    // Calculate distances to constraints explicitly
-    // For both turn and climb point constraints, subtract vertex proximity buffer
-    // For route start/end (no constraints), also subtract vertex proximity buffer
-    const distanceToLeftConstraint = left 
-      ? Math.max(0, s0 - left.distance - config.vertexProximityMeters)
-      : Math.max(0, s0 - config.vertexProximityMeters); // Route start with buffer
-    const distanceToRightConstraint = right
-      ? Math.max(0, right.distance - s0 - config.vertexProximityMeters)
-      : Math.max(0, (totalRouteLength - s0) - config.vertexProximityMeters); // Route end with buffer
-    
     // Determine the view range (how much distance to show on each side of s0)
     // Show at least 50m on each side, or extend to the nearest constraint + 20%
     const minViewRange = 50;
@@ -237,16 +227,6 @@ const ClimbConstraints1DGraph: React.FC<ClimbConstraints1DGraphProps> = ({
     // Don't add s0 as an axis tick - it's already marked with the purple circle
     // and has the "נקודה נבחרת" label above
     
-    // Calculate max climb/descent using correct ratios
-    // Use the minimum distance to the nearest limiting constraint (turn or climb point)
-    // This ensures we don't exceed the constraint that's closest to the selected point
-    const dAvail = Math.min(distanceToLeftConstraint, distanceToRightConstraint);
-    
-    // Calculate maximum climb/descent based on available distance to constraints
-    // Always round down (floor) to ensure we don't exceed the limit
-    const maxClimbUp = Math.floor((dAvail / config.climbRatio) * 10) / 10; // Round down to 0.1m precision
-    const maxDescend = Math.floor((dAvail / config.descentRatio) * 10) / 10; // Round down to 0.1m precision
-    
     return {
       padding,
       chartWidth,
@@ -257,8 +237,6 @@ const ClimbConstraints1DGraph: React.FC<ClimbConstraints1DGraphProps> = ({
       constraintVis,
       exclusionZones,
       ticks,
-      maxClimbUp,
-      maxDescend,
       dL,
       dR,
       viewStart,
@@ -275,11 +253,11 @@ const ClimbConstraints1DGraph: React.FC<ClimbConstraints1DGraphProps> = ({
     return 500;
   }
 
-  const { padding, chartHeight, centerX, axisY, constraintVis, exclusionZones, ticks, maxClimbUp, maxDescend, dL, dR } = graphData;
+  const { padding, chartHeight, centerX, axisY, constraintVis, exclusionZones, ticks, dL, dR } = graphData;
 
   return (
     <div className="climb-constraints-graph">
-      <div className="climb-constraints-title">אילוצי עלייה (1D)</div>
+      <div className="climb-constraints-title">אילוצי עלייה</div>
       
       <svg width={width} height={height} className="climb-constraints-svg">
         {/* Background */}
@@ -504,18 +482,6 @@ const ClimbConstraints1DGraph: React.FC<ClimbConstraints1DGraphProps> = ({
           </text>
         </g>
       </svg>
-      
-      {/* Computed values */}
-      <div className="climb-constraints-values">
-        <div className="climb-value">
-          <span className="climb-value-label">עלייה מקס':</span>
-          <span className="climb-value-number positive">+{maxClimbUp.toFixed(1)} מ'</span>
-        </div>
-        <div className="climb-value">
-          <span className="climb-value-label">ירידה מקס':</span>
-          <span className="climb-value-number negative">-{maxDescend.toFixed(1)} מ'</span>
-        </div>
-      </div>
       
       {/* Limiting reasons */}
       <div className="climb-constraints-reasons">

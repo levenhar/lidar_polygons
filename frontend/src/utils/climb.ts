@@ -96,7 +96,7 @@ export function computeClimbProfile(
   }
 
   if (!Number.isFinite(climbAmount) || climbAmount === 0) {
-    warnings.push('Climb amount must be non-zero.');
+    warnings.push('כמות העלייה חייבת להיות שונה מאפס.');
     return {
       points: baseProfile.map((p) => ({
         ...p,
@@ -114,7 +114,7 @@ export function computeClimbProfile(
   }
 
   if (!Number.isFinite(climbRatio) || climbRatio <= 0 || !Number.isFinite(descentRatio) || descentRatio <= 0) {
-    warnings.push('Ratios must be > 0.');
+    warnings.push('היחסים חייבים להיות > 0.');
     return {
       points: baseProfile.map((p) => ({
         ...p,
@@ -144,9 +144,9 @@ export function computeClimbProfile(
 
   if (Math.abs(appliedClimb) < Math.abs(climbAmount)) {
     warnings.push(
-      `Not enough distance to complete the climb. Applying ${appliedClimb.toFixed(
+      `אין מספיק מרחק להשלמת העלייה. מיושם ${appliedClimb.toFixed(
         1
-      )} m out of ${climbAmount.toFixed(1)} m.`
+      )} מ' מתוך ${climbAmount.toFixed(1)} מ'.`
     );
   }
 
@@ -159,8 +159,8 @@ export function computeClimbProfile(
     for (const vertexDist of cumulative) {
       if (Math.abs(startDistance - vertexDist) < vertexProximity) {
         warnings.push(
-          `Climb start (${startDistance.toFixed(1)}m) is within ${vertexProximity}m of vertex at ${vertexDist.toFixed(1)}m. ` +
-          `Minimum distance required: ${vertexProximity}m.`
+          `תחילת העלייה (${startDistance.toFixed(1)}מ') נמצאת בטווח של ${vertexProximity}מ' מהקודקוד ב-${vertexDist.toFixed(1)}מ'. ` +
+          `מרחק מינימלי נדרש: ${vertexProximity}מ'.`
         );
         // Return early with no climb applied
         return {
@@ -246,7 +246,7 @@ export function computeClimbProfile(
   });
 
   if (encounteredTurnDuringClimb) {
-    warnings.push('Climb intersects a vertex proximity zone.');
+    warnings.push('העלייה חוצה אזור קרבה לקודקוד.');
   }
 
   return {

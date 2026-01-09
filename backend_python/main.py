@@ -376,6 +376,7 @@ DTM_CACHE_DIR = os.environ.get("DTM_CACHE_DIR", os.path.join(DTM_DATA_DIR, "Cach
 
 logger.info(f"UPLOADS_DIR: {UPLOADS_DIR}")
 logger.info(f"DTM_DATA_DIR: {DTM_DATA_DIR}")
+logger.info(f"DTM_CACHE_DIR: {DTM_CACHE_DIR}")
 
 class ElevationProfileRequest(BaseModel):
     coordinates: List[List[float]]

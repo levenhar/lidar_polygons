@@ -716,102 +716,106 @@ function App() {
   return (
     <div className="app-container">
       <div className="app-header">
-        <div className="header-title-container">
-          <img src="/favicon.png" alt="Logo" className="app-logo" />
-          <h1>מתכנן משימות LiDAR</h1>
+        <div className="header-left-section">
+          <div className="header-title-container">
+            <img src="/favicon.png" alt="Logo" className="app-logo" />
+            <h1>מתכנן משימות LiDAR</h1>
+          </div>
+          <div className="header-parameters">
+            <div className="header-group">
+              <div className="group-title">פרמטרי טיסה</div>
+              <div className="group-inputs">
+                <label>
+                  <span className="input-label">גובה נומינלי (מ'):</span>
+                  <input
+                    type="number"
+                    value={nominalFlightHeight}
+                    onChange={(e) => setNominalFlightHeight(Number(e.target.value))}
+                    min="0"
+                    step="10"
+                    className="modern-input"
+                  />
+                </label>
+                <label>
+                  <span className="input-label">גובה בטיחות (מ'):</span>
+                  <input
+                    type="number"
+                    value={safetyHeight}
+                    onChange={(e) => setSafetyHeight(Number(e.target.value))}
+                    min="0"
+                    step="10"
+                    className="modern-input"
+                  />
+                </label>
+                <label>
+                  <span className="input-label">גובה רזולוציה (מ'):</span>
+                  <input
+                    type="number"
+                    value={resolutionHeight}
+                    onChange={(e) => setResolutionHeight(Number(e.target.value))}
+                    min="0"
+                    step="10"
+                    className="modern-input"
+                  />
+                </label>
+                <label>
+                  <span className="input-label">רדיוס בטיחות (מ'):</span>
+                  <input
+                    type="number"
+                    value={safetySearchRadius}
+                    onChange={(e) => setSafetySearchRadius(Number(e.target.value))}
+                    min="1"
+                    step="5"
+                    className="modern-input"
+                  />
+                </label>
+                <label>
+                  <span className="input-label">רדיוס רזולוציה (מ'):</span>
+                  <input
+                    type="number"
+                    value={resolutionSearchRadius}
+                    onChange={(e) => setResolutionSearchRadius(Number(e.target.value))}
+                    min="1"
+                    step="5"
+                    className="modern-input"
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="header-group">
+              <div className="group-title">פרמטרי משימה</div>
+              <div className="group-inputs">
+                <label>
+                  <span className="input-label">חפיפה (%):</span>
+                  <input
+                    type="number"
+                    value={overlapPercentage}
+                    onChange={(e) => setOverlapPercentage(Number(e.target.value))}
+                    min="0"
+                    max="99.9"
+                    step="1"
+                    className="modern-input"
+                  />
+                </label>
+                <label>
+                  <span className="input-label">שדה ראייה (°):</span>
+                  <input
+                    type="number"
+                    value={fovDegrees}
+                    onChange={(e) => setFovDegrees(Number(e.target.value))}
+                    min="1"
+                    max="179"
+                    step="1"
+                    className="modern-input"
+                  />
+                </label>
+              </div>
+            </div>
+          </div>
         </div>
         <div className="header-controls">
           <div className="header-group">
-            <div className="group-title">פרמטרי טיסה</div>
-            <div className="group-inputs">
-              <label>
-                <span className="input-label">גובה נומינלי (מ')</span>
-                <input
-                  type="number"
-                  value={nominalFlightHeight}
-                  onChange={(e) => setNominalFlightHeight(Number(e.target.value))}
-                  min="0"
-                  step="10"
-                  className="modern-input"
-                />
-              </label>
-              <label>
-                <span className="input-label">גובה בטיחות (מ')</span>
-                <input
-                  type="number"
-                  value={safetyHeight}
-                  onChange={(e) => setSafetyHeight(Number(e.target.value))}
-                  min="0"
-                  step="10"
-                  className="modern-input"
-                />
-              </label>
-              <label>
-                <span className="input-label">גובה רזולוציה (מ')</span>
-                <input
-                  type="number"
-                  value={resolutionHeight}
-                  onChange={(e) => setResolutionHeight(Number(e.target.value))}
-                  min="0"
-                  step="10"
-                  className="modern-input"
-                />
-              </label>
-              <label>
-                <span className="input-label">רדיוס בטיחות (מ')</span>
-                <input
-                  type="number"
-                  value={safetySearchRadius}
-                  onChange={(e) => setSafetySearchRadius(Number(e.target.value))}
-                  min="1"
-                  step="5"
-                  className="modern-input"
-                />
-              </label>
-              <label>
-                <span className="input-label">רדיוס רזולוציה (מ')</span>
-                <input
-                  type="number"
-                  value={resolutionSearchRadius}
-                  onChange={(e) => setResolutionSearchRadius(Number(e.target.value))}
-                  min="1"
-                  step="5"
-                  className="modern-input"
-                />
-              </label>
-            </div>
-          </div>
-          <div className="header-group">
-            <div className="group-title">פרמטרי משימה</div>
-            <div className="group-inputs">
-              <label>
-                <span className="input-label">חפיפה (%)</span>
-                <input
-                  type="number"
-                  value={overlapPercentage}
-                  onChange={(e) => setOverlapPercentage(Number(e.target.value))}
-                  min="0"
-                  max="99.9"
-                  step="1"
-                  className="modern-input"
-                />
-              </label>
-              <label>
-                <span className="input-label">שדה ראייה (°)</span>
-                <input
-                  type="number"
-                  value={fovDegrees}
-                  onChange={(e) => setFovDegrees(Number(e.target.value))}
-                  min="1"
-                  max="179"
-                  step="1"
-                  className="modern-input"
-                />
-              </label>
-            </div>
-          </div>
-          <div className="header-group">
-            <div className="group-title">ייצוא נתונים</div>
+            <div className="group-title">ייצוא מסלולים</div>
             <div className="group-columns">
               <div className="group-column">
                 <button
@@ -823,7 +827,7 @@ function App() {
                       exportKML(climbRequests, climbRequestsByRoute);
                     }
                   }}
-                  className={`btn btn-secondary ${flightPath.length < 2 ? 'disabled' : ''}`}
+                  className={`btn btn-secondary btn-icon ${flightPath.length < 2 ? 'disabled' : ''}`}
                   disabled={flightPath.length < 2}
                   style={{
                     ...(flightPath.length < 2 ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
@@ -832,8 +836,11 @@ function App() {
                     fontFamily: 'inherit'
                   }}
                   title={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
+                  data-tooltip={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
                 >
-                  ייצוא מסלול
+                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 12.5L6 8.5H9V2H11V8.5H14L10 12.5ZM5 15H15V13H17V15C17 16.1 16.1 17 15 17H5C3.9 17 3 16.1 3 15V13H5V15Z" fill="currentColor"/>
+                  </svg>
                 </button>
                 <input
                   type="file"
@@ -868,7 +875,7 @@ function App() {
                 />
                 <label
                   htmlFor="import-kml"
-                  className={`btn btn-secondary ${!dtmSource ? 'disabled' : ''}`}
+                  className={`btn btn-secondary btn-icon ${!dtmSource ? 'disabled' : ''}`}
                   style={{
                     ...(!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
                     fontSize: '1rem',
@@ -876,8 +883,11 @@ function App() {
                     fontFamily: 'inherit'
                   }}
                   title={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
+                  data-tooltip={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
                 >
-                  העלאת מסלול
+                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 7.5L14 11.5H11V18H9V11.5H6L10 7.5ZM5 5H15V7H17V5C17 3.9 16.1 3 15 3H5C3.9 3 3 3.9 3 5V7H5V5Z" fill="currentColor"/>
+                  </svg>
                 </label>
               </div>
             </div>

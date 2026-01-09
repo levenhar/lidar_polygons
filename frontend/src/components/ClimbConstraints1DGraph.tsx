@@ -463,8 +463,9 @@ const ClimbConstraints1DGraph: React.FC<ClimbConstraints1DGraphProps> = ({
           <polygon
             points="0,-4 4,0 0,4 -4,0"
             fill={config.allowTurnsDuringClimb ? '#9ca3af' : '#dc2626'}
+            transform="translate(-17, 0)"
           />
-          <text x={-8} y={3} fontSize="9" fill="#64748b">
+          <text x={-25} y={3} fontSize="12" fill="#64748b">
             {config.allowTurnsDuringClimb ? 'פנייה (מידע)' : 'פנייה (מגביל)'}
           </text>
           
@@ -477,7 +478,7 @@ const ClimbConstraints1DGraph: React.FC<ClimbConstraints1DGraphProps> = ({
             fill="#d97706"
             transform="rotate(45, 88, -1)"
           />
-          <text x={80} y={3} fontSize="9" fill="#64748b">
+          <text x={80} y={3} fontSize="12" fill="#64748b">
             נק' עלייה (מגביל)
           </text>
         </g>

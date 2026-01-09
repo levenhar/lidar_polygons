@@ -372,13 +372,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('width', width)
       .attr('height', height);
 
-    const chartArea: d3.Selection<SVGGElement, unknown, null, undefined> = g.append('g')
-      .attr('clip-path', `url(#${clipPathIdRef.current})`);
-
     // Create scales
     const baseXScale = d3.scaleLinear()
       .domain(d3.extent(elevationProfile, d => d.distance) as [number, number])
       .range([width, 0]);
+
+    const chartArea: d3.Selection<SVGGElement, unknown, null, undefined> = g.append('g')
+      .attr('clip-path', `url(#${clipPathIdRef.current})`);
 
     const plannedAltitudes = elevationProfile.map((p) => p.plannedAltitude || (p.elevation + nominalFlightHeight));
     const baseAltitudes = elevationProfile.map((p) => p.baseAltitude || (p.elevation + nominalFlightHeight));
@@ -440,6 +440,36 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     let currentXScale = baseXScale;
     let currentYScale = baseYScale;
 
+    // Add grid lines first (behind all other elements)
+    const xAxisGrid = d3.axisBottom(currentXScale)
+      .ticks(10)
+      .tickSize(-height)
+      .tickFormat(() => '');
+
+    const yAxisGrid = d3.axisRight(currentYScale)
+      .ticks(10)
+      .tickSize(-width)
+      .tickFormat(() => '');
+
+    const xGridGroup = chartArea.append('g')
+      .attr('class', 'grid')
+      .attr('stroke', '#e5e7eb')
+      .attr('stroke-width', 1)
+      .attr('stroke-dasharray', '2,4')
+      .attr('opacity', 0.6)
+      .lower() // Ensure grid is behind other elements
+      .call(xAxisGrid);
+
+    const yGridGroup = chartArea.append('g')
+      .attr('class', 'grid')
+      .attr('stroke', '#e5e7eb')
+      .attr('stroke-width', 1)
+      .attr('stroke-dasharray', '2,4')
+      .attr('opacity', 0.6)
+      .attr('transform', `translate(${width},0)`)
+      .lower() // Ensure grid is behind other elements
+      .call(yAxisGrid);
+
     // Selections we need to update on zoom/pan
     /* 
     let rangeBars: d3.Selection<SVGLineElement, ElevationPoint, any, any> | null = null;
@@ -467,6 +497,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         climbDelta
       };
     });
+
+    // Fill area under ground (draw before line so line appears on top)
+    const groundAreaGenerator = d3.area<ElevationPoint>()
+      .x(d => currentXScale(d.distance))
+      .y0(height)
+      .y1(d => currentYScale(d.elevation))
+      .curve(d3.curveMonotoneX);
+
+    const groundArea = chartArea.append('path')
+      .datum(elevationProfile)
+      .attr('fill', '#8B4513')
+      .attr('fill-opacity', 0.3)
+      .attr('d', groundAreaGenerator);
 
     // Draw ground elevation line
     const groundLine = d3.line<ElevationPoint>()
@@ -547,32 +590,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('stroke-dasharray', '10,6')
       .attr('d', resolutionLine);
 
-    // Add grid lines
-    const xAxisGrid = d3.axisBottom(currentXScale)
-      .ticks(10)
-      .tickSize(-height)
-      .tickFormat(() => '');
-
-    const yAxisGrid = d3.axisRight(currentYScale)
-      .ticks(10)
-      .tickSize(-width)
-      .tickFormat(() => '');
-
-    const xGridGroup = g.append('g')
-      .attr('class', 'grid')
-      .attr('stroke', '#ddd')
-      .attr('stroke-width', 0.5)
-      .attr('stroke-dasharray', '3,3')
-      .call(xAxisGrid);
-
-    const yGridGroup = g.append('g')
-      .attr('class', 'grid')
-      .attr('stroke', '#ddd')
-      .attr('stroke-width', 0.5)
-      .attr('stroke-dasharray', '3,3')
-      .attr('transform', `translate(${width},0)`)
-      .call(yAxisGrid);
-
     // Draw min/max elevation range bars (behind everything else)
     const pointsWithMinMax = elevationProfile.filter(
       d => d.minElevation !== undefined && d.maxElevation !== undefined
@@ -634,20 +651,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       */
     }
 
-    /*
-    // Fill area under ground
-    const groundAreaGenerator = d3.area<ElevationPoint>()
-      .x(d => currentXScale(d.distance))
-      .y0(height)
-      .y1(d => currentYScale(d.elevation))
-      .curve(d3.curveMonotoneX);
-
-    const groundArea = chartArea.append('path')
-      .datum(elevationProfile)
-      .attr('fill', '#8B4513')
-      .attr('fill-opacity', 0.3)
-      .attr('d', groundAreaGenerator);
-    */
 
     /*
     const buildSegments = <T,>(points: T[], predicate: (d: T) => boolean) => {
@@ -1073,12 +1076,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
           .attr('dx', '-0.5em');
 
+        const updatedGroundAreaGenerator = d3.area<ElevationPoint>()
+          .x(d => currentXScale(d.distance))
+          .y0(height)
+          .y1(d => currentYScale(d.elevation))
+          .curve(d3.curveMonotoneX);
+        groundArea.attr('d', updatedGroundAreaGenerator);
         groundPath.attr('d', groundLine);
         // baseFlightPathLine.attr('d', baseFlightLine);
         plannedFlightPathLine.attr('d', plannedFlightLine);
         safetyPath.attr('d', safetyLine);
         resolutionPath.attr('d', resolutionLine);
-        // groundArea.attr('d', groundAreaGenerator);
 
         /*
         if (resolutionViolationAreas) {

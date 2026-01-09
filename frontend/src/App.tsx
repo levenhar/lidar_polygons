@@ -877,80 +877,78 @@ function App() {
         <div className="header-controls">
           <div className="header-group">
             <div className="group-title">ייצוא מסלולים</div>
-            <div className="group-columns">
-              <div className="group-column">
-                <button
-                  onClick={() => {
-                    const routesWithPoints = routes.filter(route => route.points.length >= 2);
-                    if (routesWithPoints.length > 1) {
-                      setShowExportModal(true);
-                    } else {
-                      exportKML(climbRequests, climbRequestsByRoute);
-                    }
-                  }}
-                  className={`btn btn-secondary btn-icon ${flightPath.length < 2 ? 'disabled' : ''}`}
-                  disabled={flightPath.length < 2}
-                  style={{
-                    ...(flightPath.length < 2 ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
-                    fontSize: '1rem',
-                    fontWeight: 400,
-                    fontFamily: 'inherit'
-                  }}
-                  title={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
-                  data-tooltip={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
-                >
-                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M10 12.5L6 8.5H9V2H11V8.5H14L10 12.5ZM5 15H15V13H17V15C17 16.1 16.1 17 15 17H5C3.9 17 3 16.1 3 15V13H5V15Z" fill="currentColor"/>
-                  </svg>
-                </button>
-                <input
-                  type="file"
-                  accept=".kml"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (file) {
-                      const result = await importKML(file);
-                      if (result) {
-                        // Set climb requests for each imported route (now goes through undo/redo)
-                        setClimbRequestsByRoute((prev) => {
-                          const next = { ...prev };
-                          result.routes.forEach((route) => {
-                            // Associate climb requests with the first route (as per current importKML logic)
-                            // If we have climb requests and this is the first route, assign them
-                            if (result.climbRequests.length > 0 && route.id === result.routes[0]?.id) {
-                              next[route.id] = result.climbRequests;
-                            } else if (!next[route.id]) {
-                              next[route.id] = [];
-                            }
-                          });
-                          return next;
+            <div className="group-columns export-controls-row">
+              <button
+                onClick={() => {
+                  const routesWithPoints = routes.filter(route => route.points.length >= 2);
+                  if (routesWithPoints.length > 1) {
+                    setShowExportModal(true);
+                  } else {
+                    exportKML(climbRequests, climbRequestsByRoute);
+                  }
+                }}
+                className={`btn btn-secondary btn-icon ${flightPath.length < 2 ? 'disabled' : ''}`}
+                disabled={flightPath.length < 2}
+                style={{
+                  ...(flightPath.length < 2 ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
+                  fontSize: '1rem',
+                  fontWeight: 400,
+                  fontFamily: 'inherit'
+                }}
+                title={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
+                data-tooltip={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
+              >
+                <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M10 12.5L6 8.5H9V2H11V8.5H14L10 12.5ZM5 15H15V13H17V15C17 16.1 16.1 17 15 17H5C3.9 17 3 16.1 3 15V13H5V15Z" fill="currentColor"/>
+                </svg>
+              </button>
+              <input
+                type="file"
+                accept=".kml"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    const result = await importKML(file);
+                    if (result) {
+                      // Set climb requests for each imported route (now goes through undo/redo)
+                      setClimbRequestsByRoute((prev) => {
+                        const next = { ...prev };
+                        result.routes.forEach((route) => {
+                          // Associate climb requests with the first route (as per current importKML logic)
+                          // If we have climb requests and this is the first route, assign them
+                          if (result.climbRequests.length > 0 && route.id === result.routes[0]?.id) {
+                            next[route.id] = result.climbRequests;
+                          } else if (!next[route.id]) {
+                            next[route.id] = [];
+                          }
                         });
-                      }
-                      // Reset input so same file can be imported again
-                      e.target.value = '';
+                        return next;
+                      });
                     }
-                  }}
-                  style={{ display: 'none' }}
-                  id="import-kml"
-                  disabled={!dtmSource}
-                />
-                <label
-                  htmlFor="import-kml"
-                  className={`btn btn-secondary btn-icon ${!dtmSource ? 'disabled' : ''}`}
-                  style={{
-                    ...(!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
-                    fontSize: '1rem',
-                    fontWeight: 400,
-                    fontFamily: 'inherit'
-                  }}
-                  title={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
-                  data-tooltip={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
-                >
-                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <path d="M10 7.5L14 11.5H11V18H9V11.5H6L10 7.5ZM5 5H15V7H17V5C17 3.9 16.1 3 15 3H5C3.9 3 3 3.9 3 5V7H5V5Z" fill="currentColor"/>
-                  </svg>
-                </label>
-              </div>
+                    // Reset input so same file can be imported again
+                    e.target.value = '';
+                  }
+                }}
+                style={{ display: 'none' }}
+                id="import-kml"
+                disabled={!dtmSource}
+              />
+              <label
+                htmlFor="import-kml"
+                className={`btn btn-secondary btn-icon ${!dtmSource ? 'disabled' : ''}`}
+                style={{
+                  ...(!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
+                  fontSize: '1rem',
+                  fontWeight: 400,
+                  fontFamily: 'inherit'
+                }}
+                title={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
+                data-tooltip={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
+              >
+                <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M10 7.5L14 11.5H11V18H9V11.5H6L10 7.5ZM5 5H15V7H17V5C17 3.9 16.1 3 15 3H5C3.9 3 3 3.9 3 5V7H5V5Z" fill="currentColor"/>
+                </svg>
+              </label>
             </div>
           </div>
         </div>

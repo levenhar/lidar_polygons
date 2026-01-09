@@ -41,29 +41,38 @@
 .header-parameters {
   display: flex;
   align-items: flex-start;
+  align-content: flex-end; /* Align wrapped rows to the right */
   flex-wrap: wrap;
+  justify-content: flex-end; /* Align items to the right within each row */
   margin-top: 0.5rem;
-  width: 100%;
+  margin-left: auto; /* Push container to the right */
+  width: fit-content; /* Only take up as much width as needed */
+  max-width: 100%; /* Don't exceed parent width */
   position: relative;
   box-sizing: border-box;
-  flex: 1;
   /* Calculate spacing: (width from window start to export controls - parameters width) / 3 */
   /* Parameters width: 5 flight inputs (5×80px) + 5 labels (~5×120px) + gaps (~100px) = ~1100px */
   /*                   2 mission inputs (2×80px) + 2 labels (~2×120px) + gaps (~30px) = ~430px */
   /*                   Total parameters: ~1530px */
-  /* Width to export controls: viewport width - header right padding (2rem) - export controls width (~200px) */
+  /* Width to export controls: viewport width - header padding - export controls width */
   --parameters-width: 1530px; /* Flight + Mission parameters total width */
   --export-controls-width: 200px; /* Estimated export controls width */
-  --header-right-padding: 2rem; /* Right padding of header */
-  --width-to-export: calc(100vw - var(--header-right-padding) - var(--export-controls-width));
+  --header-left-padding: 1.25rem; /* Left padding of header (from .app-header padding) */
+  --header-right-padding: 2rem; /* Right padding of header (from .app-header padding) */
+  --width-to-export: calc(100vw - var(--header-left-padding) - var(--header-right-padding) - var(--export-controls-width));
   --available-space: calc(var(--width-to-export) - var(--parameters-width));
   --equal-spacing: max(1rem, calc(var(--available-space) / 3));
-  padding-left: var(--equal-spacing); /* Space before flight parameters */
-  padding-right: var(--equal-spacing); /* Space after mission parameters */
+  --flight-inputs-count: 5; /* Number of inputs in flight parameters */
+  /* Calculate space-to-export and input-gap so that gap-between-groups equals input-gap */
+  /* space-to-export = (available-space - equal-spacing) * (inputs - 1) / inputs */
+  --space-to-export: calc((var(--available-space) - var(--equal-spacing)) * (var(--flight-inputs-count) - 1) / var(--flight-inputs-count));
+  --input-gap: calc(var(--space-to-export) / (var(--flight-inputs-count) - 1)); /* Gap between inputs and between parameter groups */
+  padding-right: 0; /* No space after mission parameters */
 }
 
 .header-parameters > .header-group:not(:first-child) {
-  margin-right: var(--equal-spacing); /* Gap between flight and mission parameters - equal to spacing */
+  margin-right: var(--input-gap); /* Same gap as between inputs */
+  /* When wrapping occurs, this margin ensures proper spacing while maintaining right alignment */
 }
 
 .app-logo {
@@ -76,8 +85,9 @@
 .header-controls {
   display: flex;
   gap: 2rem;
-  align-items: flex-start;
+  align-items: flex-end;
   flex-wrap: wrap;
+  align-self: flex-end;
 }
 
 .header-group {
@@ -117,6 +127,11 @@
   gap: 0.75rem;
   align-items: flex-start;
   flex-wrap: wrap;
+}
+
+/* Use calculated gap for both flight and mission parameters inputs */
+.header-parameters > .header-group .group-inputs {
+  gap: var(--input-gap, 0.5rem);
 }
 
 .header-controls label,
@@ -164,6 +179,21 @@
   align-items: flex-start;
 }
 
+.header-group .group-columns.export-controls-row {
+  flex-direction: row;
+  align-items: center;
+}
+
+.header-group .group-columns.export-controls-row .btn-icon {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .header-group .group-column {
   display: flex;
   flex-direction: column;
@@ -173,11 +203,13 @@
 }
 
 /* Button tooltip styles - appears below buttons on hover */
-.header-group .group-column .btn-icon {
+.header-group .group-column .btn-icon,
+.header-group .group-columns.export-controls-row .btn-icon {
   position: relative;
 }
 
-.header-group .group-column .btn-icon::after {
+.header-group .group-column .btn-icon::after,
+.header-group .group-columns.export-controls-row .btn-icon::after {
   content: attr(data-tooltip);
   position: absolute;
   top: 100%;
@@ -198,7 +230,8 @@
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 
-.header-group .group-column .btn-icon::before {
+.header-group .group-column .btn-icon::before,
+.header-group .group-columns.export-controls-row .btn-icon::before {
   content: '';
   position: absolute;
   top: 100%;
@@ -216,7 +249,9 @@
 }
 
 .header-group .group-column .btn-icon:hover:not(:disabled)::after,
-.header-group .group-column .btn-icon:hover:not(:disabled)::before {
+.header-group .group-column .btn-icon:hover:not(:disabled)::before,
+.header-group .group-columns.export-controls-row .btn-icon:hover:not(:disabled)::after,
+.header-group .group-columns.export-controls-row .btn-icon:hover:not(:disabled)::before {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
@@ -255,7 +290,8 @@
   
   .header-parameters {
     width: 100%;
-    justify-content: center;
+    justify-content: flex-end;
+    align-content: flex-end;
   }
   
   .header-controls {

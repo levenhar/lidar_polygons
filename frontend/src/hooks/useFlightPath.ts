@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { Coordinate } from '../App';
 import { useUndoRedo } from './useUndoRedo';
 import { computeCumulativeDistances } from '../utils/constraints';
@@ -75,6 +75,7 @@ export interface FlightRoute {
 interface FlightRoutesState {
   routes: FlightRoute[];
   activeRouteId: string;
+  climbRequestsByRoute: Record<string, { endDistance: number; climbAmount: number }[]>;
 }
 
 const colorPalette = ['#ff4d4f', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
@@ -89,11 +90,12 @@ function createRoute(index: number): FlightRoute {
   };
 }
 
-export function useFlightPath() {
+export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>) {
   const initialRoute = createRoute(1);
   const { state, setState, undo, redo, canUndo, canRedo, resetHistory } = useUndoRedo<FlightRoutesState>({
     routes: [initialRoute],
-    activeRouteId: initialRoute.id
+    activeRouteId: initialRoute.id,
+    climbRequestsByRoute: initialClimbRequestsByRoute || {}
   });
 
   const activeRoute = useMemo(
@@ -129,12 +131,13 @@ export function useFlightPath() {
     const newRoute = createRoute(nextIndex);
     setState(
       {
+        ...state,
         routes: [...state.routes, newRoute],
         activeRouteId: newRoute.id
       },
       true
     );
-  }, [setState, state.routes]);
+  }, [setState, state]);
 
   const setActiveRoute = useCallback(
     (routeId: string) => {
@@ -196,14 +199,26 @@ export function useFlightPath() {
         nextActiveId = filtered[0]?.id ?? '';
       }
 
+      // Remove climb requests for the deleted route
+      const nextClimbRequestsByRoute = { ...state.climbRequestsByRoute };
+      delete nextClimbRequestsByRoute[routeId];
+
       // if we somehow removed all, recreate one
       if (filtered.length === 0) {
         const newRoute = createRoute(1);
-        setState({ routes: [newRoute], activeRouteId: newRoute.id }, true);
+        setState({ 
+          routes: [newRoute], 
+          activeRouteId: newRoute.id,
+          climbRequestsByRoute: nextClimbRequestsByRoute
+        }, true);
         return;
       }
 
-      setState({ routes: filtered, activeRouteId: nextActiveId }, true);
+      setState({ 
+        routes: filtered, 
+        activeRouteId: nextActiveId,
+        climbRequestsByRoute: nextClimbRequestsByRoute
+      }, true);
     },
     [setState, state]
   );
@@ -291,14 +306,19 @@ export function useFlightPath() {
       visible: idx === 0 ? true : route.visible
     }));
     const nextActive = ensureActiveRoute(state.activeRouteId);
-    resetHistory({ routes: clearedRoutes, activeRouteId: nextActive });
-  }, [ensureActiveRoute, resetHistory, state.activeRouteId, state.routes]);
+    resetHistory({ 
+      routes: clearedRoutes, 
+      activeRouteId: nextActive,
+      climbRequestsByRoute: state.climbRequestsByRoute
+    });
+  }, [ensureActiveRoute, resetHistory, state]);
 
   const resetToSingleRoute = useCallback(() => {
     const newRoute = createRoute(1);
     resetHistory({
       routes: [newRoute],
-      activeRouteId: newRoute.id
+      activeRouteId: newRoute.id,
+      climbRequestsByRoute: {}
     });
   }, [resetHistory]);
 
@@ -587,7 +607,8 @@ export function useFlightPath() {
           {
             ...state,
             routes: [...state.routes, ...routes],
-            activeRouteId: routes[0].id
+            activeRouteId: routes[0].id,
+            climbRequestsByRoute: state.climbRequestsByRoute
           },
           true
         );
@@ -602,10 +623,25 @@ export function useFlightPath() {
     [state, setState]
   );
 
+  const setClimbRequestsByRoute = useCallback(
+    (updater: React.SetStateAction<Record<string, { endDistance: number; climbAmount: number }[]>>) => {
+      const next = typeof updater === 'function' ? updater(state.climbRequestsByRoute) : updater;
+      setState(
+        {
+          ...state,
+          climbRequestsByRoute: next
+        },
+        true
+      );
+    },
+    [setState, state]
+  );
+
   return {
     routes: state.routes,
     activeRouteId: ensureActiveRoute(state.activeRouteId),
     flightPath,
+    climbRequestsByRoute: state.climbRequestsByRoute,
     addRoute,
     setActiveRoute,
     toggleRouteVisibility,
@@ -623,6 +659,7 @@ export function useFlightPath() {
     hideNonActiveRoutes,
     exportKML,
     importKML,
+    setClimbRequestsByRoute,
     undo,
     redo,
     canUndo,

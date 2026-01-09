@@ -237,8 +237,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       ? Math.max(0, right.distance - pendingClimbEnd - climbConfig.vertexProximityMeters)
       : Math.max(0, (totalRouteLength - pendingClimbEnd) - climbConfig.vertexProximityMeters);
     
-    // Use the minimum distance to the nearest limiting constraint
-    const dAvail = Math.min(distanceToLeftConstraint, distanceToRightConstraint);
+    // Always use distance from start or from the previous limit point (left constraint)
+    const dAvail = distanceToLeftConstraint;
     
     // Calculate maximum climb/descent based on available distance to constraints
     // Always round down (floor) to ensure we don't exceed the limit

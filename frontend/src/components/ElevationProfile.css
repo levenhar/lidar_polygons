@@ -243,6 +243,7 @@
   border: 1px solid #cbd5e1;
   border-radius: 6px;
   font-size: 1rem;
+  background: white;
 }
 
 .climb-modal__toggle {

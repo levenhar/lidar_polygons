@@ -95,25 +95,20 @@ function App() {
     return {};
   }, []);
   
-  // Store climb requests per route ID
-  const [climbRequestsByRoute, setClimbRequestsByRoute] = useState<Record<string, { endDistance: number; climbAmount: number }[]>>(loadClimbRequestsFromStorage);
   // Track previous geometry per route ID to detect geometry changes for each route independently
   const prevGeometryByRouteRef = React.useRef<Record<string, { lat: number; lng: number }[]>>({});
+  // Track operation type to distinguish inserts from edits/deletes
+  const isInsertOperationRef = React.useRef<boolean>(false);
   
-  // Save climb requests to localStorage whenever they change
-  React.useEffect(() => {
-    try {
-      localStorage.setItem('climbRequestsByRoute', JSON.stringify(climbRequestsByRoute));
-    } catch (error) {
-      console.error('Failed to save climb requests to localStorage:', error);
-    }
-  }, [climbRequestsByRoute]);
+  // Initialize with climb requests from localStorage
+  const initialClimbRequestsByRoute = React.useMemo(() => loadClimbRequestsFromStorage(), [loadClimbRequestsFromStorage]);
 
   // @ts-ignore
   const {
     routes,
     activeRouteId,
     flightPath,
+    climbRequestsByRoute,
     addRoute,
     setActiveRoute,
     renameRoute,
@@ -130,25 +125,52 @@ function App() {
     resetToSingleRoute,
     exportKML,
     importKML,
+    setClimbRequestsByRoute,
     undo,
     redo,
     canUndo,
     canRedo
-  } = useFlightPath();
+  } = useFlightPath(initialClimbRequestsByRoute);
+  
+  // Save climb requests to localStorage whenever they change
+  React.useEffect(() => {
+    try {
+      localStorage.setItem('climbRequestsByRoute', JSON.stringify(climbRequestsByRoute));
+    } catch (error) {
+      console.error('Failed to save climb requests to localStorage:', error);
+    }
+  }, [climbRequestsByRoute]);
+  
+  // Wrap insertPoints to mark it as an insert operation
+  const insertPointsWrapped = React.useCallback((index: number, points: Coordinate[]) => {
+    isInsertOperationRef.current = true;
+    insertPoints(index, points);
+  }, [insertPoints]);
+  
+  // Wrap addPoint and addPoints to mark them as insert operations
+  const addPointWrapped = React.useCallback((point: Coordinate) => {
+    isInsertOperationRef.current = true;
+    addPoint(point);
+  }, [addPoint]);
+  
+  const addPointsWrapped = React.useCallback((points: Coordinate[]) => {
+    isInsertOperationRef.current = true;
+    addPoints(points);
+  }, [addPoints]);
 
   // Get climb requests for the active route
   const climbRequests = React.useMemo(() => {
     return climbRequestsByRoute[activeRouteId] || [];
   }, [climbRequestsByRoute, activeRouteId]);
   
-  // Set climb requests for the active route
+  // Set climb requests for the active route (now goes through undo/redo)
   const setClimbRequests = React.useCallback((updater: React.SetStateAction<{ endDistance: number; climbAmount: number }[]>) => {
     setClimbRequestsByRoute((prev) => {
       const current = prev[activeRouteId] || [];
       const next = typeof updater === 'function' ? updater(current) : updater;
       return { ...prev, [activeRouteId]: next };
     });
-  }, [activeRouteId]);
+  }, [activeRouteId, setClimbRequestsByRoute]);
 
   const { elevationProfile, loading, calculateProfile, refreshFlightHeights } = useElevationProfile();
 
@@ -191,25 +213,131 @@ function App() {
     };
   }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights]);
 
-  // Clear climb requests for active route whenever the flight path geometry changes (point added/moved/removed)
-  // Only clear if the geometry of the CURRENT active route actually changed
+  // Clear climb requests only for segments that were edited (deleted or moved)
+  // Don't clear climbs when points are inserted (new segments added)
   React.useEffect(() => {
     const currentGeometry = flightPath.map((p) => ({ lat: p.lat, lng: p.lng }));
     const prevGeometry = prevGeometryByRouteRef.current[activeRouteId];
 
-    if (prevGeometry) {
+    // If this is an insert operation, don't remove any climbs
+    const isInsert = isInsertOperationRef.current;
+    if (isInsert) {
+      // Reset the flag after checking it
+      isInsertOperationRef.current = false;
+      prevGeometryByRouteRef.current[activeRouteId] = currentGeometry;
+      return;
+    }
+
+    if (prevGeometry && climbRequests.length > 0) {
       const geometryChanged =
         prevGeometry.length !== currentGeometry.length ||
         prevGeometry.some((p, idx) => p.lat !== currentGeometry[idx]?.lat || p.lng !== currentGeometry[idx]?.lng);
 
-      if (geometryChanged && climbRequests.length > 0) {
-        setClimbRequests([]);
+      if (geometryChanged) {
+        // Calculate which segments were affected
+        const affectedSegments = new Set<number>();
+        
+        // Helper to compute cumulative distances
+        const computeDistances = (path: Coordinate[]): number[] => {
+          if (path.length === 0) return [];
+          const distances = [0];
+          for (let i = 1; i < path.length; i++) {
+            const R = 6371000; // Earth radius in meters
+            const dLat = ((path[i].lat - path[i - 1].lat) * Math.PI) / 180;
+            const dLon = ((path[i].lng - path[i - 1].lng) * Math.PI) / 180;
+            const a =
+              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos((path[i - 1].lat * Math.PI) / 180) *
+                Math.cos((path[i].lat * Math.PI) / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const dist = R * c;
+            distances.push(distances[i - 1] + dist);
+          }
+          return distances;
+        };
+        
+        // Helper to compare coordinates with tolerance
+        const coordsEqual = (a: { lat: number; lng: number }, b: { lat: number; lng: number }): boolean => {
+          return Math.abs(a.lat - b.lat) < 1e-9 && Math.abs(a.lng - b.lng) < 1e-9;
+        };
+        
+        // Determine which segments were affected
+        if (prevGeometry.length !== currentGeometry.length) {
+          // Point was deleted or added - identify which one
+          if (prevGeometry.length > currentGeometry.length) {
+            // Point was deleted - find the deleted index by comparing sequences
+            for (let i = 0; i < prevGeometry.length; i++) {
+              // Check if removing point i would match current geometry
+              let matches = true;
+              for (let j = 0; j < currentGeometry.length; j++) {
+                const prevIdx = j < i ? j : j + 1;
+                if (prevIdx >= prevGeometry.length || !coordsEqual(currentGeometry[j], prevGeometry[prevIdx])) {
+                  matches = false;
+                  break;
+                }
+              }
+              
+              if (matches) {
+                // Point at index i was deleted
+                // Segments i-1 and i are affected (if they exist)
+                if (i > 0 && i - 1 < prevGeometry.length - 1) affectedSegments.add(i - 1);
+                if (i < prevGeometry.length - 1) affectedSegments.add(i);
+                break;
+              }
+            }
+            
+            // If we couldn't identify the deleted point, don't remove any climbs
+            // (be conservative - better to keep climbs than remove incorrectly)
+          }
+        } else {
+          // Same length - points were moved
+          // Find which points changed
+          for (let i = 0; i < prevGeometry.length; i++) {
+            if (!coordsEqual(prevGeometry[i], currentGeometry[i])) {
+              // Point at index i was moved
+              // Segments i-1 and i are affected (if they exist)
+              if (i > 0 && i - 1 < prevGeometry.length - 1) affectedSegments.add(i - 1);
+              if (i < prevGeometry.length - 1) affectedSegments.add(i);
+            }
+          }
+        }
+        
+        // If we have affected segments, remove climbs on those segments
+        if (affectedSegments.size > 0 && flightPath.length >= 2 && prevGeometry.length >= 2) {
+          // Convert geometry to coordinates for distance calculation
+          const prevPath: Coordinate[] = prevGeometry.map(p => ({ lat: p.lat, lng: p.lng }));
+          const prevDistances = computeDistances(prevPath);
+          
+          // Filter out climbs that are on affected segments
+          const climbsToKeep = climbRequests.filter((climb) => {
+            // Find which segment this climb is on in the previous path
+            let segmentIndex = -1;
+            for (let i = 1; i < prevDistances.length; i++) {
+              // Use tolerance for floating point comparison
+              if (climb.endDistance >= prevDistances[i - 1] - 0.1 && 
+                  climb.endDistance <= prevDistances[i] + 0.1) {
+                segmentIndex = i - 1;
+                break;
+              }
+            }
+            
+            // If climb is on an affected segment, remove it
+            return segmentIndex === -1 || !affectedSegments.has(segmentIndex);
+          });
+          
+          if (climbsToKeep.length !== climbRequests.length) {
+            setClimbRequests(climbsToKeep);
+          }
+        } else if (affectedSegments.size === 0 && prevGeometry.length === currentGeometry.length) {
+          // No segments were affected (maybe just metadata change), don't remove climbs
+        }
       }
     }
 
     // Update the stored geometry for this specific route
     prevGeometryByRouteRef.current[activeRouteId] = currentGeometry;
-  }, [flightPath, activeRouteId, climbRequests.length, setClimbRequests]);
+  }, [flightPath, activeRouteId, climbRequests, setClimbRequests]);
 
   const fullProfileResult = React.useMemo(() => {
     if (elevationProfile.length === 0) return { points: [], warnings: [] };
@@ -715,7 +843,7 @@ function App() {
                     if (file) {
                       const result = await importKML(file);
                       if (result) {
-                        // Set climb requests for each imported route
+                        // Set climb requests for each imported route (now goes through undo/redo)
                         setClimbRequestsByRoute((prev) => {
                           const next = { ...prev };
                           result.routes.forEach((route) => {
@@ -727,12 +855,6 @@ function App() {
                               next[route.id] = [];
                             }
                           });
-                          // Save to localStorage
-                          try {
-                            localStorage.setItem('climbRequestsByRoute', JSON.stringify(next));
-                          } catch (error) {
-                            console.error('Failed to save climb requests to localStorage after import:', error);
-                          }
                           return next;
                         });
                       }
@@ -771,9 +893,9 @@ function App() {
           flightPath={flightPath}
           onPathPointHover={handlePathPointHover}
           onPathChange={setFlightPath}
-          onAddPoint={addPoint}
-          onAddPoints={addPoints}
-          onInsertPoints={insertPoints}
+          onAddPoint={addPointWrapped}
+          onAddPoints={addPointsWrapped}
+          onInsertPoints={insertPointsWrapped}
           onUpdatePoint={updatePoint}
           onDeletePoint={deletePoint}
           onAddRoute={addRoute}
@@ -782,18 +904,7 @@ function App() {
           onToggleRouteVisibility={toggleRouteVisibility}
           onDeleteRoute={(routeId) => {
             deleteRoute(routeId);
-            // Remove climb requests for the deleted route
-            setClimbRequestsByRoute((prev) => {
-              const next = { ...prev };
-              delete next[routeId];
-              // Also remove from localStorage
-              try {
-                localStorage.setItem('climbRequestsByRoute', JSON.stringify(next));
-              } catch (error) {
-                console.error('Failed to update localStorage after route deletion:', error);
-              }
-              return next;
-            });
+            // Climb requests are now automatically removed in deleteRoute via undo/redo
           }}
           onShowAllRoutes={showAllRoutes}
           onHideNonActiveRoutes={hideNonActiveRoutes}

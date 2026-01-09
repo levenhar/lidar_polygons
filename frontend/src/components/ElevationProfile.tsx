@@ -226,16 +226,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       climbRequests,
       totalRouteLength
     );
-    
+    // @ts-ignore
     const { left, right } = constraintResult;
     
     // Calculate distances to constraints with buffer (same logic as ClimbConstraints1DGraph)
     const distanceToLeftConstraint = left 
       ? Math.max(0, pendingClimbEnd - left.distance - climbConfig.vertexProximityMeters)
       : Math.max(0, pendingClimbEnd - climbConfig.vertexProximityMeters);
-    const distanceToRightConstraint = right
-      ? Math.max(0, right.distance - pendingClimbEnd - climbConfig.vertexProximityMeters)
-      : Math.max(0, (totalRouteLength - pendingClimbEnd) - climbConfig.vertexProximityMeters);
+    // const distanceToRightConstraint = right
+    //   ? Math.max(0, right.distance - pendingClimbEnd - climbConfig.vertexProximityMeters)
+    //   : Math.max(0, (totalRouteLength - pendingClimbEnd) - climbConfig.vertexProximityMeters);
     
     // Always use distance from start or from the previous limit point (left constraint)
     const dAvail = distanceToLeftConstraint;

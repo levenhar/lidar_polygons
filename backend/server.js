@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
-import { dirname, join, basename } from 'path';
+import { dirname, join, basename, resolve } from 'path';
 import { readFile, unlink } from 'fs/promises';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import { fromFile } from 'geotiff';
@@ -12,7 +12,13 @@ import dotenv from 'dotenv';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-dotenv.config();
+// Load environment variables - try multiple locations
+const envResult = dotenv.config();
+if (envResult.error) {
+  console.warn('Warning: Could not load .env file:', envResult.error.message);
+} else {
+  console.log('Environment variables loaded from .env file');
+}
 
 const app = express();
 const PORT = process.env.BACKEND_PORT;
@@ -30,6 +36,26 @@ const MAPS_PREVIEW_ZOOM_ALTERNATE = process.env.MAPS_PREVIEW_ZOOM_ALTERNATE;
 const MAPS_PREVIEW_X_ALTERNATE = process.env.MAPS_PREVIEW_X_ALTERNATE;
 const MAPS_PREVIEW_Y_ALTERNATE = process.env.MAPS_PREVIEW_Y_ALTERNATE;
 
+// Get uploads directory from environment variable, with fallback to default
+// UPLOADS_DIR can be absolute or relative to the backend directory
+const UPLOADS_DIR_ENV = process.env.UPLOADS_DIR;
+console.log(`UPLOADS_DIR from env: ${UPLOADS_DIR_ENV || '(not set)'}`);
+
+let uploadsDir;
+if (UPLOADS_DIR_ENV) {
+  // Check if it's an absolute path (Unix: starts with /, Windows: matches drive letter pattern)
+  const isAbsolute = UPLOADS_DIR_ENV.startsWith('/') || /^[A-Za-z]:[\\/]/.test(UPLOADS_DIR_ENV);
+  if (isAbsolute) {
+    uploadsDir = resolve(UPLOADS_DIR_ENV); // Normalize absolute path
+  } else {
+    // Relative path - resolve relative to backend directory
+    uploadsDir = resolve(__dirname, UPLOADS_DIR_ENV);
+  }
+} else {
+  // Default fallback
+  uploadsDir = resolve(__dirname, 'uploads');
+}
+
 //Middleware
 app.use((req, res, next) => {
   console.log(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
@@ -40,7 +66,10 @@ app.use((req, res, next) => {
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-const uploadsDir = join(__dirname, 'uploads');
+// Log the resolved path (keep original path format for OS compatibility)
+console.log(`Using UPLOADS_DIR: ${uploadsDir}`);
+console.log(`Backend directory: ${__dirname}`);
+console.log(`UPLOADS_DIR_ENV value: ${UPLOADS_DIR_ENV || '(not set, using default)'}`);
 
 // Helpers for preview values
 const clampZoom = (value) => Math.min(22, Math.max(0, value));
@@ -276,14 +305,17 @@ app.post('/api/upload-dtm', async (req, res) => {
 app.post('/api/dtm/cleanup', async (req, res) => {
   try {
     const { path: dtmPath, filename, clippedId } = req.body || {};
+    console.log(`Cleanup request - path: ${dtmPath}, filename: ${filename}, clippedId: ${clippedId}`);
 
     // If clippedId is provided, delete the clipped DTM from Python backend
     if (clippedId) {
       try {
+        console.log(`Deleting clipped DTM via Python backend: ${clippedId}`);
         const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}`, {
           method: 'DELETE'
         });
         const data = await response.json();
+        console.log(`Clipped DTM deletion result:`, data);
         return res.json(data);
       } catch (error) {
         console.error('Error deleting clipped DTM:', error);
@@ -300,16 +332,24 @@ app.post('/api/dtm/cleanup', async (req, res) => {
 
     const safeFilename = basename(rawName);
     const filePath = join(uploadsDir, safeFilename);
+    
+    console.log(`Attempting to delete legacy DTM file:`);
+    console.log(`  - Filename: ${safeFilename}`);
+    console.log(`  - Full path: ${filePath}`);
+    console.log(`  - Uploads directory: ${uploadsDir}`);
+    console.log(`  - File exists: ${existsSync(filePath)}`);
 
     if (!existsSync(filePath)) {
-      return res.json({ success: true, deleted: false, message: 'File not found' });
+      console.warn(`File not found at: ${filePath}`);
+      return res.json({ success: true, deleted: false, message: `File not found at ${filePath}`, uploadsDir });
     }
 
     await unlink(filePath);
-    res.json({ success: true, deleted: true, filename: safeFilename });
+    console.log(`Successfully deleted file: ${filePath}`);
+    res.json({ success: true, deleted: true, filename: safeFilename, path: filePath });
   } catch (error) {
     console.error('Error deleting DTM file:', error);
-    res.status(500).json({ success: false, error: 'Failed to delete DTM file' });
+    res.status(500).json({ success: false, error: 'Failed to delete DTM file', details: error.message });
   }
 });
 

@@ -486,11 +486,19 @@ function App() {
     // If we have a clipped ID, delete that first
     if (targetClippedId) {
       try {
-        await fetch(`/api/dtm/clipped/${targetClippedId}`, {
+        console.log(`Attempting to delete clipped DTM: ${targetClippedId}`);
+        const response = await fetch(`/api/dtm/clipped/${targetClippedId}`, {
           method: 'DELETE',
           keepalive
         });
-        console.log(`Deleted clipped DTM: ${targetClippedId}`);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`Failed to delete clipped DTM: ${targetClippedId} - ${response.status} ${response.statusText}`, errorText);
+        } else {
+          const result = await response.json().catch(() => ({}));
+          console.log(`Successfully deleted clipped DTM: ${targetClippedId}`, result);
+        }
       } catch (error) {
         console.error('Failed to delete clipped DTM on server:', error);
       }
@@ -499,7 +507,8 @@ function App() {
     // Also cleanup legacy uploaded files if applicable
     if (targetPath && !targetPath.includes('/api/dtm/clipped/')) {
       try {
-        await fetch('/api/dtm/cleanup', {
+        console.log(`Attempting to delete legacy DTM: ${targetPath}`);
+        const response = await fetch('/api/dtm/cleanup', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
@@ -507,6 +516,14 @@ function App() {
           body: JSON.stringify({ path: targetPath }),
           keepalive
         });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`Failed to delete legacy DTM: ${targetPath} - ${response.status} ${response.statusText}`, errorText);
+        } else {
+          const result = await response.json().catch(() => ({}));
+          console.log(`Successfully deleted legacy DTM: ${targetPath}`, result);
+        }
       } catch (error) {
         console.error('Failed to delete DTM on server:', error);
       }
@@ -617,8 +634,53 @@ function App() {
 
   // Warn users that refreshing will clear points and unload the DTM; only clean up on confirmed unload.
   React.useEffect(() => {
+    const cleanupDtm = () => {
+      // Cleanup clipped DTM if exists - use direct DELETE endpoint
+      if (activeClippedId) {
+        try {
+          // Use fetch with keepalive for reliable cleanup on page unload
+          // sendBeacon only supports POST, so we use fetch with keepalive for DELETE
+          fetch(`/api/dtm/clipped/${activeClippedId}`, {
+            method: 'DELETE',
+            keepalive: true
+          }).catch(() => {
+            // Ignore errors during cleanup - page might be unloading
+          });
+        } catch (error) {
+          // Ignore errors during cleanup
+        }
+      }
+      
+      // Cleanup legacy uploaded DTM if applicable
+      if (dtmSource && !dtmSource.includes('/api/dtm/clipped/')) {
+        try {
+          const payload = JSON.stringify({ path: dtmSource });
+          // Use sendBeacon for POST requests (more reliable during page unload)
+          const blob = new Blob([payload], { type: 'application/json' });
+          navigator.sendBeacon('/api/dtm/cleanup', blob);
+          
+          // Also try fetch with keepalive as fallback
+          fetch('/api/dtm/cleanup', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: payload,
+            keepalive: true
+          }).catch(() => {
+            // Ignore errors during cleanup
+          });
+        } catch (error) {
+          // Ignore errors during cleanup
+        }
+      }
+    };
+
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!dtmSource && !activeClippedId && flightPath.length === 0) return;
+
+      // Trigger cleanup before unload
+      cleanupDtm();
 
       const warning = 'רענון ימחק את כל הנקודות ויפרוק את ה‑DTM. להמשיך?';
       event.preventDefault();
@@ -627,28 +689,27 @@ function App() {
     };
 
     const handlePageHide = (event: PageTransitionEvent) => {
-      if (event.persisted) return;
-      
-      // Cleanup clipped DTM if exists
-      if (activeClippedId) {
-        const payload = JSON.stringify({ clippedId: activeClippedId });
-        const blob = new Blob([payload], { type: 'application/json' });
-        navigator.sendBeacon('/api/dtm/cleanup', blob);
+      // Only cleanup if page is not being cached (e.g., back/forward navigation)
+      if (!event.persisted) {
+        cleanupDtm();
       }
-      
-      // Cleanup legacy uploaded DTM if applicable
-      if (dtmSource && !dtmSource.includes('/api/dtm/clipped/')) {
-        const payload = JSON.stringify({ path: dtmSource });
-        const blob = new Blob([payload], { type: 'application/json' });
-        navigator.sendBeacon('/api/dtm/cleanup', blob);
+    };
+
+    const handleVisibilityChange = () => {
+      // Cleanup when page becomes hidden (user switching tabs, closing window, etc.)
+      if (document.visibilityState === 'hidden') {
+        cleanupDtm();
       }
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [dtmSource, activeClippedId, flightPath.length]);
 

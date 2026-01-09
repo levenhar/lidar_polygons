@@ -46,6 +46,7 @@ DTM_CACHE_DIR = os.environ.get("DTM_CACHE_DIR", os.path.join(DTM_DATA_DIR, "Cach
 
 logger.info(f"UPLOADS_DIR: {UPLOADS_DIR}")
 logger.info(f"DTM_DATA_DIR: {DTM_DATA_DIR}")
+logger.info(f"DTM_CACHE_DIR: {DTM_CACHE_DIR}")
 
 class ElevationProfileRequest(BaseModel):
     coordinates: List[List[float]]
@@ -449,4 +450,118 @@ async def get_dtm_raster(filename: str):
             
     except Exception as e:
         logger.error(f"Error reading raster {filename}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/dtm/clipped/{clipped_id}")
+async def delete_clipped_dtm(clipped_id: str):
+    """Delete a clipped DTM from the cache directory"""
+    try:
+        logger.info(f"Deleting clipped DTM: {clipped_id} from cache directory: {DTM_CACHE_DIR}")
+        
+        # Ensure DTM_CACHE_DIR exists
+        if not os.path.exists(DTM_CACHE_DIR):
+            logger.warning(f"DTM_CACHE_DIR does not exist: {DTM_CACHE_DIR}")
+            return {"success": True, "deleted": False, "message": "Cache directory does not exist"}
+        
+        # List all files in cache directory for debugging
+        try:
+            all_files = os.listdir(DTM_CACHE_DIR)
+            logger.info(f"Files in cache directory ({len(all_files)} total): {all_files[:10]}...")  # Log first 10
+        except Exception as e:
+            logger.error(f"Error listing cache directory: {e}")
+            all_files = []
+        
+        # Look for files matching the clipped_id in the cache directory
+        # The clipped_id might be used as a prefix, exact filename, or in various formats
+        deleted_files = []
+        not_found = True
+        
+        def should_delete_file(filepath, name):
+            """Check if a file/directory should be deleted based on clipped_id"""
+            # Normalize the name for comparison (case-insensitive, remove extensions)
+            name_lower = name.lower()
+            clipped_id_lower = clipped_id.lower()
+            
+            # Check exact match
+            if name == clipped_id or name_lower == clipped_id_lower:
+                return True
+            
+            # Check if name starts with clipped_id
+            if name.startswith(clipped_id) or name_lower.startswith(clipped_id_lower):
+                return True
+            
+            # Check with common extensions
+            for ext in ['.tif', '.tiff', '.geotiff', '.png', '.jpg', '.jpeg']:
+                if name == f"{clipped_id}{ext}" or name_lower == f"{clipped_id_lower}{ext}":
+                    return True
+                if name.startswith(f"{clipped_id}_") or name.startswith(f"{clipped_id}-"):
+                    return True
+            
+            # Check if clipped_id is contained in filename (more flexible)
+            if clipped_id in name or clipped_id_lower in name_lower:
+                return True
+            
+            return False
+        
+        def delete_recursive(root_dir, current_path=""):
+            """Recursively search and delete matching files/directories"""
+            nonlocal deleted_files, not_found
+            full_path = os.path.join(root_dir, current_path) if current_path else root_dir
+            
+            if not os.path.exists(full_path):
+                return
+            
+            try:
+                items = os.listdir(full_path)
+            except PermissionError:
+                logger.warning(f"Permission denied accessing: {full_path}")
+                return
+            except Exception as e:
+                logger.error(f"Error listing directory {full_path}: {e}")
+                return
+            
+            for item in items:
+                item_path = os.path.join(full_path, item)
+                relative_path = os.path.join(current_path, item) if current_path else item
+                
+                try:
+                    if os.path.isdir(item_path):
+                        # Check if directory name matches
+                        if should_delete_file(item_path, item):
+                            # Delete entire directory
+                            shutil.rmtree(item_path)
+                            deleted_files.append(relative_path)
+                            logger.info(f"Deleted clipped DTM directory: {relative_path}")
+                            not_found = False
+                        else:
+                            # Recursively search subdirectories
+                            delete_recursive(root_dir, relative_path)
+                    elif os.path.isfile(item_path):
+                        # Check if file name matches
+                        if should_delete_file(item_path, item):
+                            os.remove(item_path)
+                            deleted_files.append(relative_path)
+                            logger.info(f"Deleted clipped DTM file: {relative_path}")
+                            not_found = False
+                except Exception as e:
+                    logger.error(f"Error deleting {relative_path}: {e}", exc_info=True)
+        
+        # Start recursive deletion
+        delete_recursive(DTM_CACHE_DIR)
+        
+        if not_found:
+            logger.warning(f"Clipped DTM not found: {clipped_id} in directory: {DTM_CACHE_DIR}")
+            logger.warning(f"Available files: {all_files}")
+            return {"success": True, "deleted": False, "message": f"Clipped DTM {clipped_id} not found", "availableFiles": all_files[:20]}
+        
+        logger.info(f"Successfully deleted {len(deleted_files)} file(s) for clipped DTM: {clipped_id}")
+        return {
+            "success": True,
+            "deleted": True,
+            "clippedId": clipped_id,
+            "deletedFiles": deleted_files
+        }
+        
+    except Exception as e:
+        logger.error(f"Error deleting clipped DTM {clipped_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

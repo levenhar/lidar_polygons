@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import rasterio
 import rasterio.features
 import rasterio.warp
+import rasterio.mask
 import numpy as np
 from typing import Optional, List
 import json
@@ -53,6 +54,16 @@ class ElevationProfileRequest(BaseModel):
     dtmPath: str
     safetyRadiusMeters: Optional[float] = 50.0
     resolutionRadiusMeters: Optional[float] = 50.0
+
+class AOI(BaseModel):
+    type: str  # 'bbox' or 'polygon'
+    crs: str  # e.g., 'EPSG:4326'
+    bbox: Optional[List[float]] = None  # [minLon, minLat, maxLon, maxLat] for bbox type
+    coordinates: Optional[List[List[float]]] = None  # [[lon, lat], ...] for polygon type
+
+class ClipRequest(BaseModel):
+    dtmId: str
+    aoi: AOI
 
 def haversine(lon1, lat1, lon2, lat2):
     """
@@ -450,6 +461,241 @@ async def get_dtm_raster(filename: str):
             
     except Exception as e:
         logger.error(f"Error reading raster {filename}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/dtm/clip")
+async def clip_dtm(request: ClipRequest):
+    """Clip a DTM file to an area of interest (AOI)"""
+    start_time = time.time()
+    logger.info(f"Clipping DTM {request.dtmId} with AOI type: {request.aoi.type}")
+    
+    try:
+        # Find the DTM file
+        dtm_file_path = os.path.join(DTM_DATA_DIR, request.dtmId)
+        
+        if not os.path.exists(dtm_file_path):
+            # Also check UPLOADS_DIR as fallback
+            dtm_file_path = os.path.join(UPLOADS_DIR, request.dtmId)
+            if not os.path.exists(dtm_file_path):
+                raise HTTPException(status_code=404, detail=f"DTM file not found: {request.dtmId}")
+        
+        # Ensure cache directory exists
+        os.makedirs(DTM_CACHE_DIR, exist_ok=True)
+        
+        # Generate unique clipped ID
+        clipped_id = f"{int(time.time() * 1000)}-{request.dtmId.rsplit('.', 1)[0] if '.' in request.dtmId else request.dtmId}"
+        clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
+        
+        # Open source DTM
+        with rasterio.open(dtm_file_path) as src:
+            src_crs = src.crs
+            if not src_crs:
+                # Try to infer CRS from bounds
+                is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
+                src_crs_str = "EPSG:32636" if is_projected else "EPSG:4326"
+                src_crs = pyproj.CRS.from_string(src_crs_str)
+            else:
+                # Ensure src_crs is a pyproj.CRS object
+                if not isinstance(src_crs, pyproj.CRS):
+                    src_crs = pyproj.CRS.from_string(str(src_crs))
+            
+            # Convert AOI to source CRS
+            aoi_crs = pyproj.CRS.from_string(request.aoi.crs)
+            transformer = Transformer.from_crs(aoi_crs, src_crs, always_xy=True)
+            
+            # Create geometry from AOI (convert to shapely geometry via rasterio.features)
+            if request.aoi.type == "bbox" and request.aoi.bbox:
+                min_lon, min_lat, max_lon, max_lat = request.aoi.bbox
+                # Transform bbox coordinates
+                min_x, min_y = transformer.transform(min_lon, min_lat)
+                max_x, max_y = transformer.transform(max_lon, max_lat)
+                # Create polygon geometry as GeoJSON-like dict
+                geom_dict = {
+                    "type": "Polygon",
+                    "coordinates": [[
+                        [min_x, min_y],
+                        [max_x, min_y],
+                        [max_x, max_y],
+                        [min_x, max_y],
+                        [min_x, min_y]
+                    ]]
+                }
+            elif request.aoi.type == "polygon" and request.aoi.coordinates:
+                # Transform polygon coordinates
+                transformed_coords = [list(transformer.transform(lon, lat)) for lon, lat in request.aoi.coordinates]
+                # Ensure polygon is closed
+                if transformed_coords[0] != transformed_coords[-1]:
+                    transformed_coords.append(transformed_coords[0])
+                # Create polygon geometry as GeoJSON-like dict
+                geom_dict = {
+                    "type": "Polygon",
+                    "coordinates": [transformed_coords]
+                }
+            else:
+                raise HTTPException(status_code=400, detail="Invalid AOI: must have bbox for bbox type or coordinates for polygon type")
+            
+            # Clip the raster (rasterio.mask.mask accepts GeoJSON-like dicts directly)
+            out_image, out_transform = rasterio.mask.mask(src, [geom_dict], crop=True)
+            out_meta = src.meta.copy()
+            
+            # Update metadata
+            out_meta.update({
+                "driver": "GTiff",
+                "height": out_image.shape[1],
+                "width": out_image.shape[2],
+                "transform": out_transform,
+                "compress": "lzw"
+            })
+            
+            # Calculate bounds from transform
+            left = out_transform[2]
+            top = out_transform[5]
+            right = left + out_transform[0] * out_meta["width"]
+            bottom = top + out_transform[4] * out_meta["height"]
+            
+            # Transform bounds to WGS84
+            out_bounds = rasterio.warp.transform_bounds(src_crs, "EPSG:4326", left, bottom, right, top)
+            
+            # Write clipped raster
+            with rasterio.open(clipped_file_path, "w", **out_meta) as dest:
+                dest.write(out_image)
+            
+            # Generate URLs (these will be served by the Node.js backend)
+            base_url = f"/api/dtm/clipped/{clipped_id}"
+            
+            duration = time.time() - start_time
+            logger.info(f"DTM clipped successfully in {duration:.3f}s: {clipped_id}")
+            
+            return {
+                "clippedId": clipped_id,
+                "raster": {
+                    "crs": src_crs.to_string() if src_crs else None,
+                    "bbox": list(out_bounds),  # [minLon, minLat, maxLon, maxLat]
+                    "width": out_meta["width"],
+                    "height": out_meta["height"]
+                },
+                "tilesUrl": f"{base_url}/tiles/{{z}}/{{x}}/{{y}}.png",
+                "metadataUrl": f"{base_url}/metadata",
+                "dataUrl": f"{base_url}/raster"
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error clipping DTM: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/dtm/clipped/{clipped_id}/metadata")
+async def get_clipped_dtm_metadata(clipped_id: str):
+    """Get metadata for a clipped DTM"""
+    try:
+        clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
+        
+        if not os.path.exists(clipped_file_path):
+            raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {clipped_id}")
+        
+        with rasterio.open(clipped_file_path) as src:
+            bounds = src.bounds
+            # Transform bounds to WGS84
+            wgs84_bounds = rasterio.warp.transform_bounds(src.crs, "EPSG:4326", *bounds)
+            
+            return {
+                "clippedId": clipped_id,
+                "filename": f"{clipped_id}.tif",
+                "bounds": {
+                    "minX": wgs84_bounds[0],
+                    "minY": wgs84_bounds[1],
+                    "maxX": wgs84_bounds[2],
+                    "maxY": wgs84_bounds[3]
+                },
+                "resolution": {
+                    "width": src.width,
+                    "height": src.height
+                },
+                "noDataValue": src.nodata,
+                "crs": src.crs.to_string() if src.crs else None
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reading clipped DTM metadata: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/dtm/clipped/{clipped_id}/raster")
+async def get_clipped_dtm_raster(clipped_id: str):
+    """Get raster data for a clipped DTM"""
+    try:
+        clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
+        
+        if not os.path.exists(clipped_file_path):
+            raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {clipped_id}")
+        
+        start_time = time.time()
+        logger.info(f"Reading raster data for clipped DTM: {clipped_id}")
+        
+        with rasterio.open(clipped_file_path) as src:
+            # Downsample for visualization if too large
+            MAX_DIM = 2048
+            
+            if src.width > MAX_DIM or src.height > MAX_DIM:
+                scale = max(src.width, src.height) / MAX_DIM
+                new_width = int(src.width / scale)
+                new_height = int(src.height / scale)
+                logger.info(f"Downsampling clipped DTM from {src.width}x{src.height} to {new_width}x{new_height}")
+                
+                data = src.read(
+                    1,
+                    out_shape=(new_height, new_width),
+                    resampling=rasterio.enums.Resampling.bilinear
+                )
+                render_width = new_width
+                render_height = new_height
+            else:
+                data = src.read(1)
+                render_width = src.width
+                render_height = src.height
+            
+            # Get stats
+            nodata = src.nodata
+            valid_mask = data != nodata if nodata is not None else np.ones_like(data, dtype=bool)
+            if np.issubdtype(data.dtype, np.floating):
+                valid_mask &= ~np.isnan(data)
+            
+            if valid_mask.any():
+                min_val = float(np.min(data[valid_mask]))
+                max_val = float(np.max(data[valid_mask]))
+            else:
+                min_val = 0.0
+                max_val = 0.0
+            
+            bounds = src.bounds
+            wgs84_bounds = rasterio.warp.transform_bounds(src.crs, "EPSG:4326", *bounds)
+            
+            is_projected = src.crs.is_projected if src.crs else (abs(bounds.left) > 180 or abs(bounds.bottom) > 90)
+            
+            flat_data = data.flatten()
+            
+            res = {
+                "width": render_width,
+                "height": render_height,
+                "originalWidth": src.width,
+                "originalHeight": src.height,
+                "min": min_val,
+                "max": max_val,
+                "bounds": list(wgs84_bounds),
+                "noDataValue": nodata,
+                "isProjected": is_projected,
+                "data": flat_data.tolist(),
+                "crs": src.crs.to_string() if src.crs else None
+            }
+            duration = time.time() - start_time
+            logger.info(f"Raster data read for clipped DTM in {duration:.3f}s")
+            return res
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reading clipped DTM raster: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/dtm/clipped/{clipped_id}")

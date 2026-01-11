@@ -384,6 +384,16 @@ class ElevationProfileRequest(BaseModel):
     safetyRadiusMeters: Optional[float] = 50.0
     resolutionRadiusMeters: Optional[float] = 50.0
 
+class AOI(BaseModel):
+    type: str  # 'bbox' or 'polygon'
+    crs: str  # e.g., 'EPSG:4326'
+    bbox: Optional[List[float]] = None  # [minLon, minLat, maxLon, maxLat] for bbox type
+    coordinates: Optional[List[List[float]]] = None  # [[lon, lat], ...] for polygon type
+
+class ClipRequest(BaseModel):
+    dtmId: str
+    aoi: AOI
+
 def haversine(lon1, lat1, lon2, lat2):
     """
     Calculate the great circle distance between two points 

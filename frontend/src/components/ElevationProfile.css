@@ -1,4 +1,4 @@
-﻿.elevation-panel {
+.elevation-panel {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -182,7 +182,7 @@
 
 .climb-modal__header {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
   align-items: center;
   padding: 1rem 1.25rem;
   border-bottom: 1px solid #e5e7eb;
@@ -210,7 +210,7 @@
 .climb-modal__title-row {
   display: flex;
   align-items: baseline;
-  justify-content: flex-end;
+  justify-content: space-between;
   margin-bottom: 0.5rem;
 }
 

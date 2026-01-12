@@ -372,7 +372,16 @@ async def get_elevation_at_point(request: ElevationAtPointRequest):
 
 # DTM data directory - where source TIFF files are stored
 DTM_DATA_DIR = os.environ.get("DTM_DATA_DIR", UPLOADS_DIR)
+# Resolve to absolute path
+DTM_DATA_DIR = os.path.abspath(DTM_DATA_DIR)
+
+# DTM cache directory - where clipped DTMs are stored
 DTM_CACHE_DIR = os.environ.get("DTM_CACHE_DIR", os.path.join(DTM_DATA_DIR, "Cache"))
+# Resolve to absolute path
+DTM_CACHE_DIR = os.path.abspath(DTM_CACHE_DIR)
+
+# Ensure cache directory exists
+os.makedirs(DTM_CACHE_DIR, exist_ok=True)
 
 logger.info(f"UPLOADS_DIR: {UPLOADS_DIR}")
 logger.info(f"DTM_DATA_DIR: {DTM_DATA_DIR}")

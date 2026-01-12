@@ -1755,6 +1755,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       console.log('[DELETE_CLIMB] Total climbs before filter:', prev.length);
       
       // Find the exact climb to remove (must match both endDistance AND climbAmount)
+      let matchCount = 0;
       const filtered = prev.filter((c, index) => {
         // Validate climb object
         if (!c || typeof c.endDistance !== 'number' || typeof c.climbAmount !== 'number') {
@@ -1764,6 +1765,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         
         // Check if this climb matches the one we want to delete
         // Use 0.01 tolerance for consistency with other comparisons
+        // Ensure both values are valid numbers before comparing
+        if (!Number.isFinite(c.endDistance) || !Number.isFinite(c.climbAmount) || 
+            !Number.isFinite(endDistance) || !Number.isFinite(climbAmount)) {
+          console.warn(`[DELETE_CLIMB] Non-finite values detected in comparison. Climb:`, c, `Target:`, { endDistance, climbAmount });
+          return true; // Keep this climb if values are invalid
+        }
+        
         const endDistDiff = Math.abs(c.endDistance - endDistance);
         const climbAmountDiff = Math.abs(c.climbAmount - climbAmount);
         const endDistMatches = endDistDiff <= 0.01;
@@ -1773,9 +1781,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         // Otherwise, keep it (return true)
         const shouldKeep = !(endDistMatches && climbAmountMatches);
         
+        if (!shouldKeep) {
+          matchCount++;
+        }
+        
         console.log(`[DELETE_CLIMB] Climb ${index}:`, {
           endDistance: c.endDistance,
           climbAmount: c.climbAmount,
+          targetEndDistance: endDistance,
+          targetClimbAmount: climbAmount,
           endDistDiff,
           climbAmountDiff,
           endDistMatches,
@@ -1789,13 +1803,53 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         return shouldKeep;
       });
       
+      // Additional safety check: ensure we're only deleting exactly one climb
+      // Exception: If there's only one climb and it matches, allow deletion (result will be empty array)
+      if (matchCount === prev.length && prev.length > 1) {
+        console.error(`[DELETE_CLIMB] ERROR: ALL climbs (${matchCount}/${prev.length}) match the deletion criteria! This should not happen. Aborting deletion.`);
+        console.log('[DELETE_CLIMB] Target values:', { endDistance, climbAmount, typeEndDistance: typeof endDistance, typeClimbAmount: typeof climbAmount });
+        console.log('[DELETE_CLIMB] All climbs:', prev);
+        console.log('[DELETE_CLIMB] This suggests the target values match all climbs. Check if:');
+        console.log('[DELETE_CLIMB] 1. All climbs have identical values');
+        console.log('[DELETE_CLIMB] 2. The tolerance (0.01) is too large');
+        console.log('[DELETE_CLIMB] 3. The target values are incorrect');
+        return prev; // Return original array to prevent data loss
+      }
+      
+      // If there's only one climb and it matches, allow deletion
+      if (matchCount === 1 && prev.length === 1) {
+        console.log('[DELETE_CLIMB] Deleting the only climb point. Result will be empty array.');
+        return filtered; // This will be an empty array, which is correct
+      }
+      
+      if (matchCount > 1) {
+        console.error(`[DELETE_CLIMB] ERROR: Multiple climbs (${matchCount}) match the deletion criteria! This should not happen. Aborting deletion.`);
+        return prev; // Return original array to prevent data loss
+      }
+      
+      if (matchCount === 0) {
+        console.warn('[DELETE_CLIMB] WARNING: No climb matched the deletion criteria. Nothing will be deleted.');
+        console.log('[DELETE_CLIMB] Target values:', { endDistance, climbAmount });
+        console.log('[DELETE_CLIMB] Available climbs:', prev);
+        // Return the original array since no match was found (filtered === prev in this case)
+        return prev;
+      }
+      
       // Safety check: ensure we didn't accidentally delete everything
-      if (filtered.length === 0 && prev.length > 0) {
+      // Exception: If there's only one climb and it matches, allow deletion (result will be empty array)
+      if (filtered.length === 0 && prev.length > 1) {
         console.error('[DELETE_CLIMB] WARNING: All climbs would be deleted! Aborting deletion.');
+        console.log('[DELETE_CLIMB] This should not happen if matchCount === 1. matchCount:', matchCount);
         // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:1785',message:'SAFETY CHECK: All climbs would be deleted',data:{prevLength:prev.length,filteredLength:filtered.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:1785',message:'SAFETY CHECK: All climbs would be deleted',data:{prevLength:prev.length,filteredLength:filtered.length,matchCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
         // #endregion
         return prev; // Return original array to prevent data loss
+      }
+      
+      // If there's only one climb and it matches, allow deletion (result will be empty array)
+      if (filtered.length === 0 && prev.length === 1 && matchCount === 1) {
+        console.log('[DELETE_CLIMB] Deleting the only climb point. Result will be empty array.');
+        return filtered; // This will be an empty array, which is correct
       }
       
       console.log('[DELETE_CLIMB] Filtered climb requests:', filtered);
@@ -1808,7 +1862,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       
       return filtered;
     });
-  }, []);
+  }, [setClimbRequests]);
 
   const openClimbConfig = useCallback(() => {
     setClimbConfigDraft(toDraft(climbConfig));

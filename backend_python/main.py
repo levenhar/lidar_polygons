@@ -1,5 +1,6 @@
 import os
 from fastapi import FastAPI, HTTPException, File, UploadFile, Request
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import rasterio
 import rasterio.features
@@ -40,10 +41,21 @@ app.add_middleware(
 
 # Uploads directory - needs to be mounted or same path
 UPLOADS_DIR = os.environ.get("UPLOADS_DIR", "../backend/uploads")
+# Resolve to absolute path
+UPLOADS_DIR = os.path.abspath(UPLOADS_DIR)
 
 # DTM data directory - where source TIFF files are stored
 DTM_DATA_DIR = os.environ.get("DTM_DATA_DIR", UPLOADS_DIR)
+# Resolve to absolute path
+DTM_DATA_DIR = os.path.abspath(DTM_DATA_DIR)
+
+# DTM cache directory - where clipped DTMs are stored
 DTM_CACHE_DIR = os.environ.get("DTM_CACHE_DIR", os.path.join(DTM_DATA_DIR, "Cache"))
+# Resolve to absolute path
+DTM_CACHE_DIR = os.path.abspath(DTM_CACHE_DIR)
+
+# Ensure cache directory exists
+os.makedirs(DTM_CACHE_DIR, exist_ok=True)
 
 logger.info(f"UPLOADS_DIR: {UPLOADS_DIR}")
 logger.info(f"DTM_DATA_DIR: {DTM_DATA_DIR}")
@@ -590,9 +602,20 @@ async def get_clipped_dtm_metadata(clipped_id: str):
     """Get metadata for a clipped DTM"""
     try:
         clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
+        # Resolve to absolute path for better error messages
+        clipped_file_path = os.path.abspath(clipped_file_path)
         
         if not os.path.exists(clipped_file_path):
-            raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {clipped_id}")
+            # Try to find the file with any extension
+            if os.path.exists(DTM_CACHE_DIR):
+                cache_files = os.listdir(DTM_CACHE_DIR)
+                matching_files = [f for f in cache_files if f.startswith(clipped_id)]
+                logger.warning(f"Clipped DTM not found: {clipped_file_path}")
+                logger.info(f"Cache directory: {os.path.abspath(DTM_CACHE_DIR)}")
+                logger.info(f"Files in cache: {cache_files[:10]}")
+                if matching_files:
+                    logger.info(f"Found matching files: {matching_files}")
+            raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {clipped_id} in cache directory: {os.path.abspath(DTM_CACHE_DIR)}")
         
         with rasterio.open(clipped_file_path) as src:
             bounds = src.bounds
@@ -626,9 +649,25 @@ async def get_clipped_dtm_raster(clipped_id: str):
     """Get raster data for a clipped DTM"""
     try:
         clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
+        # Resolve to absolute path for better error messages
+        clipped_file_path = os.path.abspath(clipped_file_path)
         
         if not os.path.exists(clipped_file_path):
-            raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {clipped_id}")
+            # Try to find the file with any extension
+            if os.path.exists(DTM_CACHE_DIR):
+                cache_files = os.listdir(DTM_CACHE_DIR)
+                matching_files = [f for f in cache_files if f.startswith(clipped_id)]
+                logger.warning(f"Clipped DTM not found: {clipped_file_path}")
+                logger.info(f"Cache directory: {os.path.abspath(DTM_CACHE_DIR)}")
+                logger.info(f"Files in cache: {cache_files[:10]}")
+                if matching_files:
+                    logger.info(f"Found matching files: {matching_files}")
+                    # Try using the first matching file
+                    clipped_file_path = os.path.abspath(os.path.join(DTM_CACHE_DIR, matching_files[0]))
+                else:
+                    raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {clipped_id} in cache directory: {os.path.abspath(DTM_CACHE_DIR)}")
+            else:
+                raise HTTPException(status_code=404, detail=f"Cache directory does not exist: {os.path.abspath(DTM_CACHE_DIR)}")
         
         start_time = time.time()
         logger.info(f"Reading raster data for clipped DTM: {clipped_id}")
@@ -696,6 +735,52 @@ async def get_clipped_dtm_raster(clipped_id: str):
         raise
     except Exception as e:
         logger.error(f"Error reading clipped DTM raster: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/dtm/clipped/{clipped_id}/file")
+@app.get("/api/dtm/clipped/{clipped_id}/download")
+@app.get("/api/dtm/clipped/{clipped_id}/geotiff")
+@app.get("/api/dtm/clipped/{clipped_id}/tif")
+async def get_clipped_dtm_file(clipped_id: str):
+    """Get the clipped DTM file directly from cache directory"""
+    try:
+        # Try with .tif extension first
+        clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
+        clipped_file_path = os.path.abspath(clipped_file_path)
+        
+        # If not found, try without extension or with other extensions
+        if not os.path.exists(clipped_file_path):
+            # Try to find the file with any extension
+            if os.path.exists(DTM_CACHE_DIR):
+                cache_files = os.listdir(DTM_CACHE_DIR)
+                for file in cache_files:
+                    if file.startswith(clipped_id):
+                        clipped_file_path = os.path.abspath(os.path.join(DTM_CACHE_DIR, file))
+                        break
+                else:
+                    logger.warning(f"Clipped DTM not found: {clipped_id}")
+                    logger.info(f"Cache directory: {os.path.abspath(DTM_CACHE_DIR)}")
+                    logger.info(f"Files in cache: {cache_files[:10]}")
+                    raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {clipped_id} in cache directory: {os.path.abspath(DTM_CACHE_DIR)}")
+            else:
+                logger.warning(f"DTM_CACHE_DIR does not exist: {os.path.abspath(DTM_CACHE_DIR)}")
+                raise HTTPException(status_code=404, detail=f"Cache directory not found: {os.path.abspath(DTM_CACHE_DIR)}")
+        
+        if not os.path.exists(clipped_file_path):
+            logger.error(f"Clipped DTM file not found: {clipped_file_path}")
+            logger.info(f"Cache directory contents: {os.listdir(DTM_CACHE_DIR) if os.path.exists(DTM_CACHE_DIR) else 'Directory does not exist'}")
+            raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {clipped_id}")
+        
+        logger.info(f"Serving clipped DTM file: {clipped_file_path}")
+        return FileResponse(
+            clipped_file_path,
+            media_type="image/tiff",
+            filename=f"{clipped_id}.tif"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving clipped DTM file: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/dtm/clipped/{clipped_id}")

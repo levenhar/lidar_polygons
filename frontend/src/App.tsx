@@ -446,6 +446,14 @@ function App() {
     }
   }, [loading]);
   
+  // Clear stable profile when all points are deleted
+  React.useEffect(() => {
+    if (flightPath.length === 0) {
+      setStableProfileResult({ points: [], warnings: [] });
+      profileLockedRef.current = false; // Unlock profile when cleared
+    }
+  }, [flightPath.length]);
+
   // Update stable profile only when:
   // 1. Queue is empty and processing is complete
   // 2. Server has confirmed profile is ready (profileReady)
@@ -455,11 +463,12 @@ function App() {
     // - Queue is completely empty and not processing
     // - Server has sent ready flag
     // - Profile is not locked (or we're starting a new calculation)
-    if (editQueue.length === 0 && !isProcessingQueue && profileReady && !profileLockedRef.current) {
+    // - Flight path is not empty (empty case is handled above)
+    if (editQueue.length === 0 && !isProcessingQueue && profileReady && !profileLockedRef.current && flightPath.length > 0) {
       setStableProfileResult(fullProfileResultInternal);
       profileLockedRef.current = true; // Lock the profile once displayed
     }
-  }, [fullProfileResultInternal, editQueue.length, isProcessingQueue, profileReady]);
+  }, [fullProfileResultInternal, editQueue.length, isProcessingQueue, profileReady, flightPath.length]);
 
   // Use stable profile - this ensures the profile only shows the final version when queue is empty and ready
   const fullProfileResult = stableProfileResult;
@@ -661,6 +670,15 @@ function App() {
   }, [activeClippedId, deleteDtmOnServer]);
 
   const handleDtmUnload = useCallback(() => {
+    // Show warning confirmation dialog
+    const confirmed = window.confirm(
+      'האם אתה בטוח שברצונך לפרוק את ה-DTM?\n\nפעולה זו תמחק את כל הנקודות והמסלולים ותנקה את פרופיל הגובה.\n\nלא ניתן לבטל פעולה זו.'
+    );
+    
+    if (!confirmed) {
+      return; // User cancelled, do nothing
+    }
+
     if (dtmSource || activeClippedId) {
       deleteDtmOnServer(dtmSource || undefined, activeClippedId || undefined).catch((error) => {
         console.error('Failed to clean up DTM cache:', error);

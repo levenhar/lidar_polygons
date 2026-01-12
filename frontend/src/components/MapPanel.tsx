@@ -1258,49 +1258,26 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Cleanup clipped DTM on unload or navigation
   useEffect(() => {
-    const cleanupClippedDtm = () => {
-      if (activeClippedId) {
-        try {
-          // Use fetch with keepalive for reliable cleanup on page unload
-          // sendBeacon only supports POST, so we use fetch with keepalive for DELETE
-          fetch(`/api/dtm/clipped/${activeClippedId}`, {
-            method: 'DELETE',
-            keepalive: true
-          }).catch(() => {
-            // Ignore errors during cleanup - page might be unloading
-          });
-        } catch (error) {
-          // Ignore errors during cleanup
-        }
-      }
-    };
-
     const handleBeforeUnload = () => {
-      cleanupClippedDtm();
+      if (activeClippedId) {
+        // Use sendBeacon for reliable cleanup on page unload
+        const payload = JSON.stringify({ clippedId: activeClippedId });
+        const blob = new Blob([payload], { type: 'application/json' });
+        navigator.sendBeacon('/api/dtm/cleanup', blob);
+      }
     };
 
     const handlePageHide = (event: PageTransitionEvent) => {
-      // Only cleanup if page is not being cached (e.g., back/forward navigation)
-      if (!event.persisted) {
-        cleanupClippedDtm();
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      // Cleanup when page becomes hidden (user switching tabs, closing window, etc.)
-      if (document.visibilityState === 'hidden') {
-        cleanupClippedDtm();
-      }
+      if (event.persisted) return;
+      handleBeforeUnload();
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('pagehide', handlePageHide);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handlePageHide);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [activeClippedId]);
 

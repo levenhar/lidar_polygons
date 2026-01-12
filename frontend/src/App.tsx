@@ -236,6 +236,12 @@ function App() {
       profileCalculationTimeoutRef.current = null;
     }
 
+    // Clear any pending debounce timer
+    if (profileCalculationTimeoutRef.current) {
+      clearTimeout(profileCalculationTimeoutRef.current);
+      profileCalculationTimeoutRef.current = null;
+    }
+
     if (baseChanged) {
       if (flightPath.length === 0) {
         // Clear profile immediately when flight path is empty

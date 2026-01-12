@@ -122,6 +122,19 @@ export function useElevationProfile() {
       if (!response.data.ready) {
         console.warn('Server did not send ready flag, waiting...');
         setLoading(false);
+        setProfileReady(false);
+        return;
+      }
+
+      // Validate that we have complete profile data before processing
+      if (!response.data.profile || !Array.isArray(response.data.profile) || response.data.profile.length === 0) {
+        console.error('Server returned incomplete profile data:', {
+          hasProfile: !!response.data.profile,
+          isArray: !!(response.data.profile && Array.isArray(response.data.profile)),
+          length: response.data.profile ? response.data.profile.length : 0
+        });
+        setLoading(false);
+        setProfileReady(false);
         return;
       }
 

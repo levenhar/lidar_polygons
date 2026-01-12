@@ -945,7 +945,28 @@ app.post('/api/elevation-at-point', async (req, res) => {
       })
     });
 
+    // Validate that the result contains the expected profile data
+    // Only set ready flag if the data is complete and valid
+    const isDataComplete = result && 
+                           result.profile && 
+                           Array.isArray(result.profile) && 
+                           result.profile.length > 0;
+
+    if (!isDataComplete) {
+      console.warn('Profile data incomplete or invalid:', {
+        hasResult: !!result,
+        hasProfile: !!(result && result.profile),
+        isArray: !!(result && result.profile && Array.isArray(result.profile)),
+        length: result && result.profile ? result.profile.length : 0
+      });
+      return res.status(500).json({
+        error: 'Profile calculation did not return complete data',
+        details: 'Server did not receive complete profile data from Python backend'
+      });
+    }
+
     // Add completion flag to signal that profile calculation is finished
+    // Only set ready: true when we have confirmed complete data
     res.json({
       ...result,
       ready: true

@@ -483,26 +483,6 @@ const ClimbConstraints1DGraph: React.FC<ClimbConstraints1DGraphProps> = ({
           </text>
         </g>
       </svg>
-      
-      {/* Limiting reasons */}
-      <div className="climb-constraints-reasons">
-        {constraintResult.limitingReasons.map((reason, idx) => (
-          <div key={idx} className="climb-reason">
-            {reason}
-          </div>
-        ))}
-        {constraintResult.left === null && constraintResult.right === null && (
-          <div className="climb-reason info">
-            אין אילוצים מגבילים. המגבלה היא גבול המסלול.
-          </div>
-        )}
-      </div>
-      
-      {/* Available distances */}
-      <div className="climb-distances">
-        <span>מרחק מהתחלה: {dL === Infinity ? '∞' : dL.toFixed(1)} מ'</span>
-        <span>מרחק לסיום: {dR === Infinity ? '∞' : dR.toFixed(1)} מ'</span>
-      </div>
     </div>
   );
 };

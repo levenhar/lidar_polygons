@@ -194,6 +194,9 @@ function App() {
     nominalFlightHeight: number;
   } | null>(null);
 
+  // Debounce timer for profile calculation to handle rapid point additions
+  const profileCalculationTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+
   React.useEffect(() => {
     const prev = lastProfileParamsRef.current;
     const baseChanged = !prev
@@ -203,15 +206,26 @@ function App() {
       || prev.resolutionSearchRadius !== resolutionSearchRadius;
     const nominalChanged = !prev || prev.nominalFlightHeight !== nominalFlightHeight;
 
+    // Clear any pending debounce timer
+    if (profileCalculationTimeoutRef.current) {
+      clearTimeout(profileCalculationTimeoutRef.current);
+      profileCalculationTimeoutRef.current = null;
+    }
+
     if (baseChanged) {
       if (flightPath.length === 0) {
-        // Clear profile when flight path is empty
+        // Clear profile immediately when flight path is empty
         calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
       } else if (flightPath.length === 1) {
-        // Clear profile when only one point remains
+        // Clear profile immediately when only one point remains
         clearProfile();
       } else if (flightPath.length >= 2 && dtmSource) {
-        calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
+        // Debounce profile calculation to wait for user to finish adding points
+        // This prevents sending too many requests when points are added quickly
+        profileCalculationTimeoutRef.current = setTimeout(() => {
+          calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
+          profileCalculationTimeoutRef.current = null;
+        }, 300); // Wait 300ms after the last change
       }
     } else if (nominalChanged) {
       // Fast update: adjust flight heights without reloading elevations
@@ -224,6 +238,14 @@ function App() {
       safetySearchRadius,
       resolutionSearchRadius,
       nominalFlightHeight
+    };
+
+    // Cleanup: cancel pending calculation if component unmounts or dependencies change
+    return () => {
+      if (profileCalculationTimeoutRef.current) {
+        clearTimeout(profileCalculationTimeoutRef.current);
+        profileCalculationTimeoutRef.current = null;
+      }
     };
   }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights, clearProfile]);
 
@@ -448,6 +470,23 @@ function App() {
       profileLockedRef.current = false; // Unlock when new calculation starts
     }
   }, [loading]);
+  
+  // Unlock profile when edit queue changes (points are being added/deleted/updated)
+  // This ensures the profile can be recalculated when the flight path changes
+  // Also clear the stable profile for geometry-changing operations to prevent showing stale data
+  React.useEffect(() => {
+    if (editQueue.length > 0) {
+      profileLockedRef.current = false; // Unlock when edits are queued
+      
+      // Check if any queued operations change the geometry (delete or update)
+      const hasGeometryChange = editQueue.some(op => op.type === 'delete' || op.type === 'update');
+      if (hasGeometryChange) {
+        // Clear stable profile to show loading state instead of stale/invalid data
+        // The profile will be updated once the new calculation completes
+        setStableProfileResult({ points: [], warnings: [] });
+      }
+    }
+  }, [editQueue]);
   
   // Clear stable profile when all points are deleted or only one point remains
   React.useEffect(() => {

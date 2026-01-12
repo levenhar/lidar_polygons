@@ -1,12 +1,16 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Coordinate } from '../App';
 import { ElevationPoint } from '../App';
-import axios from 'axios';
+import axios, { CancelTokenSource } from 'axios';
 
 export function useElevationProfile() {
   const [elevationProfile, setElevationProfile] = useState<ElevationPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [profileReady, setProfileReady] = useState(false);
+  
+  // Track the latest request to cancel previous ones
+  const cancelTokenSourceRef = useRef<CancelTokenSource | null>(null);
+  const requestIdRef = useRef(0);
 
   const calculateProfile = useCallback(async (
     flightPath: Coordinate[],
@@ -17,9 +21,29 @@ export function useElevationProfile() {
   ) => {
     if (flightPath.length < 2) {
       setElevationProfile([]);
+      setProfileReady(false);
+      setLoading(false);
+      // Cancel any pending request
+      if (cancelTokenSourceRef.current) {
+        cancelTokenSourceRef.current.cancel('Flight path too short');
+        cancelTokenSourceRef.current = null;
+      }
       return;
     }
 
+    // Cancel any previous request
+    if (cancelTokenSourceRef.current) {
+      cancelTokenSourceRef.current.cancel('New calculation started');
+      cancelTokenSourceRef.current = null;
+    }
+
+    // Create a new cancel token for this request
+    const cancelTokenSource = axios.CancelToken.source();
+    cancelTokenSourceRef.current = cancelTokenSource;
+    
+    // Increment request ID to track the latest request
+    const currentRequestId = ++requestIdRef.current;
+    
     setLoading(true);
     setProfileReady(false); // Reset ready flag when starting new calculation
     try {
@@ -63,12 +87,33 @@ export function useElevationProfile() {
         safetyRadiusMeters: safetyRadiusToUse, // User-configurable radius for min (safety)
         resolutionRadiusMeters: resolutionRadiusToUse, // User-configurable radius for max (resolution)
         ...(clippedId && { clippedId }) // Pass clippedId if available for faster processing
+      }, {
+        cancelToken: cancelTokenSource.token
       });
+      
+      // Check if this request is still the latest one
+      if (currentRequestId !== requestIdRef.current) {
+        console.log('Ignoring response from outdated request');
+        return;
+      }
 
       // Check if server sent ready flag - only process if ready
       if (!response.data.ready) {
         console.warn('Server did not send ready flag, waiting...');
         setLoading(false);
+        setProfileReady(false);
+        return;
+      }
+
+      // Validate that we have complete profile data before processing
+      if (!response.data.profile || !Array.isArray(response.data.profile) || response.data.profile.length === 0) {
+        console.error('Server returned incomplete profile data:', {
+          hasProfile: !!response.data.profile,
+          isArray: !!(response.data.profile && Array.isArray(response.data.profile)),
+          length: response.data.profile ? response.data.profile.length : 0
+        });
+        setLoading(false);
+        setProfileReady(false);
         return;
       }
 
@@ -135,10 +180,42 @@ export function useElevationProfile() {
         })));
       }
       
-      // Only set profile when server confirms it's ready
+      // Only set profile when server confirms it's ready AND data is complete
+      // Validate profile data is complete before setting ready flag
+      if (profile.length === 0) {
+        console.warn('Processed profile is empty, not setting ready flag');
+        setLoading(false);
+        setProfileReady(false);
+        return;
+      }
+
+      // Check again if this request is still the latest one before updating state
+      if (currentRequestId !== requestIdRef.current) {
+        console.log('Ignoring response from outdated request');
+        return;
+      }
+
+      // Clear the cancel token reference since request completed successfully
+      if (cancelTokenSourceRef.current === cancelTokenSource) {
+        cancelTokenSourceRef.current = null;
+      }
+
+      // Set profile data and ready flag together to ensure atomic update
+      // This ensures the component only displays after all data is processed
       setElevationProfile(profile);
       setProfileReady(true);
+      setLoading(false);
     } catch (error) {
+      // Clear the cancel token reference
+      if (cancelTokenSourceRef.current === cancelTokenSource) {
+        cancelTokenSourceRef.current = null;
+      }
+      
+      // Ignore cancellation errors
+      if (axios.isCancel(error)) {
+        console.log('Profile calculation cancelled:', error.message);
+        return;
+      }
       console.error('Error calculating elevation profile:', error);
       // Fallback to mock data if API fails
       const calculateDistance = (coord1: Coordinate, coord2: Coordinate): number => {
@@ -210,9 +287,9 @@ export function useElevationProfile() {
           flightHeight: interpolateFlightHeight(distance)
         };
       });
+      // Set profile data and ready flag together to ensure atomic update
       setElevationProfile(mockProfile);
-      setProfileReady(true); // Mark as ready even for mock data
-    } finally {
+      setProfileReady(true);
       setLoading(false);
     }
   }, []);
@@ -286,6 +363,13 @@ export function useElevationProfile() {
   }, []);
 
   const clearProfile = useCallback(() => {
+    // Cancel any pending request
+    if (cancelTokenSourceRef.current) {
+      cancelTokenSourceRef.current.cancel('Profile cleared');
+      cancelTokenSourceRef.current = null;
+    }
+    // Increment request ID to invalidate any in-flight requests
+    requestIdRef.current++;
     setElevationProfile([]);
     setProfileReady(false);
     setLoading(false);

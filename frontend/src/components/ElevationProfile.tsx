@@ -1567,7 +1567,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         // For new climb point, use maxElevation if available to ensure only maximum value limits the elevation
         ground: p.maxElevation !== undefined ? p.maxElevation : p.elevation
       }));
-      const sorted = [...climbRequests].sort((a, b) => a.endDistance - b.endDistance);
+      // Exclude the climb being edited (if any) from base calculation
+      const climbsToProcess = editingClimb
+        ? climbRequests.filter(
+            (c) =>
+              !(Math.abs(c.endDistance - editingClimb.endDistance) < 0.01 &&
+                Math.abs(c.climbAmount - editingClimb.climbAmount) < 0.01)
+          )
+        : climbRequests;
+      const sorted = [...climbsToProcess].sort((a, b) => a.endDistance - b.endDistance);
       sorted.forEach((c) => {
         const activeRatio = c.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
         const requiredHorizontal = Math.abs(c.climbAmount) * activeRatio;
@@ -1684,7 +1692,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     }
 
     setClimbRequests((prev) => {
-      const filtered = prev.filter((c) => Math.abs(c.endDistance - pendingClimbEnd) > 0.01);
+      // If editing, remove the specific climb being edited; otherwise remove any climb at the same endDistance
+      const filtered = editingClimb
+        ? prev.filter(
+            (c) =>
+              !(Math.abs(c.endDistance - editingClimb.endDistance) < 0.01 &&
+                Math.abs(c.climbAmount - editingClimb.climbAmount) < 0.01)
+          )
+        : prev.filter((c) => Math.abs(c.endDistance - pendingClimbEnd) > 0.01);
       return [...filtered, { endDistance: pendingClimbEnd, climbAmount: parsed }].sort((a, b) => a.endDistance - b.endDistance);
     });
     setIsClimbAmountOpen(false);
@@ -1699,21 +1714,60 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   }, [setClimbRequests]);
 
   const handleRemoveSingleClimb = useCallback((endDistance: number, climbAmount: number) => {
+    // #region agent log
+    const logData = {location:'ElevationProfile.tsx:1718',message:'handleRemoveSingleClimb ENTRY',data:{endDistance,climbAmount,flightPathLength:flightPath.length,climbRequestsLength:climbRequests.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'A'};
+    console.log('[DEBUG LOG]', JSON.stringify(logData));
+    fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(logData)}).catch((err) => console.error('[DEBUG LOG FETCH ERROR]', err));
+    // #endregion
     console.log('========================================');
     console.log('[DELETE_CLIMB] handleRemoveSingleClimb CALLED');
     console.log('[DELETE_CLIMB] Target to delete:', { endDistance, climbAmount });
     console.log('[DELETE_CLIMB] Stack trace:', new Error().stack);
     
+    // Validate inputs
+    if (!Number.isFinite(endDistance) || !Number.isFinite(climbAmount)) {
+      console.error('[DELETE_CLIMB] Invalid parameters:', { endDistance, climbAmount });
+      return;
+    }
+    
+    // Clear editing state if the deleted climb was being edited
+    setEditingClimb((currentEditing) => {
+      if (currentEditing &&
+          Math.abs(currentEditing.endDistance - endDistance) < 0.01 &&
+          Math.abs(currentEditing.climbAmount - climbAmount) < 0.01) {
+        console.log('[DELETE_CLIMB] Clearing editing state for deleted climb');
+        return null;
+      }
+      return currentEditing;
+    });
+    
     setClimbRequests((prev) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:1739',message:'setClimbRequests BEFORE filter',data:{prevLength:prev?.length,prev:JSON.stringify(prev)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+      // #endregion
+      // Safety check: ensure we have a valid array
+      if (!Array.isArray(prev)) {
+        console.error('[DELETE_CLIMB] prev is not an array:', prev);
+        return prev;
+      }
+      
       console.log('[DELETE_CLIMB] Current climb requests before filter:', prev);
       console.log('[DELETE_CLIMB] Total climbs before filter:', prev.length);
       
+      // Find the exact climb to remove (must match both endDistance AND climbAmount)
       const filtered = prev.filter((c, index) => {
+        // Validate climb object
+        if (!c || typeof c.endDistance !== 'number' || typeof c.climbAmount !== 'number') {
+          console.warn(`[DELETE_CLIMB] Invalid climb object at index ${index}:`, c);
+          return true; // Keep invalid entries to avoid data loss
+        }
+        
         // Check if this climb matches the one we want to delete
+        // Use 0.01 tolerance for consistency with other comparisons
         const endDistDiff = Math.abs(c.endDistance - endDistance);
         const climbAmountDiff = Math.abs(c.climbAmount - climbAmount);
-        const endDistMatches = endDistDiff <= 0.001;
-        const climbAmountMatches = climbAmountDiff <= 0.001;
+        const endDistMatches = endDistDiff <= 0.01;
+        const climbAmountMatches = climbAmountDiff <= 0.01;
         
         // If BOTH match, this is the climb to delete, so filter it out (return false)
         // Otherwise, keep it (return true)
@@ -1735,9 +1789,21 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         return shouldKeep;
       });
       
+      // Safety check: ensure we didn't accidentally delete everything
+      if (filtered.length === 0 && prev.length > 0) {
+        console.error('[DELETE_CLIMB] WARNING: All climbs would be deleted! Aborting deletion.');
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:1785',message:'SAFETY CHECK: All climbs would be deleted',data:{prevLength:prev.length,filteredLength:filtered.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
+        // #endregion
+        return prev; // Return original array to prevent data loss
+      }
+      
       console.log('[DELETE_CLIMB] Filtered climb requests:', filtered);
       console.log('[DELETE_CLIMB] Total climbs after filter:', filtered.length);
       console.log('[DELETE_CLIMB] Climbs removed:', prev.length - filtered.length);
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:1790',message:'setClimbRequests AFTER filter',data:{prevLength:prev.length,filteredLength:filtered.length,filtered:JSON.stringify(filtered)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+      // #endregion
       console.log('========================================');
       
       return filtered;
@@ -2133,7 +2199,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   selectedDistance={pendingClimbEnd}
                   totalRouteLength={totalRouteLength}
                   vertexDistances={vertexDistances}
-                  climbRequests={climbRequests}
+                  climbRequests={
+                    // Exclude the climb being edited from constraint visualization
+                    editingClimb
+                      ? climbRequests.filter(
+                          (c) =>
+                            !(Math.abs(c.endDistance - editingClimb.endDistance) < 0.01 &&
+                              Math.abs(c.climbAmount - editingClimb.climbAmount) < 0.01)
+                        )
+                      : climbRequests
+                  }
                   config={climbConfig}
                 />
               )}
@@ -2304,8 +2379,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             type="button"
             className="climb-context-item destructive"
             onClick={(e) => {
+              // #region agent log
+              const logData = {location:'ElevationProfile.tsx:2380',message:'DELETE BUTTON CLICKED',data:{target:(e.target as any)?.tagName,currentTarget:(e.currentTarget as any)?.tagName,flightPathLength:flightPath.length,climbRequestsLength:climbRequests.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'};
+              console.log('[DEBUG LOG]', JSON.stringify(logData));
+              fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(logData)}).catch((err) => console.error('[DEBUG LOG FETCH ERROR]', err));
+              // #endregion
               console.log('========================================');
               console.log('[CLIMB_MENU] DELETE CLIMB BUTTON CLICKED');
+              console.log('[CLIMB_MENU] Current flightPath length:', flightPath.length);
+              console.log('[CLIMB_MENU] Current climbRequests length:', climbRequests.length);
               console.log('[CLIMB_MENU] Event:', {
                 type: e.type,
                 target: (e.target as any)?.tagName,
@@ -2313,6 +2395,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 button: (e as any).button,
                 defaultPrevented: e.defaultPrevented
               });
+              
+              // CRITICAL: Stop all event propagation immediately
+              e.preventDefault();
+              e.stopPropagation();
+              e.nativeEvent?.stopImmediatePropagation?.();
+              
+              // Validate we have valid climb context menu data
+              if (!climbContextMenu || !Number.isFinite(climbContextMenu.endDistance) || !Number.isFinite(climbContextMenu.climbAmount)) {
+                console.error('[CLIMB_MENU] Invalid climb context menu data:', climbContextMenu);
+                setClimbContextMenu(null);
+                return;
+              }
+              
               console.log('[CLIMB_MENU] Climb context menu data:', {
                 endDistance: climbContextMenu.endDistance,
                 climbAmount: climbContextMenu.climbAmount,
@@ -2321,24 +2416,36 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               });
               console.log('[CLIMB_MENU] Stack trace:', new Error().stack);
               
-              e.preventDefault();
-              e.stopPropagation();
+              // Store the values before closing the menu
+              const targetEndDistance = climbContextMenu.endDistance;
+              const targetClimbAmount = climbContextMenu.climbAmount;
+              
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:2408',message:'BEFORE calling handleRemoveSingleClimb',data:{targetEndDistance,targetClimbAmount,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+              // #endregion
+              
+              // Close menus first to prevent any interference
+              setClimbContextMenu(null);
+              setContextMenu(null);
               
               console.log('[CLIMB_MENU] Calling handleRemoveSingleClimb with:', {
-                endDistance: climbContextMenu.endDistance,
-                climbAmount: climbContextMenu.climbAmount
+                endDistance: targetEndDistance,
+                climbAmount: targetClimbAmount
               });
               
-              handleRemoveSingleClimb(climbContextMenu.endDistance, climbContextMenu.climbAmount);
+              // Call the delete function with the stored values
+              handleRemoveSingleClimb(targetEndDistance, targetClimbAmount);
+              
+              // #region agent log
+              fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:2420',message:'AFTER calling handleRemoveSingleClimb',data:{targetEndDistance,targetClimbAmount,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+              // #endregion
               
               console.log('[CLIMB_MENU] handleRemoveSingleClimb call completed');
-              console.log('[CLIMB_MENU] Closing climb context menu');
-              setClimbContextMenu(null);
-              // Ensure regular context menu is also closed
-              console.log('[CLIMB_MENU] Closing regular context menu (if open)');
-              setContextMenu(null);
-              console.log('[CLIMB_MENU] All context menus closed');
               console.log('========================================');
+            }}
+            onMouseDown={(e) => {
+              // Also prevent propagation on mousedown to catch any early events
+              e.stopPropagation();
             }}
           >
             מחק עלייה

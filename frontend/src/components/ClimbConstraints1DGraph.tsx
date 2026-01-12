@@ -253,6 +253,7 @@ const ClimbConstraints1DGraph: React.FC<ClimbConstraints1DGraphProps> = ({
     return 500;
   }
 
+  // @ts-ignore
   const { padding, chartHeight, centerX, axisY, constraintVis, exclusionZones, ticks, dL, dR } = graphData;
 
   return (

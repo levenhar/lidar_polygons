@@ -167,6 +167,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [climbValidationPopup, setClimbValidationPopup] = useState<string | null>(null);
   const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number } | null>(null);
   const climbContextMenuRef = useRef<HTMLDivElement | null>(null);
+  // Track the climb being edited to exclude it from constraint checks
+  const [editingClimb, setEditingClimb] = useState<{ endDistance: number; climbAmount: number } | null>(null);
 
   // Log state changes for debugging
   useEffect(() => {
@@ -197,6 +199,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   // Function to check if a location is within a forbidden climb area (climb area + buffer)
   const isLocationInForbiddenClimbArea = useCallback((distance: number): { isValid: boolean; message: string | null } => {
     for (const existingClimb of climbRequests) {
+      // Skip the climb being edited (if any)
+      if (editingClimb && 
+          Math.abs(existingClimb.endDistance - editingClimb.endDistance) < 0.01 &&
+          Math.abs(existingClimb.climbAmount - editingClimb.climbAmount) < 0.01) {
+        continue;
+      }
+      
       const existingRatio = existingClimb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
       const existingRequiredHorizontal = Math.abs(existingClimb.climbAmount) * existingRatio;
       const existingStart = Math.max(0, existingClimb.endDistance - existingRequiredHorizontal);
@@ -214,7 +223,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
     }
     return { isValid: true, message: null };
-  }, [climbRequests, climbConfig]);
+  }, [climbRequests, climbConfig, editingClimb]);
 
   // Get total route length from elevation profile
   const totalRouteLength = useMemo(() => {
@@ -1276,6 +1285,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       setPendingClimbEnd(clickedDistance);
       setClimbAmountInput('');
       setClimbAmountError(null);
+      setEditingClimb(null); // Clear any editing state when creating a new climb
       setIsClimbAmountOpen(true);
     });
 
@@ -1610,6 +1620,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     });
 
     for (const existingClimb of climbRequests) {
+      // Skip the climb being edited (if any)
+      if (editingClimb && 
+          Math.abs(existingClimb.endDistance - editingClimb.endDistance) < 0.01 &&
+          Math.abs(existingClimb.climbAmount - editingClimb.climbAmount) < 0.01) {
+        continue;
+      }
+      
       const existingRatio = existingClimb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
       const existingRequiredHorizontal = Math.abs(existingClimb.climbAmount) * existingRatio;
       const existingStart = Math.max(0, existingClimb.endDistance - existingRequiredHorizontal);
@@ -1673,7 +1690,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     setIsClimbAmountOpen(false);
     setPendingClimbEnd(null);
     setClimbAmountError(null);
-  }, [climbAmountInput, pendingClimbEnd, climbRequests, climbConfig, flightPath, elevationProfile, nominalFlightHeight, setClimbRequests]);
+    setEditingClimb(null); // Clear editing state after confirming
+  }, [climbAmountInput, pendingClimbEnd, climbRequests, climbConfig, flightPath, elevationProfile, nominalFlightHeight, setClimbRequests, editingClimb]);
 
   const handleRemoveClimb = useCallback(() => {
     setClimbRequests([]);
@@ -2067,7 +2085,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           <div className="climb-modal__card">
             <div className="climb-modal__header">
               <div className="climb-modal__title">החל עלייה</div>
-              <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); }}>×</button>
+              <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); setEditingClimb(null); }}>×</button>
             </div>
             <div className="climb-modal__body">
               <div className="climb-modal__title-row">
@@ -2121,7 +2139,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               )}
             </div>
             <div className="climb-modal__actions">
-              <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbAmountOpen(false)}>ביטול</button>
+              <button className="btn btn-tertiary" type="button" onClick={() => { setIsClimbAmountOpen(false); setEditingClimb(null); }}>ביטול</button>
               <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>החל עלייה</button>
             </div>
           </div>
@@ -2275,6 +2293,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               setPendingClimbEnd(climbContextMenu.endDistance);
               setClimbAmountInput(climbContextMenu.climbAmount.toString());
               setClimbAmountError(null);
+              // Track the climb being edited to exclude it from constraint checks
+              setEditingClimb({ endDistance: climbContextMenu.endDistance, climbAmount: climbContextMenu.climbAmount });
               setIsClimbAmountOpen(true);
             }}
           >
@@ -2382,7 +2402,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </div>
         );
       })()}
-      {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && (
+      {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && !contextMenu && !climbContextMenu && (
         <div
           ref={tooltipRef}
           className="hover-metadata-tooltip"

@@ -3622,7 +3622,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </button>
         )}
       </div>
-      {showMetadata && hoveredElevationPoint && mousePos && hoverSource === 'map' && (
+      {showMetadata && hoveredElevationPoint && mousePos && hoverSource === 'map' && !contextMenu && (
         <div
           ref={tooltipRef}
           className="hover-metadata-tooltip"

@@ -2,6 +2,7 @@ import { useState, useCallback, useRef } from 'react';
 import { Coordinate } from '../App';
 import { ElevationPoint } from '../App';
 import axios, { CancelTokenSource } from 'axios';
+import { computeClimbProfile, BaseAltitudeSample, ClimbConfig } from '../utils/climb';
 
 export function useElevationProfile() {
   const [elevationProfile, setElevationProfile] = useState<ElevationPoint[]>([]);
@@ -294,71 +295,92 @@ export function useElevationProfile() {
     }
   }, []);
 
-  const refreshFlightHeights = useCallback((flightPath: Coordinate[], nominalFlightHeight: number) => {
+  const refreshFlightHeights = useCallback((
+    flightPath: Coordinate[], 
+    nominalFlightHeight: number,
+    climbRequests?: { endDistance: number; climbAmount: number }[],
+    climbConfig?: ClimbConfig
+  ) => {
     if (flightPath.length < 1) {
       return;
     }
-
-    // Recompute cumulative distances along the current path
-    const calculateDistance = (coord1: Coordinate, coord2: Coordinate): number => {
-      const R = 6371000; // Earth radius in meters
-      const dLat = (coord2.lat - coord1.lat) * Math.PI / 180;
-      const dLon = (coord2.lng - coord1.lng) * Math.PI / 180;
-      const a = 
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(coord1.lat * Math.PI / 180) * Math.cos(coord2.lat * Math.PI / 180) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return R * c;
-    };
-
-    let cumulativeDistance = 0;
-    const distances = [0];
-    for (let i = 1; i < flightPath.length; i++) {
-      const segmentDist = calculateDistance(flightPath[i - 1], flightPath[i]);
-      cumulativeDistance += segmentDist;
-      distances.push(cumulativeDistance);
-    }
-
-    // Interpolate with the new nominal height without re-fetching elevations
-    const interpolateFlightHeight = (distance: number): number => {
-      if (distance <= 0) {
-        return flightPath[0].height ?? nominalFlightHeight;
-      }
-      
-      if (distance >= distances[distances.length - 1]) {
-        return flightPath[flightPath.length - 1].height ?? nominalFlightHeight;
-      }
-      
-      for (let i = 0; i < distances.length - 1; i++) {
-        if (distance >= distances[i] && distance <= distances[i + 1]) {
-          const startHeight = flightPath[i].height ?? nominalFlightHeight;
-          const endHeight = flightPath[i + 1].height ?? nominalFlightHeight;
-          
-          if (startHeight === endHeight) {
-            return startHeight;
-          }
-          
-          const segmentStartDist = distances[i];
-          const segmentLength = distances[i + 1] - segmentStartDist;
-          const distanceInSegment = distance - segmentStartDist;
-          const t = segmentLength > 0 ? distanceInSegment / segmentLength : 0;
-          return startHeight + (endHeight - startHeight) * t;
-        }
-      }
-      
-      return nominalFlightHeight;
-    };
 
     setElevationProfile(prevProfile => {
       if (prevProfile.length === 0) {
         return prevProfile;
       }
 
-      return prevProfile.map(point => ({
-        ...point,
-        flightHeight: interpolateFlightHeight(point.distance)
-      }));
+      // If we have climb requests and config, recalculate planned altitude properly
+      if (climbRequests && climbRequests.length > 0 && climbConfig) {
+        // 1. Calculate base altitude profile (nominal height above first point)
+        const startElevation = prevProfile[0].elevation;
+        const constantAltitude = startElevation + nominalFlightHeight;
+        const baseAltitudeProfile: BaseAltitudeSample[] = prevProfile.map((p) => ({
+          distance: p.distance,
+          baseAltitude: constantAltitude,
+          ground: p.elevation
+        }));
+
+        // 2. Initial base plan
+        const basePlanPoints = baseAltitudeProfile.map((p) => ({
+          ...p,
+          plannedAltitude: p.baseAltitude,
+          climbDelta: 0,
+          isClimbPhase: false
+        }));
+
+        // 3. Process climb requests sequentially
+        const sortedClimbs = [...climbRequests].sort((a, b) => a.endDistance - b.endDistance);
+        let currentBase = baseAltitudeProfile;
+        let currentPlanned = basePlanPoints;
+
+        sortedClimbs.forEach((climb) => {
+          const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+          const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
+          const startDistanceOfClimb = Math.max(0, climb.endDistance - requiredHorizontal);
+
+          const res = computeClimbProfile(
+            startDistanceOfClimb,
+            climb.climbAmount,
+            climbConfig.climbRatio,
+            climbConfig.descentRatio,
+            climbConfig.allowTurnsDuringClimb,
+            flightPath,
+            currentBase,
+            climbConfig.vertexProximityMeters,
+            climb.endDistance
+          );
+
+          currentPlanned = res.points.map((p, i) => ({
+            ...p,
+            climbDelta: p.plannedAltitude - (basePlanPoints[i]?.baseAltitude ?? p.baseAltitude),
+            isClimbPhase: p.plannedAltitude !== p.baseAltitude
+          }));
+
+          currentBase = res.points.map((p) => ({
+            distance: p.distance,
+            baseAltitude: p.plannedAltitude,
+            ground: p.ground
+          }));
+        });
+
+        // 4. Update profile with new planned and base altitudes
+        return prevProfile.map((p, i) => ({
+          ...p,
+          plannedAltitude: currentPlanned[i]?.plannedAltitude ?? (p.elevation + nominalFlightHeight),
+          baseAltitude: currentPlanned[i]?.baseAltitude ?? (p.elevation + nominalFlightHeight),
+          climbDelta: currentPlanned[i]?.climbDelta ?? 0,
+          flightHeight: (currentPlanned[i]?.plannedAltitude ?? (p.elevation + nominalFlightHeight)) - p.elevation
+        }));
+      } else {
+        // No climb requests, just update based on nominal height
+        return prevProfile.map(point => ({
+          ...point,
+          plannedAltitude: point.elevation + nominalFlightHeight,
+          baseAltitude: point.elevation + nominalFlightHeight,
+          flightHeight: nominalFlightHeight
+        }));
+      }
     });
   }, []);
 

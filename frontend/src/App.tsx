@@ -183,7 +183,7 @@ function App() {
     });
   }, [activeRouteId, setClimbRequestsByRoute]);
 
-  const { elevationProfile, loading, profileReady, calculateProfile, refreshFlightHeights, clearProfile } = useElevationProfile();
+  const { elevationProfile, loading, profileReady, calculateProfile, clearProfile } = useElevationProfile();
 
   // Track last inputs so we can avoid expensive recalculation when only nominal height changes
   const lastProfileParamsRef = React.useRef<{
@@ -204,7 +204,6 @@ function App() {
       || prev.dtmSource !== dtmSource
       || prev.safetySearchRadius !== safetySearchRadius
       || prev.resolutionSearchRadius !== resolutionSearchRadius;
-    const nominalChanged = !prev || prev.nominalFlightHeight !== nominalFlightHeight;
 
     // Clear any pending debounce timer
     if (profileCalculationTimeoutRef.current) {
@@ -227,10 +226,9 @@ function App() {
           profileCalculationTimeoutRef.current = null;
         }, 300); // Wait 300ms after the last change
       }
-    } else if (nominalChanged) {
-      // Fast update: adjust flight heights without reloading elevations
-      refreshFlightHeights(flightPath, nominalFlightHeight);
     }
+    // Note: When only nominal height changes, fullProfileResultInternal will recalculate
+    // automatically via its useMemo dependency, and the profile lock is unlocked to allow updates
 
     lastProfileParamsRef.current = {
       flightPath,
@@ -247,7 +245,7 @@ function App() {
         profileCalculationTimeoutRef.current = null;
       }
     };
-  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights, clearProfile]);
+  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, clearProfile]);
 
   // Clear climb requests only for segments that were edited (deleted or moved)
   // Don't clear climbs when points are inserted (new segments added)
@@ -495,6 +493,16 @@ function App() {
       profileLockedRef.current = false; // Unlock profile when cleared
     }
   }, [flightPath.length]);
+
+  // Unlock profile when nominal height changes so it can be recalculated
+  React.useEffect(() => {
+    profileLockedRef.current = false;
+  }, [nominalFlightHeight]);
+
+  // Unlock profile when climb requests or climb config changes so it can be recalculated
+  React.useEffect(() => {
+    profileLockedRef.current = false;
+  }, [climbRequests, climbConfig]);
 
   // Update stable profile only when:
   // 1. Queue is empty and processing is complete

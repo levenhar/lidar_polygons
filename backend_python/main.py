@@ -50,9 +50,14 @@ DTM_DATA_DIR = os.environ.get("DTM_DATA_DIR", UPLOADS_DIR)
 DTM_DATA_DIR = os.path.abspath(DTM_DATA_DIR)
 
 # DTM cache directory - where clipped DTMs are stored
-DTM_CACHE_DIR = os.environ.get("DTM_CACHE_DIR", os.path.join(DTM_DATA_DIR, "Cache"))
-# Resolve to absolute path
-DTM_CACHE_DIR = os.path.abspath(DTM_CACHE_DIR)
+# Use env file configuration, with independent default (not based on UPLOADS_DIR)
+DTM_CACHE_DIR_ENV = os.environ.get("DTM_CACHE_DIR")
+if DTM_CACHE_DIR_ENV:
+    DTM_CACHE_DIR = os.path.abspath(DTM_CACHE_DIR_ENV)
+else:
+    # Default to a path relative to the backend_python directory, independent of uploads
+    backend_python_dir = os.path.dirname(os.path.abspath(__file__))
+    DTM_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, "DTM_TIFF/CACHE"))
 
 # Ensure cache directory exists
 os.makedirs(DTM_CACHE_DIR, exist_ok=True)

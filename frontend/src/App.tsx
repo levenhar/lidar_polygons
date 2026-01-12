@@ -82,6 +82,17 @@ function App() {
   const [climbConfig, setClimbConfig] = useState<ClimbConfig>(presetToConfig(CLIMB_PRESETS[0]));
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   
+  // Queue system for height profile edits
+  type EditOperation = 
+    | { type: 'delete'; index: number }
+    | { type: 'update'; index: number; point: Coordinate }
+    | { type: 'setFlightHeight'; index: number; height: number }
+    | { type: 'editPointRequest'; index: number };
+  
+  const [editQueue, setEditQueue] = useState<EditOperation[]>([]);
+  const [isProcessingQueue, setIsProcessingQueue] = useState<boolean>(false);
+  const processingTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  
   // Load climb requests from localStorage on mount
   const loadClimbRequestsFromStorage = React.useCallback(() => {
     try {
@@ -172,7 +183,7 @@ function App() {
     });
   }, [activeRouteId, setClimbRequestsByRoute]);
 
-  const { elevationProfile, loading, calculateProfile, refreshFlightHeights } = useElevationProfile();
+  const { elevationProfile, loading, profileReady, calculateProfile, refreshFlightHeights, clearProfile } = useElevationProfile();
 
   // Track last inputs so we can avoid expensive recalculation when only nominal height changes
   const lastProfileParamsRef = React.useRef<{
@@ -339,7 +350,8 @@ function App() {
     prevGeometryByRouteRef.current[activeRouteId] = currentGeometry;
   }, [flightPath, activeRouteId, climbRequests, setClimbRequests]);
 
-  const fullProfileResult = React.useMemo(() => {
+  // Calculate the full profile result
+  const fullProfileResultInternal = React.useMemo(() => {
     if (elevationProfile.length === 0) return { points: [], warnings: [] };
 
     // 1. Calculate base altitude profile (nominal height above first point)
@@ -422,6 +434,35 @@ function App() {
       warnings: allWarnings
     };
   }, [elevationProfile, nominalFlightHeight, flightPath, climbRequests, climbConfig]);
+
+  // Stable profile that only updates when queue is empty AND server confirms it's ready
+  const [stableProfileResult, setStableProfileResult] = React.useState(() => fullProfileResultInternal);
+  const profileLockedRef = React.useRef(false);
+  
+  // Unlock profile when a new calculation starts
+  React.useEffect(() => {
+    if (loading) {
+      profileLockedRef.current = false; // Unlock when new calculation starts
+    }
+  }, [loading]);
+  
+  // Update stable profile only when:
+  // 1. Queue is empty and processing is complete
+  // 2. Server has confirmed profile is ready (profileReady)
+  // 3. Profile is not locked (locked means it's already displayed and should not change)
+  React.useEffect(() => {
+    // Only update the stable profile when:
+    // - Queue is completely empty and not processing
+    // - Server has sent ready flag
+    // - Profile is not locked (or we're starting a new calculation)
+    if (editQueue.length === 0 && !isProcessingQueue && profileReady && !profileLockedRef.current) {
+      setStableProfileResult(fullProfileResultInternal);
+      profileLockedRef.current = true; // Lock the profile once displayed
+    }
+  }, [fullProfileResultInternal, editQueue.length, isProcessingQueue, profileReady]);
+
+  // Use stable profile - this ensures the profile only shows the final version when queue is empty and ready
+  const fullProfileResult = stableProfileResult;
 
   const climbMarkers = React.useMemo(() => {
     if (!fullProfileResult.points.length || climbRequests.length === 0) return [];
@@ -628,9 +669,14 @@ function App() {
     setDtmSource(null);
     setDtmInfo(null);
     setActiveClippedId(null);
+    // Clear elevation profile when unloading DTM
+    clearProfile();
+    // Clear stable profile result
+    setStableProfileResult({ points: [], warnings: [] });
+    profileLockedRef.current = false; // Unlock profile
     // Clear routes when unloading DTM (keep only the first route)
     resetToSingleRoute();
-  }, [dtmSource, activeClippedId, deleteDtmOnServer, resetToSingleRoute]);
+  }, [dtmSource, activeClippedId, deleteDtmOnServer, resetToSingleRoute, clearProfile]);
 
   // Warn users that refreshing will clear points and unload the DTM; only clean up on confirmed unload.
   React.useEffect(() => {
@@ -713,6 +759,135 @@ function App() {
     };
   }, [dtmSource, activeClippedId, flightPath.length]);
 
+  // Process the edit queue
+  const processEditQueue = React.useCallback(() => {
+    if (isProcessingQueue || editQueue.length === 0) return;
+    
+    setIsProcessingQueue(true);
+    
+    // Process all queued operations
+    editQueue.forEach((operation) => {
+      switch (operation.type) {
+        case 'delete':
+          deletePoint(operation.index);
+          break;
+        case 'update':
+          updatePoint(operation.index, operation.point);
+          break;
+        case 'setFlightHeight':
+          const point = flightPath[operation.index];
+          if (point) {
+            updatePoint(operation.index, {
+              ...point,
+              height: operation.height
+            });
+          }
+          break;
+        case 'editPointRequest':
+          setEditPointIndex(operation.index);
+          // Show alert when processing edit request
+          alert(`מצב עריכה: נקודה ${operation.index + 1}. לחץ על המפה כדי להזיז.`);
+          break;
+      }
+    });
+    
+    // Clear the queue after processing
+    setEditQueue([]);
+    
+    // Reset processing flag after a short delay to allow state updates to propagate
+    setTimeout(() => {
+      setIsProcessingQueue(false);
+    }, 100);
+  }, [editQueue, isProcessingQueue, deletePoint, updatePoint, flightPath]);
+
+  // Process queue immediately (synchronously) - used for undo/redo
+  const processEditQueueImmediately = React.useCallback(() => {
+    // Clear any pending timeout
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+      processingTimeoutRef.current = null;
+    }
+    
+    // Get current queue and process it
+    setEditQueue((currentQueue) => {
+      if (currentQueue.length === 0) return currentQueue;
+      
+      // Process queue synchronously - operations execute immediately
+      setIsProcessingQueue(true);
+      
+      // Process all operations
+      currentQueue.forEach((operation) => {
+        switch (operation.type) {
+          case 'delete':
+            deletePoint(operation.index);
+            break;
+          case 'update':
+            updatePoint(operation.index, operation.point);
+            break;
+          case 'setFlightHeight':
+            const point = flightPath[operation.index];
+            if (point) {
+              updatePoint(operation.index, {
+                ...point,
+                height: operation.height
+              });
+            }
+            break;
+          case 'editPointRequest':
+            setEditPointIndex(operation.index);
+            alert(`מצב עריכה: נקודה ${operation.index + 1}. לחץ על המפה כדי להזיז.`);
+            break;
+        }
+      });
+      
+      // Reset processing flag after operations complete
+      setTimeout(() => {
+        setIsProcessingQueue(false);
+      }, 50);
+      
+      return []; // Clear the queue
+    });
+  }, [deletePoint, updatePoint, flightPath]);
+
+  // Process queue when it changes (debounced)
+  React.useEffect(() => {
+    if (processingTimeoutRef.current) {
+      clearTimeout(processingTimeoutRef.current);
+    }
+    
+    if (editQueue.length > 0 && !isProcessingQueue) {
+      // Debounce queue processing to batch rapid edits
+      processingTimeoutRef.current = setTimeout(() => {
+        processEditQueue();
+      }, 150);
+    }
+    
+    return () => {
+      if (processingTimeoutRef.current) {
+        clearTimeout(processingTimeoutRef.current);
+      }
+    };
+  }, [editQueue, isProcessingQueue, processEditQueue]);
+
+  // Wrapped undo/redo that processes queue first
+  const handleUndo = React.useCallback(() => {
+    // Process any pending queue first, then undo
+    processEditQueueImmediately();
+    // Use setTimeout to ensure queue processing completes before undo
+    setTimeout(() => {
+      undo();
+    }, 100);
+  }, [processEditQueueImmediately, undo]);
+
+  const handleRedo = React.useCallback(() => {
+    // Process any pending queue first, then redo
+    processEditQueueImmediately();
+    // Use setTimeout to ensure queue processing completes before redo
+    setTimeout(() => {
+      redo();
+    }, 100);
+  }, [processEditQueueImmediately, redo]);
+
   const handleSetFlightHeight = useCallback((pointIndex: number) => {
     if (pointIndex < 0 || pointIndex >= flightPath.length) return;
     const currentPoint = flightPath[pointIndex];
@@ -722,19 +897,26 @@ function App() {
     if (heightInput !== null) {
       const height = parseFloat(heightInput);
       if (!isNaN(height) && height >= 0) {
-        updatePoint(pointIndex, {
-          ...currentPoint,
-          height
-        });
+        // Queue the operation instead of executing immediately
+        setEditQueue((prev) => [...prev, { type: 'setFlightHeight', index: pointIndex, height }]);
       } else {
         alert('הגובה חייב להיות חיובי.');
       }
     }
-  }, [flightPath, nominalFlightHeight, updatePoint]);
+  }, [flightPath, nominalFlightHeight]);
 
   const handleEditPointRequest = useCallback((pointIndex: number) => {
-    setEditPointIndex(pointIndex);
-    alert(`מצב עריכה: נקודה ${pointIndex + 1}. לחץ על המפה כדי להזיז.`);
+    // Queue the operation instead of executing immediately
+    setEditQueue((prev) => [...prev, { type: 'editPointRequest', index: pointIndex }]);
+  }, []);
+
+  // Wrapped edit operations that queue instead of executing immediately
+  const handleDeletePoint = useCallback((index: number) => {
+    setEditQueue((prev) => [...prev, { type: 'delete', index }]);
+  }, []);
+
+  const handleUpdatePoint = useCallback((index: number, point: Coordinate) => {
+    setEditQueue((prev) => [...prev, { type: 'update', index, point }]);
   }, []);
 
   const handleSelectClimbPreset = useCallback((presetId: string) => {
@@ -756,13 +938,13 @@ function App() {
           // Ctrl+Z or Cmd+Z: Undo
           e.preventDefault();
           if (canUndo) {
-            undo();
+            handleUndo();
           }
         } else if (e.key === 'y' || e.key === 'Y' || ((e.key === 'z' || e.key === 'Z') && e.shiftKey)) {
           // Ctrl+Y or Ctrl+Shift+Z or Cmd+Shift+Z: Redo
           e.preventDefault();
           if (canRedo) {
-            redo();
+            handleRedo();
           }
         }
       }
@@ -772,7 +954,7 @@ function App() {
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [undo, redo, canUndo, canRedo]);
+  }, [handleUndo, handleRedo, canUndo, canRedo]);
 
   return (
     <div className="app-container">
@@ -965,8 +1147,8 @@ function App() {
           onAddPoint={addPointWrapped}
           onAddPoints={addPointsWrapped}
           onInsertPoints={insertPointsWrapped}
-          onUpdatePoint={updatePoint}
-          onDeletePoint={deletePoint}
+          onUpdatePoint={handleUpdatePoint}
+          onDeletePoint={handleDeletePoint}
           onAddRoute={addRoute}
           onActiveRouteChange={setActiveRoute}
           onRenameRoute={renameRoute}
@@ -986,8 +1168,8 @@ function App() {
           nominalFlightHeight={nominalFlightHeight}
           overlapPercentage={overlapPercentage}
           fovDegrees={fovDegrees}
-          onUndo={undo}
-          onRedo={redo}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
           canUndo={canUndo}
           canRedo={canRedo}
           editPointIndex={editPointIndex}
@@ -999,14 +1181,14 @@ function App() {
         />
         <ElevationProfile
           elevationProfile={fullProfileResult.points}
-          loading={loading}
+          loading={flightPath.length >= 2 && dtmSource !== null && (loading || isProcessingQueue || editQueue.length > 0 || !profileReady)}
           nominalFlightHeight={nominalFlightHeight}
           safetyHeight={safetyHeight}
           resolutionHeight={resolutionHeight}
           selectedPoint={selectedPoint}
           flightPath={flightPath}
-          onDeletePoint={deletePoint}
-          onUpdatePoint={updatePoint}
+          onDeletePoint={handleDeletePoint}
+          onUpdatePoint={handleUpdatePoint}
           onSetFlightHeight={handleSetFlightHeight}
           onEditPointRequest={handleEditPointRequest}
           onElevationPointHover={handleElevationPointHover}

@@ -341,7 +341,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const activeClimbStartDistance = null;
 
   useEffect(() => {
-    if (!svgRef.current || !containerRef.current || elevationProfile.length === 0) {
+    if (!svgRef.current || !containerRef.current || elevationProfile.length === 0 || loading) {
       return;
     }
 
@@ -1732,10 +1732,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         />
       )}
       <div className="elevation-header">
-        <h2>פרופיל גובה</h2>
         <div className="elevation-controls">
           <div className="control-group">
-            <div className="group-title">עלייה</div>
+            <div className="group-title">נקודות הגבהה</div>
             <div className="group-buttons">
               <Tooltip tooltip="הגדרות עלייה">
                 <button

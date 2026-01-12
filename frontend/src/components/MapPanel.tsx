@@ -3490,7 +3490,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>נתונים</span>
                 </label>
               </Tooltip>
-              <Tooltip tooltip="הצג/הסתר תוויות טיפוס ליד סמני טיפוס">
+              <Tooltip tooltip="הצג/הסתר תווית ליד נקודות הגבהה">
                 <label
                   className="switch"
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
@@ -3501,7 +3501,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     onChange={(e) => onShowClimbLabelsChange(e.target.checked)}
                   />
                   <span className="switch-slider" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>תוויות טיפוס</span>
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>נקודות הגבהה</span>
                 </label>
               </Tooltip>
             </div>

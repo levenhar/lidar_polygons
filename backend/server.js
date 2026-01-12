@@ -608,7 +608,11 @@ app.post('/api/elevation-profile', async (req, res) => {
       })
     });
 
-    res.json(result);
+    // Add completion flag to signal that profile calculation is finished
+    res.json({
+      ...result,
+      ready: true
+    });
   } catch (error) {
     console.error('Error proxying elevation profile request:', error);
     res.status(500).json({

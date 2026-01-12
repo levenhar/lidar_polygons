@@ -1,4 +1,4 @@
-.elevation-panel {
+﻿.elevation-panel {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -8,7 +8,7 @@
 
 .elevation-header {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: flex-start;
   padding: 1rem 1.25rem;
   background: #ffffff;
@@ -16,18 +16,11 @@
   box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
 }
 
-.elevation-header h2 {
-  font-size: 1.375rem;
-  font-weight: 600;
-  color: #111827;
-  margin: 0;
-  padding-top: 0.5rem;
-}
-
 .elevation-controls {
   display: flex;
   gap: 1rem;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
 .elevation-controls .control-group {
@@ -189,7 +182,7 @@
 
 .climb-modal__header {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   padding: 1rem 1.25rem;
   border-bottom: 1px solid #e5e7eb;
@@ -217,7 +210,7 @@
 .climb-modal__title-row {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  justify-content: flex-end;
   margin-bottom: 0.5rem;
 }
 

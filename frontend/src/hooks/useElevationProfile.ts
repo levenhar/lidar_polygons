@@ -6,6 +6,7 @@ import axios from 'axios';
 export function useElevationProfile() {
   const [elevationProfile, setElevationProfile] = useState<ElevationPoint[]>([]);
   const [loading, setLoading] = useState(false);
+  const [profileReady, setProfileReady] = useState(false);
 
   const calculateProfile = useCallback(async (
     flightPath: Coordinate[],
@@ -20,6 +21,7 @@ export function useElevationProfile() {
     }
 
     setLoading(true);
+    setProfileReady(false); // Reset ready flag when starting new calculation
     try {
       // Convert coordinates to [lng, lat] format for API
       const coordinates = flightPath.map(p => [p.lng, p.lat]);
@@ -62,6 +64,13 @@ export function useElevationProfile() {
         resolutionRadiusMeters: resolutionRadiusToUse, // User-configurable radius for max (resolution)
         ...(clippedId && { clippedId }) // Pass clippedId if available for faster processing
       });
+
+      // Check if server sent ready flag - only process if ready
+      if (!response.data.ready) {
+        console.warn('Server did not send ready flag, waiting...');
+        setLoading(false);
+        return;
+      }
 
       // Helper function to interpolate flight height for any point along the path
       const interpolateFlightHeight = (distance: number): number => {
@@ -126,7 +135,9 @@ export function useElevationProfile() {
         })));
       }
       
+      // Only set profile when server confirms it's ready
       setElevationProfile(profile);
+      setProfileReady(true);
     } catch (error) {
       console.error('Error calculating elevation profile:', error);
       // Fallback to mock data if API fails
@@ -200,6 +211,7 @@ export function useElevationProfile() {
         };
       });
       setElevationProfile(mockProfile);
+      setProfileReady(true); // Mark as ready even for mock data
     } finally {
       setLoading(false);
     }
@@ -273,11 +285,19 @@ export function useElevationProfile() {
     });
   }, []);
 
+  const clearProfile = useCallback(() => {
+    setElevationProfile([]);
+    setProfileReady(false);
+    setLoading(false);
+  }, []);
+
   return {
     elevationProfile,
     loading,
+    profileReady,
     calculateProfile,
-    refreshFlightHeights
+    refreshFlightHeights,
+    clearProfile
   };
 }
 

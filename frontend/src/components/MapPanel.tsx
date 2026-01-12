@@ -361,6 +361,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const flightPathBufferRef = useRef<L.Polyline | null>(null);
   const segmentLengthLabelsRef = useRef<L.Marker[]>([]);
   const hoveredPointRef = useRef<number | null>(null);
+  const justFinishedDraggingRef = useRef<boolean>(false);
   const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const dtmTransparencyControlRef = useRef<HTMLDivElement | null>(null);
@@ -1258,26 +1259,49 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Cleanup clipped DTM on unload or navigation
   useEffect(() => {
-    const handleBeforeUnload = () => {
+    const cleanupClippedDtm = () => {
       if (activeClippedId) {
-        // Use sendBeacon for reliable cleanup on page unload
-        const payload = JSON.stringify({ clippedId: activeClippedId });
-        const blob = new Blob([payload], { type: 'application/json' });
-        navigator.sendBeacon('/api/dtm/cleanup', blob);
+        try {
+          // Use fetch with keepalive for reliable cleanup on page unload
+          // sendBeacon only supports POST, so we use fetch with keepalive for DELETE
+          fetch(`/api/dtm/clipped/${activeClippedId}`, {
+            method: 'DELETE',
+            keepalive: true
+          }).catch(() => {
+            // Ignore errors during cleanup - page might be unloading
+          });
+        } catch (error) {
+          // Ignore errors during cleanup
+        }
       }
     };
 
+    const handleBeforeUnload = () => {
+      cleanupClippedDtm();
+    };
+
     const handlePageHide = (event: PageTransitionEvent) => {
-      if (event.persisted) return;
-      handleBeforeUnload();
+      // Only cleanup if page is not being cached (e.g., back/forward navigation)
+      if (!event.persisted) {
+        cleanupClippedDtm();
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      // Cleanup when page becomes hidden (user switching tabs, closing window, etc.)
+      if (document.visibilityState === 'hidden') {
+        cleanupClippedDtm();
+      }
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
     window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [activeClippedId]);
 
@@ -1351,6 +1375,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       // Otherwise, add new point if drawing
       if (isDrawing && dtmLoaded) {
+        // Skip creating a new point if we just finished dragging a point
+        if (justFinishedDraggingRef.current) {
+          return;
+        }
+
         const lng = e.latlng.lng;
         const lat = e.latlng.lat;
 
@@ -1757,6 +1786,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
           onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
           alert('לא ניתן להזיז נקודה מחוץ לתיבת התוחם של ה-DTM. הנקודה אופסה למיקום החוקי הקודם.');
         }
+
+        // Set flag to prevent map click handler from creating a new point
+        justFinishedDraggingRef.current = true;
+        // Reset the flag after a short delay to allow the click event to be ignored
+        setTimeout(() => {
+          justFinishedDraggingRef.current = false;
+        }, 100);
       };
 
       // Add event listeners to document for mouse move and up

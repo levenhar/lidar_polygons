@@ -1296,23 +1296,75 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
         // Only update hover if not near an input point
         if (!isNearInputPoint) {
-          // Find the closest point based on distance (x-coordinate)
-          let closestPoint: ElevationPoint | null = null;
-          let closestDistance = Infinity;
-
-          for (const point of elevationProfile) {
-            const pointX = currentXScale(point.distance);
-            const distance = Math.abs(pointX - mouseX);
-
-            if (distance < closestDistance) {
-              closestDistance = distance;
-              closestPoint = point;
+          // Convert mouse X position to distance using inverse scale
+          const hoverDistance = currentXScale.invert(mouseX);
+          
+          // Clamp to valid range
+          const minDistance = elevationProfile[0]?.distance ?? 0;
+          const maxDistance = elevationProfile[elevationProfile.length - 1]?.distance ?? 0;
+          const clampedDistance = Math.max(minDistance, Math.min(maxDistance, hoverDistance));
+          
+          // Find the two points that bracket this distance
+          let p1: ElevationPoint | null = null;
+          let p2: ElevationPoint | null = null;
+          
+          for (let i = 0; i < elevationProfile.length - 1; i++) {
+            if (clampedDistance >= elevationProfile[i].distance && clampedDistance <= elevationProfile[i + 1].distance) {
+              p1 = elevationProfile[i];
+              p2 = elevationProfile[i + 1];
+              break;
             }
           }
-
-          if (closestPoint) {
+          
+          // If we're at or beyond the endpoints, use the nearest endpoint
+          if (!p1 || !p2) {
+            if (clampedDistance <= minDistance) {
+              p1 = elevationProfile[0];
+              p2 = elevationProfile[0];
+            } else if (clampedDistance >= maxDistance) {
+              p1 = elevationProfile[elevationProfile.length - 1];
+              p2 = elevationProfile[elevationProfile.length - 1];
+            }
+          }
+          
+          if (p1 && p2) {
+            // Interpolate between the two points
+            let interpolatedPoint: ElevationPoint;
+            
+            if (p1.distance === p2.distance) {
+              // Same point, use it directly
+              interpolatedPoint = p1;
+            } else {
+              const t = (clampedDistance - p1.distance) / (p2.distance - p1.distance);
+              
+              // Interpolate all properties
+              interpolatedPoint = {
+                distance: clampedDistance,
+                latitude: p1.latitude + (p2.latitude - p1.latitude) * t,
+                longitude: p1.longitude + (p2.longitude - p1.longitude) * t,
+                elevation: p1.elevation + (p2.elevation - p1.elevation) * t,
+              };
+              
+              // Interpolate optional properties if they exist
+              if (p1.minElevation !== undefined && p2.minElevation !== undefined) {
+                interpolatedPoint.minElevation = p1.minElevation + (p2.minElevation - p1.minElevation) * t;
+              }
+              if (p1.maxElevation !== undefined && p2.maxElevation !== undefined) {
+                interpolatedPoint.maxElevation = p1.maxElevation + (p2.maxElevation - p1.maxElevation) * t;
+              }
+              if (p1.plannedAltitude !== undefined && p2.plannedAltitude !== undefined) {
+                interpolatedPoint.plannedAltitude = p1.plannedAltitude + (p2.plannedAltitude - p1.plannedAltitude) * t;
+              }
+              if (p1.baseAltitude !== undefined && p2.baseAltitude !== undefined) {
+                interpolatedPoint.baseAltitude = p1.baseAltitude + (p2.baseAltitude - p1.baseAltitude) * t;
+              }
+              if (p1.climbDelta !== undefined && p2.climbDelta !== undefined) {
+                interpolatedPoint.climbDelta = p1.climbDelta + (p2.climbDelta - p1.climbDelta) * t;
+              }
+            }
+            
             setMousePos({ x: event.clientX, y: event.clientY });
-            onElevationPointHover(closestPoint);
+            onElevationPointHover(interpolatedPoint);
           }
         }
       });

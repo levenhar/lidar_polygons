@@ -207,6 +207,9 @@ function App() {
       if (flightPath.length === 0) {
         // Clear profile when flight path is empty
         calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
+      } else if (flightPath.length === 1) {
+        // Clear profile when only one point remains
+        clearProfile();
       } else if (flightPath.length >= 2 && dtmSource) {
         calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
       }
@@ -222,7 +225,7 @@ function App() {
       resolutionSearchRadius,
       nominalFlightHeight
     };
-  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights]);
+  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, refreshFlightHeights, clearProfile]);
 
   // Clear climb requests only for segments that were edited (deleted or moved)
   // Don't clear climbs when points are inserted (new segments added)
@@ -446,9 +449,9 @@ function App() {
     }
   }, [loading]);
   
-  // Clear stable profile when all points are deleted
+  // Clear stable profile when all points are deleted or only one point remains
   React.useEffect(() => {
-    if (flightPath.length === 0) {
+    if (flightPath.length === 0 || flightPath.length === 1) {
       setStableProfileResult({ points: [], warnings: [] });
       profileLockedRef.current = false; // Unlock profile when cleared
     }
@@ -463,8 +466,8 @@ function App() {
     // - Queue is completely empty and not processing
     // - Server has sent ready flag
     // - Profile is not locked (or we're starting a new calculation)
-    // - Flight path is not empty (empty case is handled above)
-    if (editQueue.length === 0 && !isProcessingQueue && profileReady && !profileLockedRef.current && flightPath.length > 0) {
+    // - Flight path has at least 2 points (empty/1 point cases are handled above)
+    if (editQueue.length === 0 && !isProcessingQueue && profileReady && !profileLockedRef.current && flightPath.length >= 2) {
       setStableProfileResult(fullProfileResultInternal);
       profileLockedRef.current = true; // Lock the profile once displayed
     }

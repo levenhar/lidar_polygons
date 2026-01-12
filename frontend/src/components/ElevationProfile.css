@@ -1,4 +1,4 @@
-﻿.elevation-panel {
+.elevation-panel {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -21,6 +21,7 @@
   gap: 1rem;
   flex-wrap: wrap;
   margin-left: auto;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
 }
 
 .elevation-controls .control-group {
@@ -35,11 +36,10 @@
   font-size: 0.875rem;
   font-weight: 600;
   color: #0369A1;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   margin-bottom: 0.25rem;
   padding-bottom: 0.25rem;
   border-bottom: 1px solid #7DD3FC;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
 }
 
 .elevation-controls .group-buttons {
@@ -182,7 +182,7 @@
 
 .climb-modal__header {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
   align-items: center;
   padding: 1rem 1.25rem;
   border-bottom: 1px solid #e5e7eb;
@@ -210,7 +210,7 @@
 .climb-modal__title-row {
   display: flex;
   align-items: baseline;
-  justify-content: flex-end;
+  justify-content: space-between;
   margin-bottom: 0.5rem;
 }
 

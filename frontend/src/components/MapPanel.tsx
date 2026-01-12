@@ -1460,12 +1460,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }).addTo(map.current);
 
     // Allow inserting a new vertex by clicking on a line segment.
-    // This works even in drawing mode, and stops propagation to avoid double-adding points.
+    // Only works when Shift+LeftClick is pressed.
     const handleClickableLineClick = (e: L.LeafletMouseEvent) => {
       const originalEvent = e.originalEvent as MouseEvent | undefined;
       if (originalEvent && originalEvent.button !== 0) return; // left-click only
       if (!dtmLoaded) return;
       if (isParallelLineMode) return;
+      
+      // Only insert points when Shift key is pressed
+      if (!originalEvent || !originalEvent.shiftKey) return;
 
       // If editing a point via "click to move", don't insert
       const currentEditingIndex =
@@ -3519,6 +3522,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
               </Tooltip>
             </div>
           </div>
+        </div>
+      </div>
+      <div className="map-instruction-banner">
+        <div className="map-instruction-text">
+          לחץ Shift על מנת להוסיף נקודה בין נקודות קיימות
         </div>
       </div>
       <div

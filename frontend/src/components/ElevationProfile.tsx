@@ -87,6 +87,69 @@ const TrashIcon: React.FC = () => {
   );
 };
 
+const ZoomResetIcon: React.FC = () => {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    xmlns: 'http://www.w3.org/2000/svg'
+  };
+  const stroke = {
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const
+  };
+  return (
+    <svg {...common}>
+      <path {...stroke} d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+      <polyline {...stroke} points="9 22 9 12 15 12 15 22" />
+    </svg>
+  );
+};
+
+const ZoomInIcon: React.FC = () => {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    xmlns: 'http://www.w3.org/2000/svg'
+  };
+  const stroke = {
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const
+  };
+  return (
+    <svg {...common}>
+      <circle {...stroke} cx="11" cy="11" r="8" />
+      <path {...stroke} d="M21 21l-4.35-4.35" />
+      <path {...stroke} d="M11 8v6" />
+      <path {...stroke} d="M8 11h6" />
+    </svg>
+  );
+};
+
+const ZoomOutIcon: React.FC = () => {
+  const common = {
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    xmlns: 'http://www.w3.org/2000/svg'
+  };
+  const stroke = {
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const
+  };
+  return (
+    <svg {...common}>
+      <circle {...stroke} cx="11" cy="11" r="8" />
+      <path {...stroke} d="M21 21l-4.35-4.35" />
+      <path {...stroke} d="M8 11h6" />
+    </svg>
+  );
+};
+
 const toDraft = (config: ClimbConfig) => ({
   climbRatio: config.climbRatio.toString(),
   descentRatio: config.descentRatio.toString(),
@@ -150,6 +213,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const clipPathIdRef = useRef(`elevation-clip-${Math.random().toString(36).slice(2, 8)}`);
+  const savedZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
+  const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGRectElement, unknown> | null>(null);
+  const overlayRef = useRef<d3.Selection<SVGRectElement, unknown, null, undefined> | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [isClimbConfigOpen, setIsClimbConfigOpen] = useState(false);
   const [isClimbAmountOpen, setIsClimbAmountOpen] = useState(false);
@@ -405,6 +471,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     console.log(`ElevationProfile: Rendering with ${elevationProfile.length} points, updating min/max and safety/resolution lines`);
 
     const svg = d3.select(svgRef.current);
+    // Save zoom transform before clearing (use existing transform if available, otherwise use saved one)
+    const existingOverlay = svg.select('rect[fill="transparent"]').node() as SVGRectElement | null;
+    const existingTransform = existingOverlay ? d3.zoomTransform(existingOverlay) : null;
+    if (existingTransform && (existingTransform.k !== 1 || existingTransform.x !== 0 || existingTransform.y !== 0)) {
+      savedZoomTransformRef.current = existingTransform;
+    }
     svg.selectAll('*').remove(); // Clear previous render
 
     const margin = { top: 20, right: 80, bottom: 110, left: 30 };
@@ -1140,6 +1212,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .translateExtent([[0, 0], [width, height]])
       .extent([[0, 0], [width, height]])
       .on('zoom', (event) => {
+        // Save the transform so it persists across re-renders
+        savedZoomTransformRef.current = event.transform;
         const newXScale = event.transform.rescaleX(baseXScale);
         const newYScale = event.transform.rescaleY(baseYScale);
 
@@ -1267,6 +1341,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)) - 8);
       });
 
+    // Store references for zoom controls
+    zoomBehaviorRef.current = zoomBehavior;
+    overlayRef.current = overlay;
+    
     overlay.call(zoomBehavior as any);
 
     const vertexDistances = new Set(originalVertices.map(v => v.point.distance));
@@ -1557,6 +1635,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         if (onElevationPointHover) {
           onElevationPointHover(null);
         }
+      });
+    }
+
+    // Restore saved zoom transform after all elements and event handlers are set up
+    if (savedZoomTransformRef.current) {
+      // Use requestAnimationFrame to ensure DOM is fully ready
+      requestAnimationFrame(() => {
+        d3.select(overlay.node() as any).call(zoomBehavior.transform as any, savedZoomTransformRef.current!);
       });
     }
 
@@ -1934,6 +2020,37 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     setClimbConfigError(null);
   }, [climbConfigDraft, onSelectClimbPreset]);
 
+  const resetZoom = useCallback(() => {
+    if (!zoomBehaviorRef.current || !overlayRef.current) return;
+    const identity = d3.zoomIdentity;
+    savedZoomTransformRef.current = identity;
+    d3.select(overlayRef.current.node() as any).call(zoomBehaviorRef.current.transform as any, identity);
+  }, []);
+
+  const zoomIn = useCallback(() => {
+    if (!zoomBehaviorRef.current || !overlayRef.current) return;
+    const currentTransform = d3.zoomTransform(overlayRef.current.node() as any);
+    const newTransform = currentTransform.scale(1.5);
+    // Ensure we don't exceed max zoom
+    const maxZoom = 12;
+    if (newTransform.k <= maxZoom) {
+      savedZoomTransformRef.current = newTransform;
+      d3.select(overlayRef.current.node() as any).call(zoomBehaviorRef.current.transform as any, newTransform);
+    }
+  }, []);
+
+  const zoomOut = useCallback(() => {
+    if (!zoomBehaviorRef.current || !overlayRef.current) return;
+    const currentTransform = d3.zoomTransform(overlayRef.current.node() as any);
+    const newTransform = currentTransform.scale(1 / 1.5);
+    // Ensure we don't go below min zoom
+    const minZoom = 1;
+    if (newTransform.k >= minZoom) {
+      savedZoomTransformRef.current = newTransform;
+      d3.select(overlayRef.current.node() as any).call(zoomBehaviorRef.current.transform as any, newTransform);
+    }
+  }, []);
+
   const exportPNG = () => {
     if (!svgRef.current) return;
 
@@ -2177,6 +2294,47 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   aria-label="הסר עליות"
                 >
                   <TrashIcon />
+                </button>
+              </Tooltip>
+            </div>
+          </div>
+          <div className="control-group">
+            <div className="group-title">זום</div>
+            <div className="group-buttons">
+              <Tooltip tooltip="איפוס זום">
+                <button
+                  onClick={resetZoom}
+                  disabled={elevationProfile.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="איפוס זום"
+                  type="button"
+                >
+                  <ZoomResetIcon />
+                  <span className="sr-only">איפוס זום</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip="זום פנימה">
+                <button
+                  onClick={zoomIn}
+                  disabled={elevationProfile.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="זום פנימה"
+                  type="button"
+                >
+                  <ZoomInIcon />
+                  <span className="sr-only">זום פנימה</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip="זום החוצה">
+                <button
+                  onClick={zoomOut}
+                  disabled={elevationProfile.length === 0}
+                  className="btn btn-secondary btn-icon"
+                  aria-label="זום החוצה"
+                  type="button"
+                >
+                  <ZoomOutIcon />
+                  <span className="sr-only">זום החוצה</span>
                 </button>
               </Tooltip>
             </div>

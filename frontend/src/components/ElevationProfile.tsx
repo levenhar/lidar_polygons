@@ -1361,6 +1361,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               if (p1.climbDelta !== undefined && p2.climbDelta !== undefined) {
                 interpolatedPoint.climbDelta = p1.climbDelta + (p2.climbDelta - p1.climbDelta) * t;
               }
+              // Calculate flightHeight the same way as in map hover: plannedAltitude - elevation
+              if (interpolatedPoint.plannedAltitude !== undefined) {
+                interpolatedPoint.flightHeight = interpolatedPoint.plannedAltitude - interpolatedPoint.elevation;
+              } else if (p1.flightHeight !== undefined && p2.flightHeight !== undefined) {
+                // Fallback: interpolate flightHeight if plannedAltitude is not available
+                interpolatedPoint.flightHeight = p1.flightHeight + (p2.flightHeight - p1.flightHeight) * t;
+              }
+            }
+            
+            // Ensure flightHeight is set for same point case (if it wasn't already set)
+            if (interpolatedPoint.flightHeight === undefined && interpolatedPoint.plannedAltitude !== undefined) {
+              interpolatedPoint.flightHeight = interpolatedPoint.plannedAltitude - interpolatedPoint.elevation;
             }
             
             setMousePos({ x: event.clientX, y: event.clientY });

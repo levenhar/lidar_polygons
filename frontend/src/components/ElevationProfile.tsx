@@ -196,6 +196,31 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     return computeCumulativeDistances(flightPath);
   }, [flightPath]);
 
+  // Function to check if a location is too close to a turn vertex, start point, or end point
+  const isTooCloseToTurnVertex = useCallback((distance: number): { isValid: boolean; message: string | null } => {
+    // Check distance to all vertices (including start, end, and turn points)
+    for (let i = 0; i < vertexDistances.length; i++) {
+      const vertexDistance = vertexDistances[i];
+      const distanceToVertex = Math.abs(distance - vertexDistance);
+      
+      if (distanceToVertex < climbConfig.vertexProximityMeters) {
+        let pointType: string;
+        if (i === 0) {
+          pointType = 'נקודת התחלה';
+        } else if (i === vertexDistances.length - 1) {
+          pointType = 'נקודת סיום';
+        } else {
+          pointType = 'נקודת פנייה';
+        }
+        
+        const msg = `לא ניתן ליצור נקודת עלייה ב-${distance.toFixed(1)} מ'. מיקום זה קרוב מדי ל${pointType} ` +
+          `ב-${vertexDistance.toFixed(1)} מ'. המרחק המינימלי הנדרש: ${climbConfig.vertexProximityMeters} מ' (נוכחי: ${distanceToVertex.toFixed(1)} מ').`;
+        return { isValid: false, message: msg };
+      }
+    }
+    return { isValid: true, message: null };
+  }, [vertexDistances, climbConfig]);
+
   // Function to check if a location is within a forbidden climb area (climb area + buffer)
   const isLocationInForbiddenClimbArea = useCallback((distance: number): { isValid: boolean; message: string | null } => {
     for (const existingClimb of climbRequests) {
@@ -1275,6 +1300,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
       const clickedDistance = closestPoint.distance;
       
+      // Validate that the location is not too close to a turn vertex
+      const turnVertexValidation = isTooCloseToTurnVertex(clickedDistance);
+      if (!turnVertexValidation.isValid) {
+        setClimbValidationPopup(turnVertexValidation.message || 'לא ניתן ליצור נקודת עלייה במיקום זה - קרוב מדי לנקודת פנייה.');
+        return;
+      }
+      
       // Validate that the location is not within a forbidden climb area
       const validation = isLocationInForbiddenClimbArea(clickedDistance);
       if (!validation.isValid) {
@@ -1685,6 +1717,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       (Math.abs(preview.appliedClimb - parsed) > 1e-3 || (preview.warnings?.length ?? 0) > 0);
 
     if (notReachable) {
+      console.log('Climb not reachable:', {
+        appliedClimb: preview.appliedClimb,
+        parsed,
+        warnings: preview.warnings,
+        notReachable
+      });
       const msg = 'Climb cancelled: turns are disabled and the requested elevation change cannot be reached at this point.';
       setClimbAmountError('Cannot reach requested climb with turns disabled; adjust amount or enable turns.');
       setClimbValidationPopup(msg);

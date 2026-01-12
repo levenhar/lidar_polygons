@@ -142,7 +142,7 @@ export function computeClimbProfile(
   const appliedMagnitude = Math.min(Math.abs(climbAmount), availableHorizontal / activeRatio);
   const appliedClimb = appliedMagnitude * climbDirection;
 
-  if (Math.abs(appliedClimb) < Math.abs(climbAmount)) {
+  if (Math.abs(Number(appliedClimb.toFixed(1))) < Math.abs(Number(climbAmount.toFixed(1)))) {
     warnings.push(
       `אין מספיק מרחק להשלמת העלייה. מיושם ${appliedClimb.toFixed(
         1

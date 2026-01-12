@@ -534,6 +534,100 @@ app.delete('/api/dtm/clipped/:clippedId', async (req, res) => {
   }
 });
 
+// POST /api/dtm/clipped/:clippedId/upload - Upload clipped DTM directly from Python backend cache
+// Streams the file from Python backend cache directly to Python backend upload endpoint without copying
+app.post('/api/dtm/clipped/:clippedId/upload', async (req, res) => {
+  try {
+    const { clippedId } = req.params;
+    console.log(`Uploading clipped DTM ${clippedId} directly from Python backend cache...`);
+
+    // Try multiple possible endpoints for getting the file from cache
+    const possibleEndpoints = [
+      `/api/dtm/clipped/${clippedId}/file`,
+      `/api/dtm/clipped/${clippedId}/download`,
+      `/api/dtm/clipped/${clippedId}/geotiff`,
+      `/api/dtm/clipped/${clippedId}/tif`
+    ];
+
+    let fileResponse = null;
+    let lastError = null;
+
+    // Try each endpoint until one works
+    for (const endpoint of possibleEndpoints) {
+      try {
+        const url = `${PYTHON_BACKEND_URL}${endpoint}`;
+        console.log(`Trying to get file from: ${url}`);
+        const response = await fetch(url);
+        
+        if (response.ok) {
+          const contentType = response.headers.get('content-type') || '';
+          if (contentType.includes('tiff') || 
+              contentType.includes('octet-stream') ||
+              contentType.includes('application/octet-stream') ||
+              contentType.includes('image/tiff')) {
+            fileResponse = response;
+            console.log(`Successfully got file from: ${endpoint}`);
+            break;
+          } else {
+            console.log(`Endpoint ${endpoint} returned OK but wrong content type: ${contentType}`);
+            continue;
+          }
+        }
+      } catch (error) {
+        console.log(`Endpoint ${endpoint} failed:`, error.message);
+        lastError = error;
+        continue;
+      }
+    }
+
+    if (!fileResponse) {
+      const errorText = lastError?.message || 'Failed to get clipped DTM file from any endpoint';
+      console.error('All file endpoints failed. Last error:', errorText);
+      return res.status(404).json({ 
+        error: 'Failed to get clipped DTM file from cache',
+        details: errorText,
+        triedEndpoints: possibleEndpoints
+      });
+    }
+
+    // Read file into buffer
+    const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
+    const filename = `clipped-${clippedId}.tif`;
+    
+    // Create multipart form data manually
+    const boundary = `----WebKitFormBoundary${Date.now()}`;
+    const formDataBuffer = Buffer.concat([
+      Buffer.from(`--${boundary}\r\n`, 'utf-8'),
+      Buffer.from(`Content-Disposition: form-data; name="dtm"; filename="${filename}"\r\n`, 'utf-8'),
+      Buffer.from(`Content-Type: image/tiff\r\n\r\n`, 'utf-8'),
+      fileBuffer,
+      Buffer.from(`\r\n--${boundary}--\r\n`, 'utf-8')
+    ]);
+
+    // Upload to Python backend
+    const uploadResponse = await fetch(`${PYTHON_BACKEND_URL}/upload-dtm`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`
+      },
+      body: formDataBuffer
+    });
+
+    if (!uploadResponse.ok) {
+      const errorText = await uploadResponse.text();
+      console.error('Python upload error:', errorText);
+      return res.status(uploadResponse.status).json({ error: errorText || 'Failed to upload clipped DTM' });
+    }
+
+    const data = await uploadResponse.json();
+    console.log(`Successfully uploaded clipped DTM ${clippedId} directly from cache (no copy made)`);
+    res.json(data);
+  } catch (error) {
+    console.error('Error uploading clipped DTM:', error);
+    res.status(500).json({ error: 'Failed to upload clipped DTM', details: error.message });
+  }
+});
+
 // Get DTM metadata endpoint
 app.get('/api/dtm/:filename/metadata', async (req, res) => {
   try {

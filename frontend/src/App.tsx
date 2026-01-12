@@ -201,10 +201,20 @@ function App() {
   
   // Set climb requests for the active route (now goes through undo/redo)
   const setClimbRequests = React.useCallback((updater: React.SetStateAction<{ endDistance: number; climbAmount: number }[]>) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:178',message:'setClimbRequests ENTRY',data:{activeRouteId,isFunction:typeof updater === 'function'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+    // #endregion
     setClimbRequestsByRoute((prev) => {
       const current = prev[activeRouteId] || [];
       const next = typeof updater === 'function' ? updater(current) : updater;
-      return { ...prev, [activeRouteId]: next };
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:181',message:'setClimbRequests BEFORE update',data:{activeRouteId,currentLength:current.length,nextLength:next.length,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+      // #endregion
+      const result = { ...prev, [activeRouteId]: next };
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:183',message:'setClimbRequests AFTER update',data:{activeRouteId,nextLength:next.length,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+      // #endregion
+      return result;
     });
   }, [activeRouteId, setClimbRequestsByRoute, flightPath]);
 
@@ -281,6 +291,9 @@ function App() {
   // Clear climb requests only for segments that were edited (deleted or moved)
   // Don't clear climbs when points are inserted (new segments added)
   React.useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:252',message:'useEffect ENTRY (flightPath/climbRequests watcher)',data:{flightPathLength:flightPath.length,climbRequestsLength:climbRequests.length,activeRouteId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+    // #endregion
     const currentGeometry = flightPath.map((p) => ({ lat: p.lat, lng: p.lng }));
     const prevGeometry = prevGeometryByRouteRef.current[activeRouteId];
 
@@ -297,6 +310,9 @@ function App() {
       const geometryChanged =
         prevGeometry.length !== currentGeometry.length ||
         prevGeometry.some((p, idx) => p.lat !== currentGeometry[idx]?.lat || p.lng !== currentGeometry[idx]?.lng);
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:268',message:'useEffect geometry comparison',data:{geometryChanged,prevLength:prevGeometry?.length,currentLength:currentGeometry.length,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
+      // #endregion
 
       if (geometryChanged) {
         // Calculate which segments were affected

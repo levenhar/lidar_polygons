@@ -107,10 +107,17 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 
   const updateActiveRoute = useCallback(
     (updater: (route: FlightRoute) => FlightRoute) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useFlightPath.ts:109',message:'updateActiveRoute CALLED',data:{activeRouteId:activeRoute?.id,activeRoutePointsLength:activeRoute?.points?.length,stack:new Error().stack?.split('\n').slice(0,5).join(' ')},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       if (!activeRoute) return;
       const nextRoutes = state.routes.map((route) =>
         route.id === activeRoute.id ? updater(route) : route
       );
+      // #region agent log
+      const updatedRoute = nextRoutes.find(r => r.id === activeRoute.id);
+      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useFlightPath.ts:113',message:'updateActiveRoute AFTER update',data:{activeRouteId:activeRoute.id,updatedRoutePointsLength:updatedRoute?.points?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       setState({ ...state, routes: nextRoutes }, true);
     },
     [activeRoute, setState, state]
@@ -294,6 +301,12 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 
   const setFlightPath = useCallback(
     (path: Coordinate[]) => {
+      // #region agent log
+      const stack = new Error().stack?.split('\n').slice(0, 10).join(' | ') || 'no stack';
+      const logData = {location:'useFlightPath.ts:298',message:'setFlightPath CALLED',data:{pathLength:path.length,isEmpty:path.length === 0,stack},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'A'};
+      console.log('[DEBUG LOG]', JSON.stringify(logData));
+      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(logData)}).catch((err) => console.error('[DEBUG LOG FETCH ERROR]', err));
+      // #endregion
       updateActiveRoute((route) => ({ ...route, points: path }));
     },
     [updateActiveRoute]

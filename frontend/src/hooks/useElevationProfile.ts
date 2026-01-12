@@ -118,6 +118,13 @@ export function useElevationProfile() {
         return;
       }
 
+      // Check if server sent ready flag - only process if ready
+      if (!response.data.ready) {
+        console.warn('Server did not send ready flag, waiting...');
+        setLoading(false);
+        return;
+      }
+
       // Helper function to interpolate flight height for any point along the path
       const interpolateFlightHeight = (distance: number): number => {
         // Find which segment this point belongs to

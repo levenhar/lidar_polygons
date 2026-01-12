@@ -945,7 +945,11 @@ app.post('/api/elevation-at-point', async (req, res) => {
       })
     });
 
-    res.json(result);
+    // Add completion flag to signal that profile calculation is finished
+    res.json({
+      ...result,
+      ready: true
+    });
   } catch (error) {
     console.error('Error proxying elevation-at-point to Python:', error);
     res.status(500).json({

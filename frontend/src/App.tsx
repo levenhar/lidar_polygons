@@ -45,7 +45,9 @@ const FALLBACK_CLIMB_CONFIG: ClimbConfig = {
   descentRatio: 8.16,
   allowTurnsDuringClimb: false,
   linkRatios: false,
-  vertexProximityMeters: 30
+  vertexProximityMeters: 30,
+  minClimb: 11,
+  maxClimb: 50
 };
 
 function presetToConfig(preset?: ClimbPreset): ClimbConfig {
@@ -55,7 +57,9 @@ function presetToConfig(preset?: ClimbPreset): ClimbConfig {
     descentRatio: source.descentRatio,
     allowTurnsDuringClimb: source.allowTurnsDuringClimb,
     linkRatios: source.linkRatios,
-    vertexProximityMeters: source.vertexProximityMeters
+    vertexProximityMeters: source.vertexProximityMeters,
+    minClimb: source.minClimb ?? FALLBACK_CLIMB_CONFIG.minClimb,
+    maxClimb: source.maxClimb ?? FALLBACK_CLIMB_CONFIG.maxClimb
   };
 }
 

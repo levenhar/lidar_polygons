@@ -6,6 +6,8 @@ export interface ClimbConfig {
   allowTurnsDuringClimb: boolean;
   linkRatios: boolean;
   vertexProximityMeters: number; // distance from vertex where climbing is paused
+  minClimb: number; // minimum climb value
+  maxClimb: number; // maximum climb value
 }
 
 export interface ClimbPreset extends ClimbConfig {

@@ -137,7 +137,9 @@ export function runConstraintTests(): true {
       descentRatio: 8,
       allowTurnsDuringClimb: false,
       linkRatios: false,
-      vertexProximityMeters: 30
+      vertexProximityMeters: 30,
+      minClimb: 11,
+      maxClimb: 50
     };
     
     const result = buildConstraintsList(vertexDistances, climbRequests, s0, config);
@@ -178,7 +180,9 @@ export function runConstraintTests(): true {
       descentRatio: 8,
       allowTurnsDuringClimb: false,
       linkRatios: false,
-      vertexProximityMeters: 30
+      vertexProximityMeters: 30,
+      minClimb: 11,
+      maxClimb: 50
     };
     
     const result = getNearestConstraints(s0, config, vertexDistances, climbRequests, totalRouteLength);
@@ -213,7 +217,9 @@ export function runConstraintTests(): true {
       descentRatio: 8,
       allowTurnsDuringClimb: false,
       linkRatios: false,
-      vertexProximityMeters: 30
+      vertexProximityMeters: 30,
+      minClimb: 11,
+      maxClimb: 50
     };
     
     const result = getNearestConstraints(s0, config, vertexDistances, climbRequests, totalRouteLength);
@@ -293,7 +299,9 @@ export function runConstraintTests(): true {
       descentRatio: 8,
       allowTurnsDuringClimb: false,
       linkRatios: false,
-      vertexProximityMeters: 30
+      vertexProximityMeters: 30,
+      minClimb: 11,
+      maxClimb: 50
     };
     
     const resultNoTurns = getNearestConstraints(s0, configNoTurns, vertexDistances, climbRequests, totalRouteLength);
@@ -309,7 +317,9 @@ export function runConstraintTests(): true {
       descentRatio: 8,
       allowTurnsDuringClimb: true,
       linkRatios: false,
-      vertexProximityMeters: 30
+      vertexProximityMeters: 30,
+      minClimb: 11,
+      maxClimb: 50
     };
     
     const resultWithTurns = getNearestConstraints(s0, configWithTurns, vertexDistances, climbRequests, totalRouteLength);
@@ -354,7 +364,9 @@ export function runConstraintTests(): true {
       descentRatio: 8,
       allowTurnsDuringClimb: false,
       linkRatios: false,
-      vertexProximityMeters: 30
+      vertexProximityMeters: 30,
+      minClimb: 11,
+      maxClimb: 50
     };
     
     const result = getAllConstraintsForVisualization(s0, vertexDistances, climbRequests, config);

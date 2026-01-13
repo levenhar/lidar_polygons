@@ -155,7 +155,9 @@ const toDraft = (config: ClimbConfig) => ({
   descentRatio: config.descentRatio.toString(),
   allowTurnsDuringClimb: config.allowTurnsDuringClimb,
   linkRatios: config.linkRatios,
-  vertexProximityMeters: config.vertexProximityMeters.toString()
+  vertexProximityMeters: config.vertexProximityMeters.toString(),
+  minClimb: config.minClimb.toString(),
+  maxClimb: config.maxClimb.toString()
 });
 
 interface ElevationProfileProps {
@@ -228,6 +230,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     allowTurnsDuringClimb: boolean;
     linkRatios: boolean;
     vertexProximityMeters: string;
+    minClimb: string;
+    maxClimb: string;
   }>(() => toDraft(climbConfig));
   const [climbConfigError, setClimbConfigError] = useState<string | null>(null);
   const [climbValidationPopup, setClimbValidationPopup] = useState<string | null>(null);
@@ -1676,6 +1680,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       setClimbAmountError('Enter a non-zero climb value (positive or negative).');
       return;
     }
+    const absClimbAmount = Math.abs(parsed);
+    if (absClimbAmount < climbConfig.minClimb || absClimbAmount > climbConfig.maxClimb) {
+      setClimbAmountError(
+        `ערך העלייה חייב להיות בין ${climbConfig.minClimb} ל-${climbConfig.maxClimb} מטרים (ערך נוכחי: ${absClimbAmount.toFixed(1)} מ').`
+      );
+      return;
+    }
     const baseAfterExisting = (() => {
       const startElevation = elevationProfile[0].elevation;
       const constantAltitude = startElevation + nominalFlightHeight;
@@ -1999,6 +2010,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // If linked, use climb ratio for descent as well
     const descent = climbConfigDraft.linkRatios ? climb : parseFloat(climbConfigDraft.descentRatio);
     const proximity = parseFloat(climbConfigDraft.vertexProximityMeters);
+    const minClimb = parseFloat(climbConfigDraft.minClimb);
+    const maxClimb = parseFloat(climbConfigDraft.maxClimb);
 
     if (!Number.isFinite(climb) || climb <= 0 || !Number.isFinite(descent) || descent <= 0) {
       setClimbConfigError('Ratios must be greater than 0.');
@@ -2008,12 +2021,22 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       setClimbConfigError('Vertex proximity must be >= 0.');
       return;
     }
+    if (!Number.isFinite(minClimb) || !Number.isFinite(maxClimb)) {
+      setClimbConfigError('Min and max climb must be valid numbers.');
+      return;
+    }
+    if (minClimb >= maxClimb) {
+      setClimbConfigError('Min climb must be less than max climb.');
+      return;
+    }
     setClimbConfig({
       climbRatio: climb,
       descentRatio: descent,
       allowTurnsDuringClimb: climbConfigDraft.allowTurnsDuringClimb,
       linkRatios: climbConfigDraft.linkRatios,
-      vertexProximityMeters: proximity
+      vertexProximityMeters: proximity,
+      minClimb: minClimb,
+      maxClimb: maxClimb
     });
     onSelectClimbPreset('custom');
     setIsClimbConfigOpen(false);
@@ -2575,6 +2598,32 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 onChange={(e) => {
                   markCustomPreset();
                   setClimbConfigDraft((prev) => ({ ...prev, vertexProximityMeters: e.target.value }));
+                }}
+                className="climb-modal__input"
+              />
+
+              <label className="climb-modal__label" htmlFor="min-climb-input">עלייה מינימלית (מטרים)</label>
+              <input
+                id="min-climb-input"
+                type="number"
+                step="1"
+                value={climbConfigDraft.minClimb}
+                onChange={(e) => {
+                  markCustomPreset();
+                  setClimbConfigDraft((prev) => ({ ...prev, minClimb: e.target.value }));
+                }}
+                className="climb-modal__input"
+              />
+
+              <label className="climb-modal__label" htmlFor="max-climb-input">עלייה מקסימלית (מטרים)</label>
+              <input
+                id="max-climb-input"
+                type="number"
+                step="1"
+                value={climbConfigDraft.maxClimb}
+                onChange={(e) => {
+                  markCustomPreset();
+                  setClimbConfigDraft((prev) => ({ ...prev, maxClimb: e.target.value }));
                 }}
                 className="climb-modal__input"
               />

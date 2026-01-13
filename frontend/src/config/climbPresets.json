@@ -7,7 +7,9 @@
     "descentRatio": 8.16,
     "allowTurnsDuringClimb": false,
     "linkRatios": false,
-    "vertexProximityMeters": 30
+    "vertexProximityMeters": 30,
+    "minClimb": 11,
+    "maxClimb": 50
   },
   {
     "id": "gentle-linked",
@@ -17,7 +19,9 @@
     "descentRatio": 6,
     "allowTurnsDuringClimb": true,
     "linkRatios": true,
-    "vertexProximityMeters": 25
+    "vertexProximityMeters": 25,
+    "minClimb": 11,
+    "maxClimb": 50
   },
   {
     "id": "aggressive-short",
@@ -27,7 +31,9 @@
     "descentRatio": 3.5,
     "allowTurnsDuringClimb": false,
     "linkRatios": false,
-    "vertexProximityMeters": 20
+    "vertexProximityMeters": 20,
+    "minClimb": 11,
+    "maxClimb": 50
   },
   {
     "id": "wide-turn-buffer",
@@ -37,7 +43,9 @@
     "descentRatio": 8.16,
     "allowTurnsDuringClimb": false,
     "linkRatios": false,
-    "vertexProximityMeters": 60
+    "vertexProximityMeters": 60,
+    "minClimb": 11,
+    "maxClimb": 50
   }
 ]
 

@@ -2135,15 +2135,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
       setDtmLoaded(false); // Reset loading state when starting to load
       setIsDtmProcessing(true);
       try {
-        // Extract filename from path
-        const filename = dtmSource.split('/').pop();
-        if (!filename) {
-          setIsDtmProcessing(false);
-          return;
+        // Check if dtmSource is a clipped DTM API path or a filename
+        let rasterUrl: string;
+        if (dtmSource.startsWith('/api/dtm/clipped/')) {
+          // For clipped DTMs, dtmSource is already the API endpoint path (e.g., /api/dtm/clipped/{clippedId}/raster)
+          rasterUrl = dtmSource;
+          console.log('Loading clipped DTM from API path:', rasterUrl);
+        } else {
+          // For uploaded DTMs, extract filename and construct API path
+          const filename = dtmSource.split('/').pop();
+          if (!filename) {
+            setIsDtmProcessing(false);
+            return;
+          }
+          rasterUrl = `/api/dtm/${filename}/raster`;
+          console.log('Loading uploaded DTM from filename:', filename, 'API path:', rasterUrl);
         }
 
         // Fetch raster data
-        const response = await fetch(`/api/dtm/${filename}/raster`);
+        const response = await fetch(rasterUrl);
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
           throw new Error(errorData.error || `Failed to load DTM data: ${response.status}`);

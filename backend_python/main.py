@@ -378,11 +378,11 @@ async def upload_dtm(dtm: UploadFile = File(...)):
         
         duration = time.time() - start_time
         logger.info(f"DTM uploaded successfully: {filename} in {duration:.3f}s")
-        
+               
         return {
             "success": True,
             "filename": filename,
-            "path": f"/uploads/{filename}",
+            "path": f"{DTM_CACHE_DIR}/{filename}",
             "size": os.path.getsize(file_path),
             "bounds": metadata["bounds"],
             "resolution": metadata["resolution"]

@@ -2180,9 +2180,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
 
         // Transform projected coordinates to WGS84 (lat/lon) if needed
+        // Note: Clipped DTMs already have bounds in WGS84 (transformed by backend), so skip transformation
+        const isClippedDtm = dtmSource.startsWith('/api/dtm/clipped/');
         let transformedBounds = bounds;
 
-        if (isProjected) {
+        if (isClippedDtm) {
+          console.log('Clipped DTM - bounds already in WGS84 (transformed by backend), skipping transformation');
+        }
+
+        if (isProjected && !isClippedDtm) {
           console.log('DTM uses projected coordinates. Attempting coordinate transformation...');
           console.log('EPSG Code:', epsg);
           console.log('CRS Info:', crs);

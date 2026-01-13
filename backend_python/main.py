@@ -71,6 +71,7 @@ class ElevationProfileRequest(BaseModel):
     dtmPath: str
     safetyRadiusMeters: Optional[float] = 50.0
     resolutionRadiusMeters: Optional[float] = 50.0
+    clippedId: Optional[str] = None
 
 class AOI(BaseModel):
     type: str  # 'bbox' or 'polygon'
@@ -116,13 +117,29 @@ async def get_elevation_profile(request: ElevationProfileRequest):
     
     if len(request.coordinates) < 2:
         raise HTTPException(status_code=400, detail="At least two points required")
-        
-    # Extract filename from path
-    filename = os.path.basename(request.dtmPath)
-    file_path = os.path.join(UPLOADS_DIR, filename)
+    
+    # Determine file path based on whether it's a clipped DTM or regular DTM
+    if request.clippedId:
+        # Use clipped DTM from cache directory
+        file_path = os.path.join(DTM_CACHE_DIR, f"{request.clippedId}.tif")
+        if not os.path.exists(file_path):
+            # Try to find the file with any extension
+            if os.path.exists(DTM_CACHE_DIR):
+                cache_files = os.listdir(DTM_CACHE_DIR)
+                matching_files = [f for f in cache_files if f.startswith(request.clippedId)]
+                if matching_files:
+                    file_path = os.path.join(DTM_CACHE_DIR, matching_files[0])
+                else:
+                    raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {request.clippedId}")
+            else:
+                raise HTTPException(status_code=404, detail=f"Clipped DTM cache directory not found")
+    else:
+        # Extract filename from path for regular DTM
+        filename = os.path.basename(request.dtmPath)
+        file_path = os.path.join(UPLOADS_DIR, filename)
     
     if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail=f"DTM file not found: {filename}")
+        raise HTTPException(status_code=404, detail=f"DTM file not found: {file_path}")
         
     try:
         with rasterio.open(file_path) as src:

@@ -677,7 +677,7 @@ app.get('/api/dtm/:filename/raster', async (req, res) => {
 // This endpoint samples the DTM at points along the path, including interpolated points along line segments
 app.post('/api/elevation-profile', async (req, res) => {
   try {
-    const { coordinates, dtmPath, safetyRadiusMeters, resolutionRadiusMeters } = req.body;
+    const { coordinates, dtmPath, safetyRadiusMeters, resolutionRadiusMeters, clippedId } = req.body;
 
     if (!coordinates || !Array.isArray(coordinates) || coordinates.length < 2) {
       return res.status(400).json({ error: 'Invalid coordinates array' });
@@ -687,7 +687,7 @@ app.post('/api/elevation-profile', async (req, res) => {
       return res.status(400).json({ error: 'DTM path is required' });
     }
 
-    console.log(`Proxying elevation profile request for ${dtmPath} to Python backend...`);
+    console.log(`Proxying elevation profile request for ${dtmPath} to Python backend...${clippedId ? ` (clippedId: ${clippedId})` : ''}`);
 
     const result = await proxyToPython('/elevation-profile', {
       method: 'POST',
@@ -698,7 +698,8 @@ app.post('/api/elevation-profile', async (req, res) => {
         coordinates,
         dtmPath,
         safetyRadiusMeters: safetyRadiusMeters ?? 50,
-        resolutionRadiusMeters: resolutionRadiusMeters ?? 50
+        resolutionRadiusMeters: resolutionRadiusMeters ?? 50,
+        ...(clippedId && { clippedId })
       })
     });
 

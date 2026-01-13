@@ -257,7 +257,9 @@ export function runConstraintTests(): true {
       descentRatio: 8,
       allowTurnsDuringClimb: true, // Turns NOT limiting
       linkRatios: false,
-      vertexProximityMeters: 30
+      vertexProximityMeters: 30,
+      minClimb: 11,
+      maxClimb: 50
     };
     
     const result = getNearestConstraints(s0, config, vertexDistances, climbRequests, totalRouteLength);

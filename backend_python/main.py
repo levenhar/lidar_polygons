@@ -382,10 +382,20 @@ DTM_CACHE_DIR = os.path.abspath(DTM_CACHE_DIR)
 
 # Ensure cache directory exists
 os.makedirs(DTM_CACHE_DIR, exist_ok=True)
+os.makedirs(DTM_SUBSAMPLED_CACHE_DIR, exist_ok=True)
+
+# Maximum dimension for subsampled display versions
+MAX_DISPLAY_DIM = 2048
+
+def get_subsampled_filename(filename: str) -> str:
+    """Add 'subsample' to the filename before the extension"""
+    name, ext = os.path.splitext(filename)
+    return f"{name}_subsample{ext}"
 
 logger.info(f"UPLOADS_DIR: {UPLOADS_DIR}")
 logger.info(f"DTM_DATA_DIR: {DTM_DATA_DIR}")
 logger.info(f"DTM_CACHE_DIR: {DTM_CACHE_DIR}")
+logger.info(f"DTM_SUBSAMPLED_CACHE_DIR: {DTM_SUBSAMPLED_CACHE_DIR}")
 
 class ElevationProfileRequest(BaseModel):
     coordinates: List[List[float]]
@@ -456,8 +466,13 @@ async def get_elevation_profile(request: ElevationProfileRequest):
                 raise HTTPException(status_code=404, detail=f"Clipped DTM cache directory not found")
     else:
         # Extract filename from path for regular DTM
+        # Use cache directory for calculations (original resolution)
         filename = os.path.basename(request.dtmPath)
-        file_path = os.path.join(UPLOADS_DIR, filename)
+        file_path = os.path.join(DTM_CACHE_DIR, filename)
+        
+        # Fallback to UPLOADS_DIR if not in cache (for backward compatibility)
+        if not os.path.exists(file_path):
+            file_path = os.path.join(UPLOADS_DIR, filename)
     
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"DTM file not found: {file_path}")

@@ -311,6 +311,7 @@ interface MapPanelProps {
   hoverSource?: 'map' | 'profile' | null;
   showMetadata: boolean;
   onShowMetadataChange: (show: boolean) => void;
+  climbRequests?: { endDistance: number; climbAmount: number }[];
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
@@ -351,7 +352,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   hoveredElevationPoint,
   hoverSource,
   showMetadata,
-  onShowMetadataChange
+  onShowMetadataChange,
+  climbRequests = []
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -1946,6 +1948,43 @@ const MapPanel: React.FC<MapPanelProps> = ({
           const dropLat = dropLatLng.lat;
 
           if (isPointWithinBounds(dropLng, dropLat)) {
+            // Check if point position actually changed
+            const positionChanged = Math.abs(dropLng - point.lng) > 1e-9 || Math.abs(dropLat - point.lat) > 1e-9;
+            
+            // If position changed and there are climb points, show warning
+            if (positionChanged && climbRequests.length > 0) {
+              const confirmed = window.confirm(
+                'אזהרה: עריכת מיקום הנקודה תמחק את נקודות העלייה במסלול הרלוונטי.\n\nהאם אתה בטוח שברצונך להמשיך?'
+              );
+              
+              if (!confirmed) {
+                // User cancelled - reset marker to original position
+                marker.setLatLng([point.lat, point.lng]);
+                lastValidPosition = [point.lat, point.lng];
+                isDraggingWithLeftClick = false;
+                el.style.cursor = 'pointer';
+                el.classList.remove('is-dragging');
+                marker.setZIndexOffset(0);
+                
+                // Re-enable all map interactions
+                if (map.current) {
+                  map.current.dragging.enable();
+                  map.current.touchZoom.enable();
+                  map.current.doubleClickZoom.enable();
+                  map.current.scrollWheelZoom.enable();
+                  map.current.boxZoom.enable();
+                  map.current.keyboard.enable();
+                }
+                
+                // Set flag to prevent map click handler from creating a new point
+                justFinishedDraggingRef.current = true;
+                setTimeout(() => {
+                  justFinishedDraggingRef.current = false;
+                }, 100);
+                return;
+              }
+            }
+            
             marker.setLatLng([dropLat, dropLng]);
             lastValidPosition = [dropLat, dropLng];
             // Update React state ONCE at the end to avoid re-rendering/remounting markers mid-drag

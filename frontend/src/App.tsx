@@ -1242,6 +1242,7 @@ function App() {
           hoverSource={hoverSource}
           showMetadata={showMetadata}
           onShowMetadataChange={setShowMetadata}
+          climbRequests={climbRequests}
         />
         <ElevationProfile
           elevationProfile={fullProfileResult.points}

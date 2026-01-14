@@ -1138,7 +1138,9 @@ function App() {
                   if (routesWithPoints.length > 1) {
                     setShowExportModal(true);
                   } else {
-                    exportKML(climbRequests, climbRequestsByRoute);
+                    // Get elevation at first turn point (second point, index 1) from elevation profile
+                    const firstTurnPointElevation = elevationProfile.length > 1 ? elevationProfile[1]?.elevation : undefined;
+                    exportKML(climbRequests, climbRequestsByRoute, undefined, nominalFlightHeight, firstTurnPointElevation);
                   }
                 }}
                 className={`btn btn-secondary btn-icon ${flightPath.length < 2 ? 'disabled' : ''}`}
@@ -1162,7 +1164,11 @@ function App() {
                 onChange={async (e) => {
                   const file = e.target.files?.[0];
                   if (file) {
-                    await importKML(file);
+                    const result = await importKML(file, dtmSource);
+                    // Update nominal flight height if found in KML
+                    if (result?.nominalFlightHeight !== undefined) {
+                      setNominalFlightHeight(result.nominalFlightHeight);
+                    }
                     // Note: climbRequestsByRoute is now set inside importKML's setState to avoid race conditions
                     // No need to call setClimbRequestsByRoute here anymore
                     // Reset input so same file can be imported again
@@ -1269,7 +1275,9 @@ function App() {
         activeRouteId={activeRouteId}
         onClose={() => setShowExportModal(false)}
         onExport={(selectedRouteIds) => {
-          exportKML(climbRequests, climbRequestsByRoute, selectedRouteIds);
+          // Get elevation at first turn point (second point, index 1) from elevation profile
+          const firstTurnPointElevation = elevationProfile.length > 1 ? elevationProfile[1]?.elevation : undefined;
+          exportKML(climbRequests, climbRequestsByRoute, selectedRouteIds, nominalFlightHeight, firstTurnPointElevation);
         }}
       />
     </div>

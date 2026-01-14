@@ -326,7 +326,9 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
     (
       climbRequests?: { endDistance: number; climbAmount: number }[], 
       climbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>,
-      selectedRouteIds?: string[]
+      selectedRouteIds?: string[],
+      nominalFlightHeight?: number,
+      firstTurnPointElevation?: number
     ) => {
       const active = activeRoute;
       const routesWithPoints = state.routes.filter((route) => route.points.length >= 2);
@@ -393,8 +395,13 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
         }
       });
 
-      // Generate Point styles
-      allClimbPoints.forEach((_, index) => {
+      // Always add entry point (גובה כניסה) at the first turn point (second point) with nominal flight height
+      const entryPointIndex = allClimbPoints.length;
+      const hasEntryPoint = nominalFlightHeight !== undefined && nominalFlightHeight !== null && routesToExport.length > 0 && routesToExport[0].points.length >= 2;
+      
+      // Generate Point styles (including entry point style if needed)
+      const totalPoints = allClimbPoints.length + (hasEntryPoint ? 1 : 0);
+      for (let index = 0; index < totalPoints; index++) {
         kmlContent += `    <Style id="PointStyle${index}">
       <IconStyle>
         <color>ffff0000</color>
@@ -406,7 +413,7 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
       </LabelStyle>
     </Style>
 `;
-      });
+      }
 
       // Export climb points
       allClimbPoints.forEach(({ climb, coord, index }) => {
@@ -507,6 +514,110 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
     </Placemark>
 `;
       });
+
+      // Always add entry point (גובה כניסה) at the first turn point (second point) as the last point
+      // Save as absolute altitude (sea level): nominalFlightHeight + ground elevation at first turn point
+      if (hasEntryPoint) {
+        const firstTurnPoint = routesToExport[0].points[1]; // First turn point is the second point (index 1)
+        const groundElevation = firstTurnPointElevation ?? 0; // Use provided elevation or default to 0
+        const absoluteAltitude = Math.round(nominalFlightHeight! + groundElevation);
+        const entryPointName = `גובה כניסה - ${absoluteAltitude}`;
+        kmlContent += `    <Placemark>
+      <name>${escapeXml(entryPointName)}</name>
+      <description />
+      <styleUrl>#PointStyle${entryPointIndex}</styleUrl>
+      <ExtendedData>
+        <Data name="name">
+          <value>${escapeXml(entryPointName)}</value>
+        </Data>
+        <Data name="drawingmode">
+          <value>Point</value>
+        </Data>
+        <Data name="marker">
+          <value>Point</value>
+        </Data>
+        <Data name="color">
+          <value>Blue</value>
+        </Data>
+        <Data name="style">
+          <value>Circle</value>
+        </Data>
+        <Data name="width">
+          <value>14</value>
+        </Data>
+        <Data name="fontcolor">
+          <value>Black</value>
+        </Data>
+        <Data name="fontsize">
+          <value>18</value>
+        </Data>
+        <Data name="showname">
+          <value>True</value>
+        </Data>
+        <Data name="showmeasure">
+          <value>False</value>
+        </Data>
+        <Data name="isvisible">
+          <value>True</value>
+        </Data>
+        <Data name="description">
+          <value />
+        </Data>
+        <Data name="size">
+          <value>14</value>
+        </Data>
+        <Data name="Symbol_Color">
+          <value>Blue</value>
+        </Data>
+        <Data name="Symbol_Size">
+          <value>14</value>
+        </Data>
+        <Data name="Symbol_Style">
+          <value>Circle</value>
+        </Data>
+        <Data name="PointStyle">
+          <value>Circle</value>
+        </Data>
+        <Data name="Symbol_Opacity">
+          <value>1</value>
+        </Data>
+        <Data name="Opacity">
+          <value>1</value>
+        </Data>
+        <Data name="drawmode">
+          <value>Point</value>
+        </Data>
+        <Data name="isitalic">
+          <value>False</value>
+        </Data>
+        <Data name="isunderline">
+          <value>False</value>
+        </Data>
+        <Data name="visible">
+          <value>True</value>
+        </Data>
+        <Data name="graphicid">
+          <value>${Date.now() + entryPointIndex}</value>
+        </Data>
+        <Data name="graphicColor">
+          <value>Blue</value>
+        </Data>
+        <Data name="index">
+          <value>${entryPointIndex + 1}</value>
+        </Data>
+        <Data name="showlabel">
+          <value>True</value>
+        </Data>
+        <Data name="shpindex">
+          <value>0</value>
+        </Data>
+      </ExtendedData>
+      <Point>
+        <coordinates>${firstTurnPoint.lng},${firstTurnPoint.lat}</coordinates>
+      </Point>
+    </Placemark>
+`;
+      }
 
       kmlContent += `  </Document>
   <Document id="PolyLine">
@@ -657,7 +768,7 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
   );
 
   const importKML = useCallback(
-    async (file: File): Promise<{ routes: FlightRoute[]; climbRequests: { endDistance: number; climbAmount: number }[] } | null> => {
+    async (file: File, dtmSource?: string | null): Promise<{ routes: FlightRoute[]; climbRequests: { endDistance: number; climbAmount: number }[]; nominalFlightHeight?: number } | null> => {
       try {
         const text = await file.text();
         const parser = new DOMParser();
@@ -673,6 +784,8 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 
         const routes: FlightRoute[] = [];
         const climbRequests: { endDistance: number; climbAmount: number }[] = [];
+        let nominalFlightHeight: number | undefined = undefined;
+        let absoluteAltitudeInfo: { altitude: number; coord: Coordinate } | undefined = undefined;
 
         // Handle both old format (kml > Document) and new format (Folder > Document)
         let rootElement: Element | null = null;
@@ -726,6 +839,27 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 
                 // Extract climb amount from name (e.g., "+15", "-20", "+10")
                 const name = placemark.querySelector('name')?.textContent?.trim() || '';
+                
+                // Check if this is the entry height point (גובה כניסה)
+                if (name.startsWith('גובה כניסה')) {
+                  // Extract absolute altitude (sea level) from name (e.g., "גובה כניסה - 500")
+                  // This is nominalFlightHeight + ground elevation at first turn point
+                  const heightMatch = name.match(/גובה כניסה\s*-\s*(\d+)/);
+                  if (heightMatch && heightMatch[1]) {
+                    const absoluteAltitude = parseFloat(heightMatch[1]);
+                    if (!isNaN(absoluteAltitude)) {
+                      // Store the absolute altitude and coordinate for later calculation
+                      // We'll subtract the ground elevation at first turn point to get nominalFlightHeight
+                      absoluteAltitudeInfo = {
+                        altitude: absoluteAltitude,
+                        coord: { lng, lat }
+                      };
+                    }
+                  }
+                  // Don't add this as a climb request, it's just metadata
+                  return;
+                }
+                
                 // Try to parse the name as a number (handles +15, -20, etc.)
                 const climbValue = parseFloat(name);
                 
@@ -866,6 +1000,84 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
           });
         });
 
+        // If we found absolute altitude in "גובה כניסה", calculate nominalFlightHeight
+        // by subtracting ground elevation at first point
+        // Formula: nominalFlightHeight = "גובה כניסה" value - ground height of first point
+        if (absoluteAltitudeInfo && routes.length > 0) {
+          const firstRoute = routes[0];
+          if (firstRoute.points.length > 0) {
+            const firstPoint = firstRoute.points[0]; // First point (starting point)
+            // TypeScript: absoluteAltitudeInfo is guaranteed to be defined here due to the if check
+            const absoluteAltitude = (absoluteAltitudeInfo as { altitude: number; coord: Coordinate }).altitude;
+            
+            // Try to get ground elevation at first point
+            // The API requires at least 2 points, so we'll create a minimal path with the first point duplicated
+            let groundElevation = 0;
+            if (dtmSource) {
+              try {
+                // API requires at least 2 points, so duplicate the first point to create a valid path
+                const coordinates = [[firstPoint.lng, firstPoint.lat], [firstPoint.lng, firstPoint.lat]];
+                const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
+                const clippedId = clippedIdMatch ? clippedIdMatch[1] : undefined;
+                
+                console.log('KML import: Querying elevation for first point:', { lng: firstPoint.lng, lat: firstPoint.lat, dtmSource, clippedId });
+                
+                const response = await fetch('/api/elevation-profile', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    coordinates,
+                    dtmPath: dtmSource,
+                    safetyRadiusMeters: 50,
+                    resolutionRadiusMeters: 50,
+                    ...(clippedId && { clippedId })
+                  })
+                });
+                
+                if (response.ok) {
+                  const data = await response.json();
+                  console.log('KML import: Elevation API response:', data);
+                  
+                  // Check different possible response formats
+                  // Based on useElevationProfile.ts, the response has data.profile array
+                  if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
+                    // Profile format: array of ElevationPoint objects with elevation property
+                    // Get the elevation of the first point
+                    groundElevation = data.profile[0].elevation;
+                  } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
+                    // Direct elevations array
+                    groundElevation = data.elevations[0];
+                  } else if (data.elevation !== undefined) {
+                    // Single elevation value
+                    groundElevation = data.elevation;
+                  } else if (Array.isArray(data) && data.length > 0) {
+                    // Direct array response
+                    groundElevation = typeof data[0] === 'number' ? data[0] : data[0].elevation;
+                  }
+                  
+                  console.log('KML import: Extracted ground elevation:', groundElevation, 'from absolute altitude:', absoluteAltitude);
+                } else {
+                  const errorText = await response.text();
+                  console.warn('KML import: Elevation API error:', response.status, errorText);
+                }
+              } catch (error) {
+                console.warn('KML import: Failed to query elevation for first point:', error);
+              }
+            } else {
+              console.warn('KML import: No DTM source available, cannot query ground elevation');
+            }
+            
+            // Calculate nominalFlightHeight = absoluteAltitude - groundElevation
+            // This gives us: nominalFlightHeight = "גובה כניסה" - ground height of first point
+            console.log('KML import: Calculating nominal height:', {
+              absoluteAltitude,
+              groundElevation,
+              calculated: absoluteAltitude - groundElevation
+            });
+            nominalFlightHeight = Math.round(absoluteAltitude - groundElevation);
+          }
+        }
+        
         // Calculate distances for climb points if we have routes
         if (climbRequests.length > 0 && routes.length > 0) {
           const activeRoute = routes[0]; // Use first route for climb points
@@ -952,7 +1164,7 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
           true
         );
 
-        return { routes, climbRequests };
+        return { routes, climbRequests, nominalFlightHeight };
       } catch (error) {
         console.error('Error importing KML:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';

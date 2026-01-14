@@ -1849,11 +1849,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   }, [setClimbRequests]);
 
   const handleRemoveSingleClimb = useCallback((endDistance: number, climbAmount: number) => {
-    // #region agent log
-    const logData = {location:'ElevationProfile.tsx:1718',message:'handleRemoveSingleClimb ENTRY',data:{endDistance,climbAmount,flightPathLength:flightPath.length,climbRequestsLength:climbRequests.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'A'};
-    console.log('[DEBUG LOG]', JSON.stringify(logData));
-    fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(logData)}).catch((err) => console.error('[DEBUG LOG FETCH ERROR]', err));
-    // #endregion
     console.log('========================================');
     console.log('[DELETE_CLIMB] handleRemoveSingleClimb CALLED');
     console.log('[DELETE_CLIMB] Target to delete:', { endDistance, climbAmount });
@@ -1877,9 +1872,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     });
     
     setClimbRequests((prev) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:1739',message:'setClimbRequests BEFORE filter',data:{prevLength:prev?.length,prev:JSON.stringify(prev)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
       // Safety check: ensure we have a valid array
       if (!Array.isArray(prev)) {
         console.error('[DELETE_CLIMB] prev is not an array:', prev);
@@ -1975,9 +1967,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       if (filtered.length === 0 && prev.length > 1) {
         console.error('[DELETE_CLIMB] WARNING: All climbs would be deleted! Aborting deletion.');
         console.log('[DELETE_CLIMB] This should not happen if matchCount === 1. matchCount:', matchCount);
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:1785',message:'SAFETY CHECK: All climbs would be deleted',data:{prevLength:prev.length,filteredLength:filtered.length,matchCount},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'E'})}).catch(()=>{});
-        // #endregion
         return prev; // Return original array to prevent data loss
       }
       
@@ -1990,9 +1979,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       console.log('[DELETE_CLIMB] Filtered climb requests:', filtered);
       console.log('[DELETE_CLIMB] Total climbs after filter:', filtered.length);
       console.log('[DELETE_CLIMB] Climbs removed:', prev.length - filtered.length);
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:1790',message:'setClimbRequests AFTER filter',data:{prevLength:prev.length,filteredLength:filtered.length,filtered:JSON.stringify(filtered)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
       console.log('========================================');
       
       return filtered;
@@ -2678,11 +2664,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             type="button"
             className="climb-context-item destructive"
             onClick={(e) => {
-              // #region agent log
-              const logData = {location:'ElevationProfile.tsx:2380',message:'DELETE BUTTON CLICKED',data:{target:(e.target as any)?.tagName,currentTarget:(e.currentTarget as any)?.tagName,flightPathLength:flightPath.length,climbRequestsLength:climbRequests.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'C'};
-              console.log('[DEBUG LOG]', JSON.stringify(logData));
-              fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(logData)}).catch((err) => console.error('[DEBUG LOG FETCH ERROR]', err));
-              // #endregion
               console.log('========================================');
               console.log('[CLIMB_MENU] DELETE CLIMB BUTTON CLICKED');
               console.log('[CLIMB_MENU] Current flightPath length:', flightPath.length);
@@ -2719,10 +2700,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               const targetEndDistance = climbContextMenu.endDistance;
               const targetClimbAmount = climbContextMenu.climbAmount;
               
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:2408',message:'BEFORE calling handleRemoveSingleClimb',data:{targetEndDistance,targetClimbAmount,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-              // #endregion
-              
               // Close menus first to prevent any interference
               setClimbContextMenu(null);
               setContextMenu(null);
@@ -2734,10 +2711,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               
               // Call the delete function with the stored values
               handleRemoveSingleClimb(targetEndDistance, targetClimbAmount);
-              
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'ElevationProfile.tsx:2420',message:'AFTER calling handleRemoveSingleClimb',data:{targetEndDistance,targetClimbAmount,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-              // #endregion
               
               console.log('[CLIMB_MENU] handleRemoveSingleClimb call completed');
               console.log('========================================');

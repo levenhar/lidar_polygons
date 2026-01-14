@@ -180,20 +180,10 @@ function App() {
   
   // Set climb requests for the active route (now goes through undo/redo)
   const setClimbRequests = React.useCallback((updater: React.SetStateAction<{ endDistance: number; climbAmount: number }[]>) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:178',message:'setClimbRequests ENTRY',data:{activeRouteId,isFunction:typeof updater === 'function'},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
     setClimbRequestsByRoute((prev) => {
       const current = prev[activeRouteId] || [];
       const next = typeof updater === 'function' ? updater(current) : updater;
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:181',message:'setClimbRequests BEFORE update',data:{activeRouteId,currentLength:current.length,nextLength:next.length,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
-      const result = { ...prev, [activeRouteId]: next };
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:183',message:'setClimbRequests AFTER update',data:{activeRouteId,nextLength:next.length,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-      // #endregion
-      return result;
+      return { ...prev, [activeRouteId]: next };
     });
   }, [activeRouteId, setClimbRequestsByRoute, flightPath]);
 
@@ -264,9 +254,6 @@ function App() {
   // Clear climb requests only for segments that were edited (deleted or moved)
   // Don't clear climbs when points are inserted (new segments added)
   React.useEffect(() => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:252',message:'useEffect ENTRY (flightPath/climbRequests watcher)',data:{flightPathLength:flightPath.length,climbRequestsLength:climbRequests.length,activeRouteId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
     const currentGeometry = flightPath.map((p) => ({ lat: p.lat, lng: p.lng }));
     const prevGeometry = prevGeometryByRouteRef.current[activeRouteId];
 
@@ -283,9 +270,6 @@ function App() {
       const geometryChanged =
         prevGeometry.length !== currentGeometry.length ||
         prevGeometry.some((p, idx) => p.lat !== currentGeometry[idx]?.lat || p.lng !== currentGeometry[idx]?.lng);
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:268',message:'useEffect geometry comparison',data:{geometryChanged,prevLength:prevGeometry?.length,currentLength:currentGeometry.length,flightPathLength:flightPath.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-      // #endregion
 
       if (geometryChanged) {
         // Calculate which segments were affected
@@ -391,9 +375,6 @@ function App() {
 
     // Update the stored geometry for this specific route
     prevGeometryByRouteRef.current[activeRouteId] = currentGeometry;
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:373',message:'useEffect EXIT (flightPath/climbRequests watcher)',data:{flightPathLength:flightPath.length,climbRequestsLength:climbRequests.length,activeRouteId},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'B'})}).catch(()=>{});
-    // #endregion
   }, [flightPath, activeRouteId, setClimbRequests]);
 
   // Calculate the full profile result
@@ -1181,23 +1162,9 @@ function App() {
                 onChange={async (e) => {
                   const file = e.target.files?.[0];
                   if (file) {
-                    const result = await importKML(file);
-                    if (result) {
-                      // Set climb requests for each imported route (now goes through undo/redo)
-                      setClimbRequestsByRoute((prev) => {
-                        const next = { ...prev };
-                        result.routes.forEach((route) => {
-                          // Associate climb requests with the first route (as per current importKML logic)
-                          // If we have climb requests and this is the first route, assign them
-                          if (result.climbRequests.length > 0 && route.id === result.routes[0]?.id) {
-                            next[route.id] = result.climbRequests;
-                          } else if (!next[route.id]) {
-                            next[route.id] = [];
-                          }
-                        });
-                        return next;
-                      });
-                    }
+                    await importKML(file);
+                    // Note: climbRequestsByRoute is now set inside importKML's setState to avoid race conditions
+                    // No need to call setClimbRequestsByRoute here anymore
                     // Reset input so same file can be imported again
                     e.target.value = '';
                   }

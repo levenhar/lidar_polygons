@@ -2185,6 +2185,54 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, [routes, activeRouteId]);
 
+  // Auto-fit map bounds to show all routes when routes are imported/added
+  const previousRoutesCountRef = useRef<number>(0);
+  useEffect(() => {
+    if (!map.current) return;
+    
+    const currentRoutesCount = routes.filter(route => route.visible && route.points.length >= 2).length;
+    
+    // Only fit bounds when new routes are added (count increases)
+    // Skip if routes count decreased or stayed the same (user might be editing)
+    if (currentRoutesCount <= previousRoutesCountRef.current) {
+      previousRoutesCountRef.current = currentRoutesCount;
+      return;
+    }
+    
+    previousRoutesCountRef.current = currentRoutesCount;
+    
+    // Collect all visible routes (active + passive)
+    const visibleRoutes = routes.filter(route => route.visible && route.points.length >= 2);
+    if (visibleRoutes.length === 0) return;
+
+    // Collect all coordinates from all visible routes
+    const allCoordinates: L.LatLng[] = [];
+    visibleRoutes.forEach(route => {
+      route.points.forEach(point => {
+        allCoordinates.push(L.latLng(point.lat, point.lng));
+      });
+    });
+
+    if (allCoordinates.length === 0) return;
+
+    // Create a bounds group and fit map to show all routes
+    // Use a small delay to ensure routes are rendered first
+    setTimeout(() => {
+      if (!map.current) return;
+      try {
+        const bounds = L.latLngBounds(allCoordinates);
+        // Add padding to the bounds
+        map.current.fitBounds(bounds, { 
+          padding: [50, 50],
+          maxZoom: 18 // Don't zoom in too much
+        });
+        console.log('MapPanel: Fitted bounds to show', visibleRoutes.length, 'route(s)');
+      } catch (error) {
+        console.warn('Failed to fit bounds to routes:', error);
+      }
+    }, 100);
+  }, [routes, activeRouteId]);
+
   // Update hovered elevation point marker
   useEffect(() => {
     if (!map.current) return;

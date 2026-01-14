@@ -107,17 +107,10 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 
   const updateActiveRoute = useCallback(
     (updater: (route: FlightRoute) => FlightRoute) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useFlightPath.ts:109',message:'updateActiveRoute CALLED',data:{activeRouteId:activeRoute?.id,activeRoutePointsLength:activeRoute?.points?.length,stack:new Error().stack?.split('\n').slice(0,5).join(' ')},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       if (!activeRoute) return;
       const nextRoutes = state.routes.map((route) =>
         route.id === activeRoute.id ? updater(route) : route
       );
-      // #region agent log
-      const updatedRoute = nextRoutes.find(r => r.id === activeRoute.id);
-      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'useFlightPath.ts:113',message:'updateActiveRoute AFTER update',data:{activeRouteId:activeRoute.id,updatedRoutePointsLength:updatedRoute?.points?.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       setState({ ...state, routes: nextRoutes }, true);
     },
     [activeRoute, setState, state]
@@ -301,12 +294,6 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 
   const setFlightPath = useCallback(
     (path: Coordinate[]) => {
-      // #region agent log
-      const stack = new Error().stack?.split('\n').slice(0, 10).join(' | ') || 'no stack';
-      const logData = {location:'useFlightPath.ts:298',message:'setFlightPath CALLED',data:{pathLength:path.length,isEmpty:path.length === 0,stack},timestamp:Date.now(),sessionId:'debug-session',runId:'run2',hypothesisId:'A'};
-      console.log('[DEBUG LOG]', JSON.stringify(logData));
-      fetch('http://127.0.0.1:7242/ingest/23f55bdb-bcb3-4bbf-8dbc-54360485eebb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(logData)}).catch((err) => console.error('[DEBUG LOG FETCH ERROR]', err));
-      // #endregion
       updateActiveRoute((route) => ({ ...route, points: path }));
     },
     [updateActiveRoute]
@@ -376,44 +363,20 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 
       const exportAll = selectedRouteIds ? selectedRouteIds.length > 1 : routesToExport.length > 1;
 
-      // Build KML content
-      let kmlContent = `<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-  <Document>
+      // Get folder name from first route or default
+      const folderName = routesToExport.length > 0 ? routesToExport[0].name : 'Flight Path';
+      const folderId = escapeXml(folderName.replace(/\s+/g, '_'));
+
+      // Build KML content with Folder structure
+      let kmlContent = `<?xml version="1.0" encoding="utf-8"?>
+<Folder id="${folderId}" xmlns="http://www.opengis.net/kml/2.2">
+  <name>${escapeXml(folderName)}</name>
+  <Document id="Point">
+    <name>Point</name>
 `;
 
-      // Export routes as polylines
-      routesToExport.forEach((route) => {
-        if (route.points.length < 2) return;
-
-        const coordinates = route.points
-          .map((p) => `${p.lng},${p.lat}${p.height !== undefined ? `,${p.height}` : ''}`)
-          .join(' ');
-
-        kmlContent += `    <Placemark>
-      <name>${escapeXml(route.name)}</name>
-      <description>Route: ${escapeXml(route.name)}</description>
-      <LineString>
-        <coordinates>${coordinates}</coordinates>
-      </LineString>
-      <Style>
-        <LineStyle>
-          <color>${(() => {
-            // Convert #RRGGBB to AABBGGRR format for KML
-            const hex = route.color.slice(1);
-            const r = hex.slice(0, 2);
-            const g = hex.slice(2, 4);
-            const b = hex.slice(4, 6);
-            return `ff${b}${g}${r}`;
-          })()}</color>
-          <width>3</width>
-        </LineStyle>
-      </Style>
-    </Placemark>
-`;
-      });
-
-      // Export climb points for each route
+      // Collect all climb points first to generate styles
+      const allClimbPoints: Array<{ route: FlightRoute; climb: { endDistance: number; climbAmount: number }; coord: Coordinate; index: number }> = [];
       routesToExport.forEach((route) => {
         const routeClimbRequests = exportAll && climbRequestsByRoute 
           ? (climbRequestsByRoute[route.id] || [])
@@ -421,31 +384,257 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
         
         if (routeClimbRequests.length > 0) {
           const cumulativeDistances = computeCumulativeDistances(route.points);
-
           routeClimbRequests.forEach((climb, index) => {
             const coord = distanceToCoordinate(climb.endDistance, route.points, cumulativeDistances);
             if (coord) {
-              kmlContent += `    <Placemark>
-      <name>Climb Point ${index + 1} - ${escapeXml(route.name)}</name>
-      <description>${climb.climbAmount.toFixed(2)}</description>
-      <Point>
-        <coordinates>${coord.lng},${coord.lat}</coordinates>
-      </Point>
-      <Style>
-        <IconStyle>
-          <color>ff00ff00</color>
-          <scale>1.2</scale>
-        </IconStyle>
-      </Style>
-    </Placemark>
-`;
+              allClimbPoints.push({ route, climb, coord, index });
             }
           });
         }
       });
 
+      // Generate Point styles
+      allClimbPoints.forEach((_, index) => {
+        kmlContent += `    <Style id="PointStyle${index}">
+      <IconStyle>
+        <color>ffff0000</color>
+        <colorMode>normal</colorMode>
+      </IconStyle>
+      <LabelStyle>
+        <color>ffffffff</color>
+        <scale>1</scale>
+      </LabelStyle>
+    </Style>
+`;
+      });
+
+      // Export climb points
+      allClimbPoints.forEach(({ climb, coord, index }) => {
+        const climbName = climb.climbAmount >= 0 ? `+${Math.round(climb.climbAmount)}` : `${Math.round(climb.climbAmount)}`;
+        kmlContent += `    <Placemark>
+      <name>${escapeXml(climbName)}</name>
+      <description />
+      <styleUrl>#PointStyle${index}</styleUrl>
+      <ExtendedData>
+        <Data name="name">
+          <value>${escapeXml(climbName)}</value>
+        </Data>
+        <Data name="drawingmode">
+          <value>Point</value>
+        </Data>
+        <Data name="marker">
+          <value>Point</value>
+        </Data>
+        <Data name="color">
+          <value>Blue</value>
+        </Data>
+        <Data name="style">
+          <value>Circle</value>
+        </Data>
+        <Data name="width">
+          <value>14</value>
+        </Data>
+        <Data name="fontcolor">
+          <value>Black</value>
+        </Data>
+        <Data name="fontsize">
+          <value>18</value>
+        </Data>
+        <Data name="showname">
+          <value>True</value>
+        </Data>
+        <Data name="showmeasure">
+          <value>False</value>
+        </Data>
+        <Data name="isvisible">
+          <value>True</value>
+        </Data>
+        <Data name="description">
+          <value />
+        </Data>
+        <Data name="size">
+          <value>14</value>
+        </Data>
+        <Data name="Symbol_Color">
+          <value>Blue</value>
+        </Data>
+        <Data name="Symbol_Size">
+          <value>14</value>
+        </Data>
+        <Data name="Symbol_Style">
+          <value>Circle</value>
+        </Data>
+        <Data name="PointStyle">
+          <value>Circle</value>
+        </Data>
+        <Data name="Symbol_Opacity">
+          <value>1</value>
+        </Data>
+        <Data name="Opacity">
+          <value>1</value>
+        </Data>
+        <Data name="drawmode">
+          <value>Point</value>
+        </Data>
+        <Data name="isitalic">
+          <value>False</value>
+        </Data>
+        <Data name="isunderline">
+          <value>False</value>
+        </Data>
+        <Data name="visible">
+          <value>True</value>
+        </Data>
+        <Data name="graphicid">
+          <value>${Date.now() + index}</value>
+        </Data>
+        <Data name="graphicColor">
+          <value>Blue</value>
+        </Data>
+        <Data name="index">
+          <value>${index + 1}</value>
+        </Data>
+        <Data name="showlabel">
+          <value>True</value>
+        </Data>
+        <Data name="shpindex">
+          <value>0</value>
+        </Data>
+      </ExtendedData>
+      <Point>
+        <coordinates>${coord.lng},${coord.lat}</coordinates>
+      </Point>
+    </Placemark>
+`;
+      });
+
       kmlContent += `  </Document>
-</kml>`;
+  <Document id="PolyLine">
+    <name>PolyLine</name>
+    <Style id="PolylineStyle0">
+      <LabelStyle>
+        <color>ffffffff</color>
+        <scale>1</scale>
+      </LabelStyle>
+      <LineStyle>
+        <color>${(() => {
+          // Convert #RRGGBB to AABBGGRR format for KML
+          const hex = routesToExport[0]?.color.slice(1) || '0000ff';
+          const r = hex.slice(0, 2);
+          const g = hex.slice(2, 4);
+          const b = hex.slice(4, 6);
+          return `ff${b}${g}${r}`;
+        })()}</color>
+        <width>2</width>
+        <physicalWidth xmlns="http://www.google.com/kml/ext/2.2">2</physicalWidth>
+      </LineStyle>
+    </Style>
+`;
+
+      // Export routes as polylines
+      routesToExport.forEach((route) => {
+        if (route.points.length < 2) return;
+
+        // Format coordinates with newlines between them
+        const coordinates = route.points
+          .map((p) => `${p.lng},${p.lat}${p.height !== undefined ? `,${p.height}` : ''}`)
+          .join('\n');
+
+        // Convert route color to KML format
+        const hex = route.color.slice(1);
+        const r = hex.slice(0, 2);
+        const g = hex.slice(2, 4);
+        const b = hex.slice(4, 6);
+        const colorKml = `ff${b}${g}${r}`;
+
+        kmlContent += `    <Placemark>
+      <name>${escapeXml(route.name)}</name>
+      <description />
+      <styleUrl>#PolylineStyle0</styleUrl>
+      <ExtendedData>
+        <Data name="name">
+          <value>${escapeXml(route.name)}</value>
+        </Data>
+        <Data name="drawingmode">
+          <value>Polyline</value>
+        </Data>
+        <Data name="isvisible">
+          <value>True</value>
+        </Data>
+        <Data name="style">
+          <value>Solid</value>
+        </Data>
+        <Data name="color">
+          <value>${colorKml}</value>
+        </Data>
+        <Data name="width">
+          <value>2</value>
+        </Data>
+        <Data name="fontcolor">
+          <value>Black</value>
+        </Data>
+        <Data name="fontsize">
+          <value>18</value>
+        </Data>
+        <Data name="showname">
+          <value>True</value>
+        </Data>
+        <Data name="opacity">
+          <value>255</value>
+        </Data>
+        <Data name="showmeasure">
+          <value>True</value>
+        </Data>
+        <Data name="description">
+          <value />
+        </Data>
+        <Data name="Symbol_LineOpacity">
+          <value>255</value>
+        </Data>
+        <Data name="Symbol_SolidBrushColor">
+          <value>Color [A=255, R=${parseInt(r, 16)}, G=${parseInt(g, 16)}, B=${parseInt(b, 16)}]</value>
+        </Data>
+        <Data name="Symbol_LineWidth">
+          <value>2</value>
+        </Data>
+        <Data name="drawmode">
+          <value>Polyline</value>
+        </Data>
+        <Data name="isitalic">
+          <value>False</value>
+        </Data>
+        <Data name="isunderline">
+          <value>False</value>
+        </Data>
+        <Data name="visible">
+          <value>True</value>
+        </Data>
+        <Data name="graphicid">
+          <value>${Date.now()}</value>
+        </Data>
+        <Data name="graphicColor">
+          <value>${colorKml}</value>
+        </Data>
+        <Data name="index">
+          <value>0</value>
+        </Data>
+        <Data name="showlabel">
+          <value>True</value>
+        </Data>
+        <Data name="shpindex">
+          <value>0</value>
+        </Data>
+      </ExtendedData>
+      <LineString>
+        <coordinates>${coordinates}
+</coordinates>
+      </LineString>
+    </Placemark>
+`;
+      });
+
+      kmlContent += `  </Document>
+</Folder>`;
 
       const filenameBase =
         exportAll && routesToExport.length > 1
@@ -477,79 +666,205 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
         // Check for parsing errors
         const parseError = kmlDoc.querySelector('parsererror');
         if (parseError) {
-          throw new Error('Invalid KML file format');
+          const errorText = parseError.textContent || 'Unknown parsing error';
+          console.error('KML parsing error:', errorText);
+          throw new Error(`Invalid KML file format: ${errorText}`);
         }
 
         const routes: FlightRoute[] = [];
         const climbRequests: { endDistance: number; climbAmount: number }[] = [];
 
-        // Find all Placemark elements
-        const placemarks = kmlDoc.querySelectorAll('Placemark');
+        // Handle both old format (kml > Document) and new format (Folder > Document)
+        let rootElement: Element | null = null;
+        const folder = kmlDoc.querySelector('Folder');
+        const document = kmlDoc.querySelector('Document');
+        
+        if (folder) {
+          rootElement = folder;
+        } else if (document) {
+          rootElement = document;
+        } else {
+          // Try to find any container
+          rootElement = kmlDoc.documentElement;
+        }
 
-        placemarks.forEach((placemark) => {
-          const name = placemark.querySelector('name')?.textContent || '';
-          const description = placemark.querySelector('description')?.textContent || '';
+        if (!rootElement) {
+          throw new Error('Invalid KML structure');
+        }
 
-          // Check if it's a LineString (route)
-          const lineString = placemark.querySelector('LineString');
-          if (lineString) {
-            const coordinatesText = lineString.querySelector('coordinates')?.textContent?.trim();
-            if (coordinatesText) {
-              const coords = coordinatesText
-                .split(/\s+/)
-                .filter((c) => c.trim())
-                .map((coordStr) => {
-                  const parts = coordStr.split(',');
-                  const lng = parseFloat(parts[0]);
-                  const lat = parseFloat(parts[1]);
-                  const height = parts.length > 2 ? parseFloat(parts[2]) : undefined;
-                  return { lng, lat, ...(height !== undefined && !isNaN(height) && { height }) };
-                })
-                .filter((c) => !isNaN(c.lng) && !isNaN(c.lat));
+        // Find Document elements with id="Point" and id="PolyLine" (new format)
+        // Use getElementsByTagName and filter by id attribute for better namespace handling
+        const allDocuments = rootElement.getElementsByTagName('Document');
+        let pointDocument: Element | null = null;
+        let polylineDocument: Element | null = null;
+        
+        for (let i = 0; i < allDocuments.length; i++) {
+          const doc = allDocuments[i];
+          const id = doc.getAttribute('id');
+          if (id === 'Point') {
+            pointDocument = doc;
+          } else if (id === 'PolyLine') {
+            polylineDocument = doc;
+          }
+        }
+        
+        console.log('KML import: Found Point document:', !!pointDocument, 'PolyLine document:', !!polylineDocument);
+        
+        // If new format found (at least one of the Documents), use it; otherwise fall back to old format
+        if (pointDocument || polylineDocument) {
+          // New format: Parse Points from Point Document
+          if (pointDocument) {
+            const pointPlacemarks = pointDocument.querySelectorAll('Placemark');
+            pointPlacemarks.forEach((placemark) => {
+            const point = placemark.querySelector('Point');
+            if (point) {
+              const coordinatesText = point.querySelector('coordinates')?.textContent?.trim();
+              if (coordinatesText) {
+                const parts = coordinatesText.split(',');
+                const lng = parseFloat(parts[0]);
+                const lat = parseFloat(parts[1]);
 
-              if (coords.length >= 2) {
-                const nextIndex = state.routes.length + routes.length + 1;
-                const route = createRoute(nextIndex);
-                routes.push({
-                  ...route,
-                  name: name || route.name,
-                  points: coords
-                });
+                // Extract climb amount from name (e.g., "+15", "-20", "+10")
+                const name = placemark.querySelector('name')?.textContent?.trim() || '';
+                // Try to parse the name as a number (handles +15, -20, etc.)
+                const climbValue = parseFloat(name);
+                
+                if (!isNaN(climbValue) && !isNaN(lng) && !isNaN(lat)) {
+                  climbRequests.push({
+                    endDistance: 0, // Will be calculated after route is loaded
+                    climbAmount: climbValue,
+                    // Store coordinate for later distance calculation
+                    _coord: { lng, lat }
+                  } as any);
+                }
               }
             }
+          });
           }
 
-          // Check if it's a Point (climb point)
-          const point = placemark.querySelector('Point');
-          if (point) {
-            const coordinatesText = point.querySelector('coordinates')?.textContent?.trim();
-            if (coordinatesText) {
-              const parts = coordinatesText.split(',');
-              const lng = parseFloat(parts[0]);
-              const lat = parseFloat(parts[1]);
+          // Parse LineStrings from PolyLine Document
+          if (polylineDocument) {
+            const polylinePlacemarks = polylineDocument.querySelectorAll('Placemark');
+          polylinePlacemarks.forEach((placemark) => {
+            const lineString = placemark.querySelector('LineString');
+            if (lineString) {
+              const name = placemark.querySelector('name')?.textContent || '';
+              const coordinatesText = lineString.querySelector('coordinates')?.textContent?.trim();
+              if (coordinatesText) {
+                // Handle both space-separated and newline-separated coordinates
+                const coords = coordinatesText
+                  .split(/[\s\n]+/)
+                  .filter((c) => c.trim())
+                  .map((coordStr) => {
+                    const parts = coordStr.split(',');
+                    const lng = parseFloat(parts[0]);
+                    const lat = parseFloat(parts[1]);
+                    const height = parts.length > 2 ? parseFloat(parts[2]) : undefined;
+                    return { lng, lat, ...(height !== undefined && !isNaN(height) && { height }) };
+                  })
+                  .filter((c) => !isNaN(c.lng) && !isNaN(c.lat));
 
-              // Extract climb value from description (just the number)
-              const climbValue = parseFloat(description.trim());
-              if (!isNaN(climbValue) && !isNaN(lng) && !isNaN(lat)) {
-                const climbAmount = climbValue;
-                // We'll need to calculate the distance along the route later
-                // For now, store the coordinate and climb amount
-                // This will be processed after routes are loaded
-                climbRequests.push({
-                  endDistance: 0, // Will be calculated after route is loaded
-                  climbAmount,
-                  // Store coordinate for later distance calculation
-                  _coord: { lng, lat }
-                } as any);
+                if (coords.length >= 2) {
+                  const nextIndex = state.routes.length + routes.length + 1;
+                  const route = createRoute(nextIndex);
+                  const newRoute = {
+                    ...route,
+                    name: name || route.name,
+                    points: coords
+                  };
+                  console.log('KML import: Adding route', newRoute.name, 'with', coords.length, 'points. First point:', coords[0], 'Last point:', coords[coords.length - 1]);
+                  routes.push(newRoute);
+                } else {
+                  console.warn('KML import: Skipping route with less than 2 points:', coords.length);
+                }
               }
             }
+          });
           }
-        });
+        } else {
+          // Old format: Find all Placemark elements anywhere in the document
+          const placemarks = kmlDoc.querySelectorAll('Placemark');
 
+          placemarks.forEach((placemark) => {
+            const name = placemark.querySelector('name')?.textContent || '';
+            const description = placemark.querySelector('description')?.textContent || '';
+
+            // Check if it's a LineString (route)
+            const lineString = placemark.querySelector('LineString');
+            if (lineString) {
+              const coordinatesText = lineString.querySelector('coordinates')?.textContent?.trim();
+              if (coordinatesText) {
+                const coords = coordinatesText
+                  .split(/\s+/)
+                  .filter((c) => c.trim())
+                  .map((coordStr) => {
+                    const parts = coordStr.split(',');
+                    const lng = parseFloat(parts[0]);
+                    const lat = parseFloat(parts[1]);
+                    const height = parts.length > 2 ? parseFloat(parts[2]) : undefined;
+                    return { lng, lat, ...(height !== undefined && !isNaN(height) && { height }) };
+                  })
+                  .filter((c) => !isNaN(c.lng) && !isNaN(c.lat));
+
+                if (coords.length >= 2) {
+                  const nextIndex = state.routes.length + routes.length + 1;
+                  const route = createRoute(nextIndex);
+                  routes.push({
+                    ...route,
+                    name: name || route.name,
+                    points: coords
+                  });
+                }
+              }
+            }
+
+            // Check if it's a Point (climb point)
+            const point = placemark.querySelector('Point');
+            if (point) {
+              const coordinatesText = point.querySelector('coordinates')?.textContent?.trim();
+              if (coordinatesText) {
+                const parts = coordinatesText.split(',');
+                const lng = parseFloat(parts[0]);
+                const lat = parseFloat(parts[1]);
+
+                // Extract climb value from description (just the number)
+                const climbValue = parseFloat(description.trim());
+                if (!isNaN(climbValue) && !isNaN(lng) && !isNaN(lat)) {
+                  const climbAmount = climbValue;
+                  // We'll need to calculate the distance along the route later
+                  // For now, store the coordinate and climb amount
+                  // This will be processed after routes are loaded
+                  climbRequests.push({
+                    endDistance: 0, // Will be calculated after route is loaded
+                    climbAmount,
+                    // Store coordinate for later distance calculation
+                    _coord: { lng, lat }
+                  } as any);
+                }
+              }
+            }
+          });
+        }
+
+        console.log('KML import: Found', routes.length, 'routes and', climbRequests.length, 'climb points');
+        
         if (routes.length === 0) {
           alert('No routes (LineString) found in KML file.');
           return null;
         }
+
+        // Log route details before state update
+        routes.forEach((route, idx) => {
+          console.log(`KML import: Route ${idx + 1}:`, {
+            id: route.id,
+            name: route.name,
+            pointsCount: route.points.length,
+            visible: route.visible,
+            color: route.color,
+            firstPoint: route.points[0],
+            lastPoint: route.points[route.points.length - 1]
+          });
+        });
 
         // Calculate distances for climb points if we have routes
         if (climbRequests.length > 0 && routes.length > 0) {
@@ -616,12 +931,23 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
           });
         }
 
+        // Use functional update to ensure we have the latest state
+        const newActiveRouteId = routes[0].id;
+        
         setState(
-          {
-            ...state,
-            routes: [...state.routes, ...routes],
-            activeRouteId: routes[0].id,
-            climbRequestsByRoute: state.climbRequestsByRoute
+          (prevState) => {
+            const newRoutes = [...prevState.routes, ...routes];
+            // Update climbRequestsByRoute to include climb requests for the first imported route
+            const updatedClimbRequestsByRoute = { ...prevState.climbRequestsByRoute };
+            if (climbRequests.length > 0 && routes.length > 0) {
+              updatedClimbRequestsByRoute[newActiveRouteId] = climbRequests;
+            }
+            return {
+              ...prevState,
+              routes: newRoutes,
+              activeRouteId: newActiveRouteId,
+              climbRequestsByRoute: updatedClimbRequestsByRoute
+            };
           },
           true
         );
@@ -629,7 +955,8 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
         return { routes, climbRequests };
       } catch (error) {
         console.error('Error importing KML:', error);
-        alert('Failed to import KML file.');
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        alert(`Failed to import KML file: ${errorMessage}`);
         return null;
       }
     },
@@ -638,16 +965,19 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 
   const setClimbRequestsByRoute = useCallback(
     (updater: React.SetStateAction<Record<string, { endDistance: number; climbAmount: number }[]>>) => {
-      const next = typeof updater === 'function' ? updater(state.climbRequestsByRoute) : updater;
+      // Use functional update to ensure we have the latest state
       setState(
-        {
-          ...state,
-          climbRequestsByRoute: next
+        (prevState) => {
+          const next = typeof updater === 'function' ? updater(prevState.climbRequestsByRoute) : updater;
+          return {
+            ...prevState,
+            climbRequestsByRoute: next
+          };
         },
         true
       );
     },
-    [setState, state]
+    [setState]
   );
 
   return {

@@ -6,6 +6,7 @@ import rasterio
 import rasterio.features
 import rasterio.warp
 import rasterio.mask
+from affine import Affine
 import numpy as np
 from typing import Optional, List
 import json
@@ -59,12 +60,25 @@ else:
     backend_python_dir = os.path.dirname(os.path.abspath(__file__))
     DTM_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, "DTM_TIFF/CACHE"))
 
-# Ensure cache directory exists
+# Subsampled cache directory - where subsampled versions for display are stored
+DTM_SUBSAMPLED_CACHE_DIR = os.path.join(DTM_CACHE_DIR, "upload")
+
+# Ensure cache directories exist
 os.makedirs(DTM_CACHE_DIR, exist_ok=True)
+os.makedirs(DTM_SUBSAMPLED_CACHE_DIR, exist_ok=True)
+
+# Maximum dimension for subsampled display versions
+MAX_DISPLAY_DIM = 2048
+
+def get_subsampled_filename(filename: str) -> str:
+    """Add 'subsample' to the filename before the extension"""
+    name, ext = os.path.splitext(filename)
+    return f"{name}_subsample{ext}"
 
 logger.info(f"UPLOADS_DIR: {UPLOADS_DIR}")
 logger.info(f"DTM_DATA_DIR: {DTM_DATA_DIR}")
 logger.info(f"DTM_CACHE_DIR: {DTM_CACHE_DIR}")
+logger.info(f"DTM_SUBSAMPLED_CACHE_DIR: {DTM_SUBSAMPLED_CACHE_DIR}")
 
 class ElevationProfileRequest(BaseModel):
     coordinates: List[List[float]]
@@ -135,8 +149,13 @@ async def get_elevation_profile(request: ElevationProfileRequest):
                 raise HTTPException(status_code=404, detail=f"Clipped DTM cache directory not found")
     else:
         # Extract filename from path for regular DTM
+        # Use cache directory for calculations (original resolution)
         filename = os.path.basename(request.dtmPath)
-        file_path = os.path.join(UPLOADS_DIR, filename)
+        file_path = os.path.join(DTM_CACHE_DIR, filename)
+        
+        # Fallback to UPLOADS_DIR if not in cache (for backward compatibility)
+        if not os.path.exists(file_path):
+            file_path = os.path.join(UPLOADS_DIR, filename)
     
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail=f"DTM file not found: {file_path}")
@@ -393,6 +412,64 @@ async def upload_dtm(dtm: UploadFile = File(...)):
         # Get metadata for the newly uploaded file
         metadata = await get_dtm_metadata(filename)
         
+        # Copy original to cache directory for calculations (only if different directories)
+        cache_file_path = os.path.join(DTM_CACHE_DIR, filename)
+        file_path_abs = os.path.abspath(file_path)
+        cache_file_path_abs = os.path.abspath(cache_file_path)
+        
+        if file_path_abs != cache_file_path_abs:
+            shutil.copy2(file_path, cache_file_path)
+            logger.info(f"Original DTM copied to cache for calculations: {cache_file_path}")
+        else:
+            logger.info(f"UPLOADS_DIR and DTM_CACHE_DIR are the same, skipping copy")
+            cache_file_path = file_path  # Use the same file
+        
+        # Create subsampled version for display in cache/upload
+        # Ensure subsampled cache directory exists
+        os.makedirs(DTM_SUBSAMPLED_CACHE_DIR, exist_ok=True)
+        subsampled_filename = get_subsampled_filename(filename)
+        subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
+        with rasterio.open(cache_file_path) as src:
+            if src.width > MAX_DISPLAY_DIM or src.height > MAX_DISPLAY_DIM:
+                scale = max(src.width, src.height) / MAX_DISPLAY_DIM
+                new_width = int(src.width / scale)
+                new_height = int(src.height / scale)
+                logger.info(f"Creating subsampled version for uploaded DTM: {src.width}x{src.height} -> {new_width}x{new_height}")
+                
+                # Calculate new transform for subsampled version
+                src_transform = src.transform
+                new_transform = Affine(
+                    src_transform[0] * scale,  # pixel width
+                    src_transform[1],
+                    src_transform[2],
+                    src_transform[3],
+                    src_transform[4] * scale,  # pixel height
+                    src_transform[5]
+                )
+                
+                subsampled_meta = src.meta.copy()
+                subsampled_meta.update({
+                    "width": new_width,
+                    "height": new_height,
+                    "transform": new_transform
+                })
+                
+                # Read and resample the full-resolution data
+                subsampled_data = src.read(
+                    1,
+                    out_shape=(new_height, new_width),
+                    resampling=rasterio.enums.Resampling.bilinear
+                )
+                
+                # Write subsampled version
+                with rasterio.open(subsampled_file_path, "w", **subsampled_meta) as dest:
+                    dest.write(subsampled_data, 1)
+                logger.info(f"Subsampled version saved to: {subsampled_file_path}")
+            else:
+                # If already small enough, just copy the full version
+                shutil.copy2(file_path, subsampled_file_path)
+                logger.info(f"DTM already small enough, copying full version for display")
+        
         duration = time.time() - start_time
         logger.info(f"DTM uploaded successfully: {filename} in {duration:.3f}s")
                
@@ -412,11 +489,279 @@ async def upload_dtm(dtm: UploadFile = File(...)):
                 os.remove(file_path)
             except:
                 pass
+        # Clean up cache file if it was created
+        if 'cache_file_path' in locals() and os.path.exists(cache_file_path):
+            try:
+                os.remove(cache_file_path)
+            except:
+                pass
+        # Clean up subsampled version if it was created
+        if 'subsampled_file_path' in locals() and os.path.exists(subsampled_file_path):
+            try:
+                os.remove(subsampled_file_path)
+            except:
+                pass
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/dtm/{filename}")
+@app.delete("/dtm/{filename}")
+async def delete_uploaded_dtm(filename: str):
+    """Delete an uploaded DTM file and its subsampled version"""
+    try:
+        logger.info(f"Deleting uploaded DTM: {filename}")
+        
+        deleted_files = []
+        not_found = True
+        
+        # Delete from UPLOADS_DIR
+        upload_file_path = os.path.join(UPLOADS_DIR, filename)
+        if os.path.exists(upload_file_path):
+            try:
+                os.remove(upload_file_path)
+                deleted_files.append(f"uploads/{filename}")
+                logger.info(f"Deleted uploaded DTM file: {upload_file_path}")
+                not_found = False
+            except Exception as e:
+                logger.error(f"Error deleting file from UPLOADS_DIR {upload_file_path}: {e}", exc_info=True)
+        
+        # Delete from DTM_CACHE_DIR (if different from UPLOADS_DIR)
+        cache_file_path = os.path.join(DTM_CACHE_DIR, filename)
+        upload_file_path_abs = os.path.abspath(upload_file_path)
+        cache_file_path_abs = os.path.abspath(cache_file_path)
+        
+        if upload_file_path_abs != cache_file_path_abs and os.path.exists(cache_file_path):
+            try:
+                os.remove(cache_file_path)
+                deleted_files.append(f"cache/{filename}")
+                logger.info(f"Deleted cached DTM file: {cache_file_path}")
+                not_found = False
+            except Exception as e:
+                logger.error(f"Error deleting file from DTM_CACHE_DIR {cache_file_path}: {e}", exc_info=True)
+        
+        # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR (which is DTM_CACHE_DIR/upload)
+        subsampled_filename = get_subsampled_filename(filename)
+        subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
+        logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR} (cache/upload folder)")
+        logger.info(f"Looking for subsampled file: {subsampled_filename} at path: {subsampled_file_path}")
+        
+        # First try the exact subsampled filename
+        if os.path.exists(subsampled_file_path):
+            try:
+                os.remove(subsampled_file_path)
+                deleted_files.append(f"upload/{subsampled_filename}")
+                logger.info(f"Deleted subsampled DTM file from cache/upload folder: {subsampled_file_path}")
+                not_found = False
+            except Exception as e:
+                logger.error(f"Error deleting subsampled file {subsampled_file_path}: {e}", exc_info=True)
+        else:
+            logger.info(f"Subsampled file not found at exact path: {subsampled_file_path}")
+            # Fallback: search for any file with "subsample" in the name that matches the base filename
+            if os.path.exists(DTM_SUBSAMPLED_CACHE_DIR):
+                try:
+                    base_name = os.path.splitext(filename)[0]
+                    all_files = os.listdir(DTM_SUBSAMPLED_CACHE_DIR)
+                    for file in all_files:
+                        file_lower = file.lower()
+                        # Check if file contains "subsample" AND the base filename
+                        if "subsample" in file_lower and base_name in file:
+                            file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, file)
+                            if os.path.isfile(file_path):
+                                try:
+                                    os.remove(file_path)
+                                    deleted_files.append(f"upload/{file}")
+                                    logger.info(f"Deleted subsampled DTM file (found by pattern match) from cache/upload folder: {file_path}")
+                                    not_found = False
+                                except Exception as e:
+                                    logger.error(f"Error deleting subsampled file {file_path}: {e}", exc_info=True)
+                except Exception as e:
+                    logger.warning(f"Error searching for subsampled files: {e}")
+        
+        if not_found:
+            logger.warning(f"Uploaded DTM not found: {filename}")
+            return {"success": True, "deleted": False, "message": f"Uploaded DTM {filename} not found"}
+        
+        logger.info(f"Successfully deleted {len(deleted_files)} file(s) for uploaded DTM: {filename}")
+        return {
+            "success": True,
+            "deleted": True,
+            "filename": filename,
+            "deletedFiles": deleted_files
+        }
+        
+    except Exception as e:
+        logger.error(f"Error deleting uploaded DTM {filename}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/dtm/cleanup")
+async def cleanup_dtm(request: Request):
+    """Cleanup endpoint for deleting DTM files - matches Node.js backend API"""
+    try:
+        body = await request.json()
+        dtm_path = body.get("path")
+        filename = body.get("filename")
+        clipped_id = body.get("clippedId")
+        
+        logger.info(f"Cleanup request - path: {dtm_path}, filename: {filename}, clippedId: {clipped_id}")
+        
+        # If clippedId is provided, delete the clipped DTM
+        if clipped_id:
+            try:
+                logger.info(f"Deleting clipped DTM via cleanup: {clipped_id}")
+                # Reuse the delete logic - search for files matching the clipped_id
+                deleted_files = []
+                not_found = True
+                
+                # Delete from cache directory
+                if os.path.exists(DTM_CACHE_DIR):
+                    cache_files = os.listdir(DTM_CACHE_DIR)
+                    for file in cache_files:
+                        if file.startswith(clipped_id):
+                            file_path = os.path.join(DTM_CACHE_DIR, file)
+                            try:
+                                if os.path.isfile(file_path):
+                                    os.remove(file_path)
+                                    deleted_files.append(f"cache/{file}")
+                                    logger.info(f"Deleted clipped DTM file: {file_path}")
+                                    not_found = False
+                            except Exception as e:
+                                logger.error(f"Error deleting {file_path}: {e}")
+                
+                    # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR (which is DTM_CACHE_DIR/upload)
+                    logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR} (cache/upload folder)")
+                    if os.path.exists(DTM_SUBSAMPLED_CACHE_DIR):
+                        subsampled_files = os.listdir(DTM_SUBSAMPLED_CACHE_DIR)
+                        logger.info(f"Found {len(subsampled_files)} files in subsampled cache directory")
+                        for file in subsampled_files:
+                            file_lower = file.lower()
+                            # Check if file contains "subsample" AND matches the clipped_id pattern
+                            has_subsample = "subsample" in file_lower
+                            matches_clipped_id = file.startswith(clipped_id) or clipped_id in file
+                            
+                            if has_subsample and matches_clipped_id:
+                                file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, file)
+                                try:
+                                    if os.path.isfile(file_path):
+                                        os.remove(file_path)
+                                        deleted_files.append(f"upload/{file}")
+                                        logger.info(f"Deleted subsampled DTM file from cache/upload folder: {file_path}")
+                                        not_found = False
+                                except Exception as e:
+                                    logger.error(f"Error deleting {file_path}: {e}")
+                    else:
+                        logger.warning(f"Subsampled cache directory does not exist: {DTM_SUBSAMPLED_CACHE_DIR}")
+                
+                if not_found:
+                    return {"success": True, "deleted": False, "message": f"Clipped DTM {clipped_id} not found"}
+                
+                return {"success": True, "deleted": True, "clippedId": clipped_id, "deletedFiles": deleted_files}
+            except Exception as e:
+                logger.error(f"Error deleting clipped DTM: {e}", exc_info=True)
+                return {"success": False, "error": "Failed to delete clipped DTM"}
+        
+        # Legacy: delete uploaded file
+        # Extract filename from path or use provided filename
+        raw_name = filename
+        if not raw_name and dtm_path:
+            if isinstance(dtm_path, str):
+                raw_name = os.path.basename(dtm_path)
+        
+        if not raw_name:
+            logger.warning("No filename provided in cleanup request")
+            return {"success": False, "error": "No filename provided"}
+        
+        # Use just the basename for safety
+        safe_filename = os.path.basename(raw_name)
+        logger.info(f"Attempting to delete legacy DTM file: {safe_filename}")
+        
+        # Call the delete function logic
+        deleted_files = []
+        not_found = True
+        
+        # Delete from UPLOADS_DIR
+        upload_file_path = os.path.join(UPLOADS_DIR, safe_filename)
+        if os.path.exists(upload_file_path):
+            try:
+                os.remove(upload_file_path)
+                deleted_files.append(f"uploads/{safe_filename}")
+                logger.info(f"Deleted uploaded DTM file: {upload_file_path}")
+                not_found = False
+            except Exception as e:
+                logger.error(f"Error deleting file from UPLOADS_DIR {upload_file_path}: {e}", exc_info=True)
+        
+        # Delete from DTM_CACHE_DIR (if different from UPLOADS_DIR)
+        cache_file_path = os.path.join(DTM_CACHE_DIR, safe_filename)
+        upload_file_path_abs = os.path.abspath(upload_file_path)
+        cache_file_path_abs = os.path.abspath(cache_file_path)
+        
+        if upload_file_path_abs != cache_file_path_abs and os.path.exists(cache_file_path):
+            try:
+                os.remove(cache_file_path)
+                deleted_files.append(f"cache/{safe_filename}")
+                logger.info(f"Deleted cached DTM file: {cache_file_path}")
+                not_found = False
+            except Exception as e:
+                logger.error(f"Error deleting file from DTM_CACHE_DIR {cache_file_path}: {e}", exc_info=True)
+        
+        # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR (which is DTM_CACHE_DIR/upload)
+        subsampled_filename = get_subsampled_filename(safe_filename)
+        subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
+        logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR} (cache/upload folder)")
+        logger.info(f"Looking for subsampled file: {subsampled_filename} at path: {subsampled_file_path}")
+        
+        # First try the exact subsampled filename
+        if os.path.exists(subsampled_file_path):
+            try:
+                os.remove(subsampled_file_path)
+                deleted_files.append(f"upload/{subsampled_filename}")
+                logger.info(f"Deleted subsampled DTM file from cache/upload folder: {subsampled_file_path}")
+                not_found = False
+            except Exception as e:
+                logger.error(f"Error deleting subsampled file {subsampled_file_path}: {e}", exc_info=True)
+        else:
+            logger.info(f"Subsampled file not found at exact path: {subsampled_file_path}")
+            # Fallback: search for any file with "subsample" in the name that matches the base filename
+            if os.path.exists(DTM_SUBSAMPLED_CACHE_DIR):
+                try:
+                    base_name = os.path.splitext(safe_filename)[0]
+                    all_files = os.listdir(DTM_SUBSAMPLED_CACHE_DIR)
+                    for file in all_files:
+                        file_lower = file.lower()
+                        # Check if file contains "subsample" AND the base filename
+                        if "subsample" in file_lower and base_name in file:
+                            file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, file)
+                            if os.path.isfile(file_path):
+                                try:
+                                    os.remove(file_path)
+                                    deleted_files.append(f"upload/{file}")
+                                    logger.info(f"Deleted subsampled DTM file (found by pattern match) from cache/upload folder: {file_path}")
+                                    not_found = False
+                                except Exception as e:
+                                    logger.error(f"Error deleting subsampled file {file_path}: {e}", exc_info=True)
+                except Exception as e:
+                    logger.warning(f"Error searching for subsampled files: {e}")
+        
+        if not_found:
+            logger.warning(f"Uploaded DTM not found: {safe_filename}")
+            return {"success": True, "deleted": False, "message": f"Uploaded DTM {safe_filename} not found", "uploadsDir": UPLOADS_DIR}
+        
+        logger.info(f"Successfully deleted {len(deleted_files)} file(s) for uploaded DTM: {safe_filename}")
+        return {
+            "success": True,
+            "deleted": True,
+            "filename": safe_filename,
+            "deletedFiles": deleted_files
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in cleanup endpoint: {e}", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 @app.get("/dtm/{filename}/raster")
 async def get_dtm_raster(filename: str):
-    file_path = os.path.join(UPLOADS_DIR, filename)
+    # Use cache directory for original (calculations), fallback to UPLOADS_DIR
+    file_path = os.path.join(DTM_CACHE_DIR, filename)
+    if not os.path.exists(file_path):
+        file_path = os.path.join(UPLOADS_DIR, filename)
     
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -424,45 +769,27 @@ async def get_dtm_raster(filename: str):
     start_time = time.time()
     logger.info(f"Reading raster data for DTM: {filename}")
     try:
+        # First, read full resolution for min/max calculations from cache
         with rasterio.open(file_path) as src:
-            # Downsample for visualization if too large
-            # 2048x2048 is more than enough for a map preview and stays well within JSON/browser limits
-            MAX_DIM = 2048
-            
-            if src.width > MAX_DIM or src.height > MAX_DIM:
-                scale = max(src.width, src.height) / MAX_DIM
-                new_width = int(src.width / scale)
-                new_height = int(src.height / scale)
-                logger.info(f"Downsampling DTM from {src.width}x{src.height} to {new_width}x{new_height} (factor {scale:.2f})")
-                
-                data = src.read(
-                    1,
-                    out_shape=(new_height, new_width),
-                    resampling=rasterio.enums.Resampling.bilinear
-                )
-                render_width = new_width
-                render_height = new_height
-            else:
-                data = src.read(1)
-                render_width = src.width
-                render_height = src.height
-            
-            # Get stats
+            # Calculate min/max from full resolution
+            full_data = src.read(1)
             nodata = src.nodata
+            bounds = src.bounds
+            src_width = src.width
+            src_height = src.height
+            src_crs_str = src.crs.to_string() if src.crs else None
             
-            valid_mask = data != nodata if nodata is not None else np.ones_like(data, dtype=bool)
-            # Handle NaN if present in float data
-            if np.issubdtype(data.dtype, np.floating):
-                valid_mask &= ~np.isnan(data)
-                
+            # Get stats from full resolution
+            valid_mask = full_data != nodata if nodata is not None else np.ones_like(full_data, dtype=bool)
+            if np.issubdtype(full_data.dtype, np.floating):
+                valid_mask &= ~np.isnan(full_data)
+            
             if valid_mask.any():
-                min_val = float(np.min(data[valid_mask]))
-                max_val = float(np.max(data[valid_mask]))
+                min_val = float(np.min(full_data[valid_mask]))
+                max_val = float(np.max(full_data[valid_mask]))
             else:
                 min_val = 0.0
                 max_val = 0.0
-            
-            bounds = src.bounds
             
             # Check projection
             is_projected = False
@@ -471,27 +798,57 @@ async def get_dtm_raster(filename: str):
             else:
                 # Heuristic fallback
                 is_projected = abs(bounds.left) > 180 or abs(bounds.bottom) > 90
-            
-            # Convert to list for JSON response
-            # Flatten array
-            flat_data = data.flatten()
-            
-            res = {
-                "width": render_width,
-                "height": render_height,
-                "originalWidth": src.width,
-                "originalHeight": src.height,
-                "min": min_val,
-                "max": max_val,
-                "bounds": [bounds.left, bounds.bottom, bounds.right, bounds.top],
-                "noDataValue": nodata,
-                "isProjected": is_projected,
-                "data": flat_data.tolist(),
-                "crs": src.crs.to_string() if src.crs else None
-            }
-            duration = time.time() - start_time
-            logger.info(f"Raster data read and processed for {filename} in {duration:.3f}s")
-            return res
+        
+        # Read subsampled version for display (from cache if available)
+        subsampled_filename = get_subsampled_filename(filename)
+        subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
+        if os.path.exists(subsampled_file_path):
+            logger.info(f"Using cached subsampled version for display: {subsampled_file_path}")
+            with rasterio.open(subsampled_file_path) as subsampled_src:
+                display_data = subsampled_src.read(1)
+                render_width = subsampled_src.width
+                render_height = subsampled_src.height
+        else:
+            # Fallback: if subsampled version doesn't exist, create on-the-fly from original
+            logger.info(f"Subsampled version not found, creating on-the-fly for display")
+            with rasterio.open(file_path) as src:  # file_path is already the original from cache
+                if src_width > MAX_DISPLAY_DIM or src_height > MAX_DISPLAY_DIM:
+                    scale = max(src_width, src_height) / MAX_DISPLAY_DIM
+                    new_width = int(src_width / scale)
+                    new_height = int(src_height / scale)
+                    logger.info(f"On-the-fly subsampling: {src_width}x{src_height} -> {new_width}x{new_height} (factor {scale:.2f})")
+                    
+                    display_data = src.read(
+                        1,
+                        out_shape=(new_height, new_width),
+                        resampling=rasterio.enums.Resampling.bilinear
+                    )
+                    render_width = new_width
+                    render_height = new_height
+                else:
+                    display_data = full_data
+                    render_width = src_width
+                    render_height = src_height
+        
+        # Convert to list for JSON response
+        flat_data = display_data.flatten()
+        
+        res = {
+            "width": render_width,
+            "height": render_height,
+            "originalWidth": src_width,
+            "originalHeight": src_height,
+            "min": min_val,
+            "max": max_val,
+            "bounds": [bounds.left, bounds.bottom, bounds.right, bounds.top],
+            "noDataValue": nodata,
+            "isProjected": is_projected,
+            "data": flat_data.tolist(),
+            "crs": src_crs_str
+        }
+        duration = time.time() - start_time
+        logger.info(f"Raster data read and processed for {filename} in {duration:.3f}s")
+        return res
             
     except Exception as e:
         logger.error(f"Error reading raster {filename}: {e}", exc_info=True)
@@ -590,9 +947,53 @@ async def clip_dtm(request: ClipRequest):
             # Transform bounds to WGS84
             out_bounds = rasterio.warp.transform_bounds(src_crs, "EPSG:4326", left, bottom, right, top)
             
-            # Write clipped raster
+            # Write full-resolution clipped raster (for calculations)
             with rasterio.open(clipped_file_path, "w", **out_meta) as dest:
                 dest.write(out_image)
+            
+            # Create subsampled version for display if needed
+            # Ensure subsampled cache directory exists
+            os.makedirs(DTM_SUBSAMPLED_CACHE_DIR, exist_ok=True)
+            subsampled_filename = get_subsampled_filename(f"{clipped_id}.tif")
+            subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
+            if out_meta["width"] > MAX_DISPLAY_DIM or out_meta["height"] > MAX_DISPLAY_DIM:
+                scale = max(out_meta["width"], out_meta["height"]) / MAX_DISPLAY_DIM
+                new_width = int(out_meta["width"] / scale)
+                new_height = int(out_meta["height"] / scale)
+                logger.info(f"Creating subsampled version: {out_meta['width']}x{out_meta['height']} -> {new_width}x{new_height}")
+                
+                # Calculate new transform for subsampled version
+                new_transform = Affine(
+                    out_transform[0] * scale,  # pixel width
+                    out_transform[1],
+                    out_transform[2],
+                    out_transform[3],
+                    out_transform[4] * scale,  # pixel height
+                    out_transform[5]
+                )
+                
+                subsampled_meta = out_meta.copy()
+                subsampled_meta.update({
+                    "width": new_width,
+                    "height": new_height,
+                    "transform": new_transform
+                })
+                
+                # Read and resample the full-resolution data
+                with rasterio.open(clipped_file_path) as full_src:
+                    subsampled_data = full_src.read(
+                        1,
+                        out_shape=(new_height, new_width),
+                        resampling=rasterio.enums.Resampling.bilinear
+                    )
+                
+                # Write subsampled version
+                with rasterio.open(subsampled_file_path, "w", **subsampled_meta) as dest:
+                    dest.write(subsampled_data, 1)
+            else:
+                # If already small enough, just copy the full version
+                shutil.copy2(clipped_file_path, subsampled_file_path)
+                logger.info(f"DTM already small enough, copying full version for display")
             
             # Generate URLs (these will be served by the Node.js backend)
             base_url = f"/api/dtm/clipped/{clipped_id}"
@@ -694,64 +1095,64 @@ async def get_clipped_dtm_raster(clipped_id: str):
         start_time = time.time()
         logger.info(f"Reading raster data for clipped DTM: {clipped_id}")
         
-        with rasterio.open(clipped_file_path) as src:
-            # Downsample for visualization if too large
-            MAX_DIM = 2048
+        # Read full resolution for min/max calculations
+        with rasterio.open(clipped_file_path) as full_src:
+            full_data = full_src.read(1)
+            nodata = full_src.nodata
+            bounds = full_src.bounds
+            src_width = full_src.width
+            src_height = full_src.height
+            src_crs = full_src.crs
             
-            if src.width > MAX_DIM or src.height > MAX_DIM:
-                scale = max(src.width, src.height) / MAX_DIM
-                new_width = int(src.width / scale)
-                new_height = int(src.height / scale)
-                logger.info(f"Downsampling clipped DTM from {src.width}x{src.height} to {new_width}x{new_height}")
-                
-                data = src.read(
-                    1,
-                    out_shape=(new_height, new_width),
-                    resampling=rasterio.enums.Resampling.bilinear
-                )
-                render_width = new_width
-                render_height = new_height
-            else:
-                data = src.read(1)
-                render_width = src.width
-                render_height = src.height
-            
-            # Get stats
-            nodata = src.nodata
-            valid_mask = data != nodata if nodata is not None else np.ones_like(data, dtype=bool)
-            if np.issubdtype(data.dtype, np.floating):
-                valid_mask &= ~np.isnan(data)
+            # Calculate min/max from full resolution
+            valid_mask = full_data != nodata if nodata is not None else np.ones_like(full_data, dtype=bool)
+            if np.issubdtype(full_data.dtype, np.floating):
+                valid_mask &= ~np.isnan(full_data)
             
             if valid_mask.any():
-                min_val = float(np.min(data[valid_mask]))
-                max_val = float(np.max(data[valid_mask]))
+                min_val = float(np.min(full_data[valid_mask]))
+                max_val = float(np.max(full_data[valid_mask]))
             else:
                 min_val = 0.0
                 max_val = 0.0
             
-            bounds = src.bounds
-            wgs84_bounds = rasterio.warp.transform_bounds(src.crs, "EPSG:4326", *bounds)
-            
-            is_projected = src.crs.is_projected if src.crs else (abs(bounds.left) > 180 or abs(bounds.bottom) > 90)
-            
-            flat_data = data.flatten()
-            
-            res = {
-                "width": render_width,
-                "height": render_height,
-                "originalWidth": src.width,
-                "originalHeight": src.height,
-                "min": min_val,
-                "max": max_val,
-                "bounds": list(wgs84_bounds),
-                "noDataValue": nodata,
-                "isProjected": is_projected,
-                "data": flat_data.tolist(),
-                "crs": src.crs.to_string() if src.crs else None
-            }
-            duration = time.time() - start_time
-            logger.info(f"Raster data read for clipped DTM in {duration:.3f}s")
-            return res
+            is_projected = src_crs.is_projected if src_crs else (abs(bounds.left) > 180 or abs(bounds.bottom) > 90)
+        
+        # Read subsampled version for display
+        subsampled_filename = get_subsampled_filename(f"{clipped_id}.tif")
+        subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
+        if os.path.exists(subsampled_file_path):
+            logger.info(f"Using cached subsampled version for display: {subsampled_file_path}")
+            with rasterio.open(subsampled_file_path) as subsampled_src:
+                display_data = subsampled_src.read(1)
+                render_width = subsampled_src.width
+                render_height = subsampled_src.height
+        else:
+            # Fallback: if subsampled version doesn't exist, use full resolution
+            logger.warning(f"Subsampled version not found, using full resolution for display")
+            display_data = full_data
+            render_width = src_width
+            render_height = src_height
+        
+        wgs84_bounds = rasterio.warp.transform_bounds(src_crs, "EPSG:4326", *bounds) if src_crs else bounds
+        flat_data = display_data.flatten()
+        
+        res = {
+            "width": render_width,
+            "height": render_height,
+            "originalWidth": src_width,
+            "originalHeight": src_height,
+            "min": min_val,
+            "max": max_val,
+            "bounds": list(wgs84_bounds),
+            "noDataValue": nodata,
+            "isProjected": is_projected,
+            "data": flat_data.tolist(),
+            "crs": src_crs.to_string() if src_crs else None
+        }
+        duration = time.time() - start_time
+        logger.info(f"Raster data read for clipped DTM in {duration:.3f}s")
+        return res
             
     except HTTPException:
         raise
@@ -901,6 +1302,37 @@ async def delete_clipped_dtm(clipped_id: str):
         
         # Start recursive deletion
         delete_recursive(DTM_CACHE_DIR)
+        
+        # Also explicitly check and delete from subsampled cache directory (DTM_CACHE_DIR/upload)
+        logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR} (cache/upload folder)")
+        if os.path.exists(DTM_SUBSAMPLED_CACHE_DIR):
+            try:
+                subsampled_files = os.listdir(DTM_SUBSAMPLED_CACHE_DIR)
+                logger.info(f"Found {len(subsampled_files)} files in subsampled cache directory (cache/upload)")
+                for item in subsampled_files:
+                    item_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, item)
+                    if os.path.isfile(item_path):
+                        # Check if this is a subsampled version - must contain "subsample" in the name
+                        # AND match the clipped_id pattern
+                        item_lower = item.lower()
+                        has_subsample = "subsample" in item_lower
+                        
+                        # Check if it matches the clipped_id pattern AND has "subsample" in the name
+                        if has_subsample and should_delete_file(item_path, item):
+                            try:
+                                os.remove(item_path)
+                                deleted_files.append(f"upload/{item}")
+                                logger.info(f"Deleted subsampled DTM file from cache/upload folder: upload/{item} at {item_path}")
+                                not_found = False
+                            except Exception as e:
+                                logger.error(f"Error deleting subsampled file {item}: {e}", exc_info=True)
+                        elif has_subsample:
+                            # Log when we find a subsampled file but it doesn't match (for debugging)
+                            logger.debug(f"Found subsampled file but doesn't match clipped_id: {item}")
+            except Exception as e:
+                logger.warning(f"Error checking subsampled cache directory (cache/upload): {e}")
+        else:
+            logger.warning(f"Subsampled cache directory (cache/upload) does not exist: {DTM_SUBSAMPLED_CACHE_DIR}")
         
         if not_found:
             logger.warning(f"Clipped DTM not found: {clipped_id} in directory: {DTM_CACHE_DIR}")

@@ -738,6 +738,42 @@ app.post('/api/elevation-profile', async (req, res) => {
   }
 });
 
+// Get elevation at a specific point
+app.post('/api/elevation-at-point', async (req, res) => {
+  try {
+    const { longitude, latitude, dtmPath, clippedId } = req.body;
+
+    if (longitude === undefined || latitude === undefined) {
+      return res.status(400).json({ error: 'Longitude and latitude are required' });
+    }
+
+    if (!dtmPath) {
+      return res.status(400).json({ error: 'DTM path is required' });
+    }
+
+    const result = await proxyToPython('/elevation-at-point', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        longitude,
+        latitude,
+        dtmPath,
+        ...(clippedId && { clippedId })
+      })
+    });
+
+    res.json(result);
+  } catch (error) {
+    console.error('Error proxying elevation-at-point to Python:', error);
+    res.status(500).json({
+      error: 'Could not get elevation at point',
+      details: error.message
+    });
+  }
+});
+
 // 1) Path to Vite build 
 const distPath = join(__dirname, '../frontend/dist');
 console.log("distPath");

@@ -97,6 +97,12 @@ class ClipRequest(BaseModel):
     dtmId: str
     aoi: AOI
 
+class ElevationAtPointRequest(BaseModel):
+    longitude: float
+    latitude: float
+    dtmPath: str
+    clippedId: Optional[str] = None
+
 def haversine(lon1, lat1, lon2, lat2):
     """
     Calculate the great circle distance between two points 
@@ -295,6 +301,73 @@ async def get_elevation_profile(request: ElevationProfileRequest):
             
     except Exception as e:
         logger.error(f"Error calculating elevation profile: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/elevation-at-point")
+async def get_elevation_at_point(request: ElevationAtPointRequest):
+    """Get elevation at a specific point from DTM"""
+    try:
+        # Determine file path based on whether it's a clipped DTM or regular DTM
+        if request.clippedId:
+            # Use clipped DTM from cache directory
+            file_path = os.path.join(DTM_CACHE_DIR, f"{request.clippedId}.tif")
+            if not os.path.exists(file_path):
+                # Try to find the file with any extension
+                if os.path.exists(DTM_CACHE_DIR):
+                    cache_files = os.listdir(DTM_CACHE_DIR)
+                    matching_files = [f for f in cache_files if f.startswith(request.clippedId)]
+                    if matching_files:
+                        file_path = os.path.join(DTM_CACHE_DIR, matching_files[0])
+                    else:
+                        raise HTTPException(status_code=404, detail=f"Clipped DTM not found: {request.clippedId}")
+                else:
+                    raise HTTPException(status_code=404, detail=f"Clipped DTM cache directory not found")
+        else:
+            # Extract filename from path for regular DTM
+            filename = os.path.basename(request.dtmPath)
+            file_path = os.path.join(DTM_CACHE_DIR, filename)
+            
+            # Fallback to UPLOADS_DIR if not in cache (for backward compatibility)
+            if not os.path.exists(file_path):
+                file_path = os.path.join(UPLOADS_DIR, filename)
+        
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail=f"DTM file not found: {file_path}")
+        
+        with rasterio.open(file_path) as src:
+            # Prepare coordinate transformation
+            src_crs = src.crs
+            if not src_crs:
+                # Heuristic fallback if CRS is missing
+                is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
+                src_crs = "EPSG:32636" if is_projected else "EPSG:4326"
+            
+            transformer = Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
+            
+            # Transform to DTM CRS
+            x, y = transformer.transform(request.longitude, request.latitude)
+            
+            # Transform to pixel coordinates
+            row, col = src.index(x, y)
+            
+            # Check if inside bounds
+            if not (0 <= row < src.height and 0 <= col < src.width):
+                return {"elevation": None}
+            
+            # Sample elevation at point
+            elevation_arr = src.read(1, window=rasterio.windows.Window(col, row, 1, 1))
+            elevation = float(elevation_arr[0, 0])
+            
+            nodata = src.nodata
+            if nodata is not None and elevation == nodata:
+                elevation = None
+            elif np.isnan(elevation):
+                elevation = None
+            
+            return {"elevation": elevation}
+            
+    except Exception as e:
+        logger.error(f"Error getting elevation at point: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")

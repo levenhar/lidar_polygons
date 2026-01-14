@@ -70,7 +70,8 @@ type IconName =
   | 'close'
   | 'rectangle'
   | 'polygon'
-  | 'file';
+  | 'file'
+  | 'info';
 
 const Icon: React.FC<{ name: IconName }> = ({ name }) => {
   const common = {
@@ -225,6 +226,14 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M14 2v6h6" />
         </svg>
       );
+    case 'info':
+      return (
+        <svg {...common}>
+          <circle {...stroke} cx="12" cy="12" r="10" />
+          <path {...stroke} d="M12 16v-4" />
+          <path {...stroke} d="M12 8h.01" />
+        </svg>
+      );
     default:
       return (
         <svg {...common}>
@@ -376,6 +385,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [baseMaps, setBaseMaps] = useState<BaseMapConfig[]>([]);
   const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
   const [previewConfig, setPreviewConfig] = useState<BaseMapPreviewResponse | null>(null);
+  const [isInfoMode, setIsInfoMode] = useState<boolean>(false);
+  const [cursorElevation, setCursorElevation] = useState<{ elevation: number | null; lat: number; lng: number } | null>(null);
+  const elevationQueryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const elevationCacheRef = useRef<Map<string, number | null>>(new Map());
+  const dtmRasterDataRef = useRef<{
+    width: number;
+    height: number;
+    data: number[];
+    bounds: number[];
+    isProjected: boolean;
+    crs: string | null;
+    noDataValue: number | null;
+  } | null>(null);
   const passiveRouteLinesRef = useRef<Record<string, L.Polyline>>({});
   const suggestedLinesRef = useRef<L.Polyline[]>([]);
   const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
@@ -946,6 +968,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (hoverSource === 'map') {
         onPathPointHover(null);
       }
+      if (isInfoMode) {
+        setCursorElevation(null);
+      }
     };
 
     mapContainer.addEventListener('mouseleave', handleMouseLeave);
@@ -953,7 +978,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return () => {
       mapContainer.removeEventListener('mouseleave', handleMouseLeave);
     };
-  }, [hoverSource, onPathPointHover]);
+  }, [hoverSource, onPathPointHover, isInfoMode]);
 
   // Calculate tooltip position to keep it on screen
   useLayoutEffect(() => {
@@ -1425,6 +1450,148 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
     };
   }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints, isAoiSelectionMode]);
+
+  // Reset info mode when DTM is unloaded or not available
+  useEffect(() => {
+    if (!dtmSource || !dtmLoaded) {
+      setIsInfoMode(false);
+      setCursorElevation(null);
+      setMousePos(null);
+      elevationCacheRef.current.clear();
+      dtmRasterDataRef.current = null;
+    }
+  }, [dtmSource, dtmLoaded]);
+
+  // Client-side elevation calculation function
+  const calculateElevationAtPoint = useCallback((lat: number, lng: number): number | null => {
+    const rasterData = dtmRasterDataRef.current;
+    if (!rasterData) return null;
+
+    const { width, height, data, bounds, noDataValue } = rasterData;
+    const [minLon, minLat, maxLon, maxLat] = bounds;
+
+    // Check if point is within bounds
+    if (lng < minLon || lng > maxLon || lat < minLat || lat > maxLat) {
+      return null;
+    }
+
+    // Calculate pixel coordinates
+    // Normalize coordinates to 0-1 range
+    const xNorm = (lng - minLon) / (maxLon - minLon);
+    const yNorm = 1 - (lat - minLat) / (maxLat - minLat); // Invert Y because image coordinates start at top
+
+    // Convert to pixel coordinates
+    const col = Math.floor(xNorm * width);
+    const row = Math.floor(yNorm * height);
+
+    // Clamp to valid range
+    const clampedCol = Math.max(0, Math.min(width - 1, col));
+    const clampedRow = Math.max(0, Math.min(height - 1, row));
+
+    // Get elevation value from data array (row-major order)
+    const index = clampedRow * width + clampedCol;
+    if (index < 0 || index >= data.length) {
+      return null;
+    }
+
+    const elevation = data[index];
+
+    // Check for no-data values
+    if (noDataValue !== null && elevation === noDataValue) {
+      return null;
+    }
+
+    if (isNaN(elevation) || !isFinite(elevation)) {
+      return null;
+    }
+
+    return elevation;
+  }, []);
+
+  // Handle information mode - query elevation on mouse move
+  useEffect(() => {
+    if (!map.current || !isInfoMode || !dtmSource) {
+      setCursorElevation(null);
+      return;
+    }
+
+    const handleMouseMove = async (e: L.LeafletMouseEvent) => {
+      const latlng = e.latlng;
+      const lat = latlng.lat;
+      const lng = latlng.lng;
+
+      // Check if point is within DTM bounds first
+      const withinBounds = isPointWithinBounds(lng, lat);
+      if (!withinBounds) {
+        setCursorElevation(null);
+        setMousePos(null); // Clear mouse position to hide tooltip
+        return;
+      }
+
+      // Update mouse position for tooltip (use screen coordinates)
+      const originalEvent = e.originalEvent as MouseEvent | undefined;
+      if (originalEvent) {
+        setMousePos({ x: originalEvent.clientX, y: originalEvent.clientY });
+      }
+
+      // Round coordinates to reduce cache misses (about 10m precision)
+      const roundedLat = Math.round(lat * 10000) / 10000;
+      const roundedLng = Math.round(lng * 10000) / 10000;
+      const cacheKey = `${roundedLat},${roundedLng}`;
+      
+      // Check cache first
+      if (elevationCacheRef.current.has(cacheKey)) {
+        const cachedElevation = elevationCacheRef.current.get(cacheKey);
+        setCursorElevation({
+          elevation: cachedElevation ?? null,
+          lat: lat,
+          lng: lng
+        });
+        return;
+      }
+
+      // Debounce elevation queries (increased to 200ms for better performance)
+      if (elevationQueryTimeoutRef.current) {
+        clearTimeout(elevationQueryTimeoutRef.current);
+      }
+
+      elevationQueryTimeoutRef.current = setTimeout(() => {
+        // Calculate elevation client-side for instant response
+        const elevation = calculateElevationAtPoint(lat, lng);
+        
+        // Cache the result
+        elevationCacheRef.current.set(cacheKey, elevation);
+        
+        // Limit cache size to prevent memory issues
+        if (elevationCacheRef.current.size > 1000) {
+          const firstKey = elevationCacheRef.current.keys().next().value;
+          if (firstKey !== undefined) {
+            elevationCacheRef.current.delete(firstKey);
+          }
+        }
+        
+        setCursorElevation({
+          elevation: elevation,
+          lat: lat,
+          lng: lng
+        });
+      }, 50); // Reduced debounce since calculation is instant
+    };
+
+    map.current.on('mousemove', handleMouseMove);
+
+    return () => {
+      if (map.current) {
+        map.current.off('mousemove', handleMouseMove);
+      }
+      if (elevationQueryTimeoutRef.current) {
+        clearTimeout(elevationQueryTimeoutRef.current);
+      }
+      setCursorElevation(null);
+      // Clear cache when info mode is disabled
+      elevationCacheRef.current.clear();
+    };
+  }, [isInfoMode, dtmSource, propClippedId, isPointWithinBounds, calculateElevationAtPoint]);
 
   // Update flight path on map
   useEffect(() => {
@@ -2247,6 +2414,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
         } else {
           console.log('DTM already uses geographic coordinates (WGS84) - no transformation needed');
         }
+
+        // Store raster data for client-side elevation calculation
+        dtmRasterDataRef.current = {
+          width,
+          height,
+          data,
+          bounds: transformedBounds,
+          isProjected: isProjected || false,
+          crs: crs || (epsg ? `EPSG:${epsg}` : null),
+          noDataValue: rasterData.noDataValue ?? null
+        };
 
         // Create canvas to render elevation as image
         const canvas = document.createElement('canvas');
@@ -3523,6 +3701,30 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">איפוס תצוגה</span>
                 </button>
               </Tooltip>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע במיקום העכבר'}>
+                <button
+                  onClick={() => {
+                    const newInfoMode = !isInfoMode;
+                    setIsInfoMode(newInfoMode);
+                    if (newInfoMode) {
+                      // Turn off route info when turning on info mode
+                      onShowMetadataChange(false);
+                      setCursorElevation(null);
+                    } else {
+                      setCursorElevation(null);
+                      setMousePos(null);
+                      elevationCacheRef.current.clear();
+                    }
+                  }}
+                  className={isInfoMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  disabled={!dtmLoaded}
+                  aria-label={isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}
+                  type="button"
+                >
+                  <Icon name="info" />
+                  <span className="sr-only">{isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}</span>
+                </button>
+              </Tooltip>
             </div>
             <div
               className="group-column group-column-icons"
@@ -3536,7 +3738,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <input
                     type="checkbox"
                     checked={showMetadata}
-                    onChange={(e) => onShowMetadataChange(e.target.checked)}
+                    onChange={(e) => {
+                      const newShowMetadata = e.target.checked;
+                      onShowMetadataChange(newShowMetadata);
+                      if (newShowMetadata) {
+                        // Turn off info mode when turning on route info
+                        setIsInfoMode(false);
+                        setCursorElevation(null);
+                        setMousePos(null);
+                        elevationCacheRef.current.clear();
+                      }
+                    }}
                   />
                   <span className="switch-slider" />
                   <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>נתונים</span>
@@ -3649,6 +3861,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
           }}
         >
           <CoordinateTooltip point={hoveredElevationPoint} utm={hoveredUtm} />
+        </div>
+      )}
+      {isInfoMode && mousePos && cursorElevation && (
+        <div
+          className="hover-metadata-tooltip"
+          style={{
+            left: mousePos.x + 15,
+            top: mousePos.y + 15
+          }}
+        >
+          <div className="tooltip-section">
+            <span className="tooltip-label">גובה קרקע:</span> {cursorElevation.elevation !== null ? `${cursorElevation.elevation.toFixed(1)} מ'` : '—'}
+          </div>
         </div>
       )}
 

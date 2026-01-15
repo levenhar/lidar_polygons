@@ -542,7 +542,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
       return minElev + resolutionHeight;
     };
-    */
 
     // Calculate domain including min/max elevations within radius
     const allMinElevations = elevationProfile

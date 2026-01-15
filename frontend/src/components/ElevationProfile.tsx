@@ -2082,6 +2082,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const elevationRange = maxElevation - minElevation;
     const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
 
+    // Find point with maximum elevation
+    const maxElevationPoint = elevationProfile.reduce((max, p) => 
+      p.elevation > max.elevation ? p : max
+    );
+    const maxElevationFlightAltitude = maxElevationPoint.plannedAltitude ?? (maxElevationPoint.elevation + nominalFlightHeight);
+    const minHeightFromMaxPoint = maxElevationFlightAltitude - maxElevationPoint.elevation;
+
+    // Find point with minimum elevation
+    const minElevationPoint = elevationProfile.reduce((min, p) => 
+      p.elevation < min.elevation ? p : min
+    );
+    const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? (minElevationPoint.elevation + nominalFlightHeight);
+    const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
+
     // Change legend text-anchor to 'start' for PNG export
     const legendTexts = svgRef.current.querySelectorAll('.legend-text');
     const originalTextAnchors: string[] = [];
@@ -2131,10 +2145,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         ctx.lineTo(canvas.width, img.height);
         ctx.stroke();
 
-        // Configure text style
+        // Configure text style - use Apple system font and right alignment for RTL
         ctx.fillStyle = '#111827';
-        ctx.font = 'bold 14px Arial';
+        ctx.font = 'bold 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
         ctx.textAlign = 'right';
+        // Set text direction to RTL if supported
+        if ('direction' in ctx) {
+          (ctx as any).direction = 'rtl';
+        }
 
         // Calculate positions for statistics (right-to-left layout)
         const statPadding = 20;
@@ -2142,26 +2160,36 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         const labelY = img.height + 30;
         const valueY = img.height + 55;
 
-        // Draw statistics (from right to left)
+        // Draw statistics in RTL order (first item on the right)
         const stats = [
-          { label: 'ירידה כוללת:', value: `${totalDescent.toFixed(1)} מ'` },
-          { label: 'עלייה כוללת:', value: `${totalAscent.toFixed(1)} מ'` },
-          { label: 'מרחק כולל:', value: `${totalDistance.toFixed(1)} מ'` },
+          { label: 'גובה קרקע מינימלי:', value: `${minElevation.toFixed(1)} מ'` },
+          { label: 'גובה קרקע מקסימלי:', value: `${maxElevation.toFixed(1)} מ'` },
           { label: 'טווח גובה:', value: `${elevationRange.toFixed(1)} מ'` },
-          { label: 'גובה מקסימלי:', value: `${maxElevation.toFixed(1)} מ'` },
-          { label: 'גובה מינימלי:', value: `${minElevation.toFixed(1)} מ'` }
+          { label: 'מרחק כולל:', value: `${totalDistance.toFixed(1)} מ'` },
+          { label: 'עלייה כוללת:', value: `${totalAscent.toFixed(1)} מ'` },
+          { label: 'ירידה כוללת:', value: `${totalDescent.toFixed(1)} מ'` },
+          { label: 'גובה טיסה מקסימלי:', value: `${maxHeightFromMinPoint.toFixed(1)} מ'` },
+          { label: 'גובה טיסה מינימלי:', value: `${minHeightFromMaxPoint.toFixed(1)} מ'` }
         ];
 
         let xPos = canvas.width - statPadding;
         stats.forEach((stat) => {
-          // Draw label
+          // Draw label - right aligned with Apple system font, RTL direction
           ctx.fillStyle = '#6b7280';
-          ctx.font = '11px Arial';
+          ctx.font = '11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          ctx.textAlign = 'right';
+          if ('direction' in ctx) {
+            (ctx as any).direction = 'rtl';
+          }
           ctx.fillText(stat.label, xPos, labelY);
 
-          // Draw value
+          // Draw value - right aligned with Apple system font, RTL direction
           ctx.fillStyle = '#111827';
-          ctx.font = 'bold 16px Arial';
+          ctx.font = 'bold 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+          ctx.textAlign = 'right';
+          if ('direction' in ctx) {
+            (ctx as any).direction = 'rtl';
+          }
           ctx.fillText(stat.value, xPos, valueY);
 
           xPos -= statSpacing;
@@ -2739,16 +2767,30 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           }
         }
 
+        // Find point with maximum elevation
+        const maxElevationPoint = elevationProfile.reduce((max, p) => 
+          p.elevation > max.elevation ? p : max
+        );
+        const maxElevationFlightAltitude = maxElevationPoint.plannedAltitude ?? (maxElevationPoint.elevation + nominalFlightHeight);
+        const minHeightFromMaxPoint = maxElevationFlightAltitude - maxElevationPoint.elevation;
+
+        // Find point with minimum elevation
+        const minElevationPoint = elevationProfile.reduce((min, p) => 
+          p.elevation < min.elevation ? p : min
+        );
+        const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? (minElevationPoint.elevation + nominalFlightHeight);
+        const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
+
         return (
           <div className="elevation-stats">
             <div className="stat">
-              <span className="stat-label">גובה מינימלי:</span>
+              <span className="stat-label">גובה קרקע מינימלי:</span>
               <span className="stat-value">
                 {Math.min(...elevationProfile.map(p => p.elevation)).toFixed(1)} מ'
               </span>
             </div>
             <div className="stat">
-              <span className="stat-label">גובה מקסימלי:</span>
+              <span className="stat-label">גובה קרקע מקסימלי:</span>
               <span className="stat-value">
                 {Math.max(...elevationProfile.map(p => p.elevation)).toFixed(1)} מ'
               </span>
@@ -2776,6 +2818,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               <span className="stat-label">ירידה כוללת:</span>
               <span className="stat-value">
                 {totalDescent.toFixed(1)} מ'
+              </span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">גובה טיסה מינימלי :</span>
+              <span className="stat-value">
+                {minHeightFromMaxPoint.toFixed(1)} מ'
+              </span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">גובה טיסה מקסימלי :</span>
+              <span className="stat-value">
+                {maxHeightFromMinPoint.toFixed(1)} מ'
               </span>
             </div>
           </div>

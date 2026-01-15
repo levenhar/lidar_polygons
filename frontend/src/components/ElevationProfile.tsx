@@ -235,6 +235,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   }>(() => toDraft(climbConfig));
   const [climbConfigError, setClimbConfigError] = useState<string | null>(null);
   const [climbValidationPopup, setClimbValidationPopup] = useState<string | null>(null);
+  const [showDeleteAllConfirmation, setShowDeleteAllConfirmation] = useState(false);
   const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number } | null>(null);
   const climbContextMenuRef = useRef<HTMLDivElement | null>(null);
   // Track the climb being edited to exclude it from constraint checks
@@ -522,12 +523,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return maxElev + safetyHeight;
     };
 
-    /*
     const getResolutionThreshold = (d: ElevationPoint) => {
       const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
       return minElev + resolutionHeight;
     };
-    */
 
     // Calculate domain including min/max elevations within radius
     const allMinElevations = elevationProfile
@@ -611,11 +610,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     */
     let selectedDistanceLine: d3.Selection<SVGLineElement, unknown, any, any> | null = null;
     let selectedDistance: number | null = null;
-    /*
     let resolutionViolationAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
     let safetyViolationAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
     let climbAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
-    */
     let climbEndMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbStartMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbLabels: d3.Selection<SVGTextElement, any, any, any> | null = null;
@@ -656,6 +653,56 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('stroke', '#8B4513')
       .attr('stroke-width', 2)
       .attr('d', groundLine);
+
+    // Draw violation areas (resolution and safety) - before flight path so it appears behind
+    const buildSegments = <T,>(points: T[], predicate: (d: T) => boolean) => {
+      const segments: T[][] = [];
+      let current: T[] = [];
+      points.forEach((p) => {
+        if (predicate(p)) {
+          current.push(p);
+        } else if (current.length) {
+          segments.push(current);
+          current = [];
+        }
+      });
+      if (current.length) segments.push(current);
+      return segments;
+    };
+
+    const resolutionSegments = buildSegments(profileWithPlan, (d) => d.plannedAltitude > getResolutionThreshold(d));
+    const safetySegments = buildSegments(profileWithPlan, (d) => d.plannedAltitude < getSafetyThreshold(d));
+
+    const resolutionViolationGroup = chartArea.append('g').attr('class', 'resolution-violations');
+    const safetyViolationGroup = chartArea.append('g').attr('class', 'safety-violations');
+
+    const resolutionAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+      .x(d => currentXScale(d.distance))
+      .y0(d => currentYScale(getResolutionThreshold(d)))
+      .y1(d => currentYScale(d.plannedAltitude))
+      .curve(d3.curveMonotoneX);
+
+    const safetyAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+      .x(d => currentXScale(d.distance))
+      .y0(d => currentYScale(d.plannedAltitude))
+      .y1(d => currentYScale(getSafetyThreshold(d)))
+      .curve(d3.curveMonotoneX);
+
+    resolutionViolationAreas = resolutionViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+      .data(resolutionSegments)
+      .enter()
+      .append('path')
+      .attr('fill', '#16A34A')
+      .attr('fill-opacity', 0.18)
+      .attr('d', d => resolutionAreaGenerator(d));
+
+    safetyViolationAreas = safetyViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+      .data(safetySegments)
+      .enter()
+      .append('path')
+      .attr('fill', '#DC2626')
+      .attr('fill-opacity', 0.2)
+      .attr('d', d => safetyAreaGenerator(d));
 
     // Draw base (pre-climb) and planned (post-climb) altitude lines
     /*
@@ -783,62 +830,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       maxMarkers = null;
       */
     }
-
-
-    /*
-    const buildSegments = <T,>(points: T[], predicate: (d: T) => boolean) => {
-      const segments: T[][] = [];
-      let current: T[] = [];
-      points.forEach((p) => {
-        if (predicate(p)) {
-          current.push(p);
-        } else if (current.length) {
-          segments.push(current);
-          current = [];
-        }
-      });
-      if (current.length) segments.push(current);
-      return segments;
-    };
-    */
-
-    /*
-    const resolutionSegments = buildSegments(profileWithPlan, (d) => d.plannedAltitude > getResolutionThreshold(d));
-    const safetySegments = buildSegments(profileWithPlan, (d) => d.plannedAltitude < getSafetyThreshold(d));
-
-    const resolutionViolationGroup = chartArea.append('g').attr('class', 'resolution-violations');
-    const safetyViolationGroup = chartArea.append('g').attr('class', 'safety-violations');
-
-    const resolutionAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-      .x(d => currentXScale(d.distance))
-      .y0(d => currentYScale(getResolutionThreshold(d)))
-      .y1(d => currentYScale(d.plannedAltitude))
-      .curve(d3.curveMonotoneX);
-
-    const safetyAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-      .x(d => currentXScale(d.distance))
-      .y0(d => currentYScale(d.plannedAltitude))
-      .y1(d => currentYScale(getSafetyThreshold(d)))
-      .curve(d3.curveMonotoneX);
-    */
-
-    /*
-    resolutionViolationAreas = resolutionViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
-      .data(resolutionSegments)
-      .enter()
-      .append('path')
-      .attr('fill', '#16A34A')
-      .attr('fill-opacity', 0.18)
-      .attr('d', d => resolutionAreaGenerator(d));
-
-    safetyViolationAreas = safetyViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
-      .data(safetySegments)
-      .enter()
-      .append('path')
-      .attr('fill', '#DC2626')
-      .attr('fill-opacity', 0.2)
-      .attr('d', d => safetyAreaGenerator(d));
-    */
 
     // Climb visualization (shaded area between base and climbed altitude)
     /*
@@ -1844,9 +1835,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   }, [climbAmountInput, pendingClimbEnd, climbRequests, climbConfig, flightPath, elevationProfile, nominalFlightHeight, setClimbRequests, editingClimb]);
 
   const handleRemoveClimb = useCallback(() => {
+    setShowDeleteAllConfirmation(true);
+  }, []);
+
+  const handleConfirmDeleteAll = useCallback(() => {
     setClimbRequests([]);
     setPendingClimbEnd(null);
+    setShowDeleteAllConfirmation(false);
   }, [setClimbRequests]);
+
+  const handleCancelDeleteAll = useCallback(() => {
+    setShowDeleteAllConfirmation(false);
+  }, []);
 
   const handleRemoveSingleClimb = useCallback((endDistance: number, climbAmount: number) => {
     console.log('========================================');
@@ -2082,12 +2082,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const elevationRange = maxElevation - minElevation;
     const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
 
-    // Find point with maximum elevation
-    const maxElevationPoint = elevationProfile.reduce((max, p) => 
-      p.elevation > max.elevation ? p : max
+    // Find minimum flight height across all points (considering climb points)
+    const minFlightHeight = Math.min(
+      ...elevationProfile.map(p => {
+        const plannedAlt = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
+        return plannedAlt - p.elevation;
+      })
     );
-    const maxElevationFlightAltitude = maxElevationPoint.plannedAltitude ?? (maxElevationPoint.elevation + nominalFlightHeight);
-    const minHeightFromMaxPoint = maxElevationFlightAltitude - maxElevationPoint.elevation;
 
     // Find point with minimum elevation
     const minElevationPoint = elevationProfile.reduce((min, p) => 
@@ -2169,7 +2170,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           { label: 'עלייה כוללת:', value: `${totalAscent.toFixed(1)} מ'` },
           { label: 'ירידה כוללת:', value: `${totalDescent.toFixed(1)} מ'` },
           { label: 'גובה טיסה מקסימלי:', value: `${maxHeightFromMinPoint.toFixed(1)} מ'` },
-          { label: 'גובה טיסה מינימלי:', value: `${minHeightFromMaxPoint.toFixed(1)} מ'` }
+          { label: 'גובה טיסה מינימלי:', value: `${minFlightHeight.toFixed(1)} מ'` }
         ];
 
         let xPos = canvas.width - statPadding;
@@ -2523,6 +2524,25 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </div>
         </div>
       )}
+      {showDeleteAllConfirmation && (
+        <div className="climb-modal__backdrop" role="dialog" aria-modal="true">
+          <div className="climb-modal__card">
+            <div className="climb-modal__header">
+              <div className="climb-modal__title">מחיקת כל נקודות העלייה</div>
+              <button className="climb-modal__close" onClick={handleCancelDeleteAll}>×</button>
+            </div>
+            <div className="climb-modal__body">
+              <div className="climb-modal__error" role="alert">
+                האם אתה בטוח שברצונך למחוק את כל נקודות העלייה? פעולה זו לא ניתנת לביטול.
+              </div>
+            </div>
+            <div className="climb-modal__actions">
+              <button className="btn btn-tertiary" type="button" onClick={handleCancelDeleteAll}>ביטול</button>
+              <button className="btn btn-primary" type="button" onClick={handleConfirmDeleteAll}>מחק הכל</button>
+            </div>
+          </div>
+        </div>
+      )}
       {isClimbConfigOpen && (
         <div className="climb-modal__backdrop" role="dialog" aria-modal="true">
           <div className="climb-modal__card">
@@ -2767,12 +2787,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           }
         }
 
-        // Find point with maximum elevation
-        const maxElevationPoint = elevationProfile.reduce((max, p) => 
-          p.elevation > max.elevation ? p : max
+        // Find minimum flight height across all points (considering climb points)
+        const minFlightHeight = Math.min(
+          ...elevationProfile.map(p => {
+            const plannedAlt = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
+            return plannedAlt - p.elevation;
+          })
         );
-        const maxElevationFlightAltitude = maxElevationPoint.plannedAltitude ?? (maxElevationPoint.elevation + nominalFlightHeight);
-        const minHeightFromMaxPoint = maxElevationFlightAltitude - maxElevationPoint.elevation;
 
         // Find point with minimum elevation
         const minElevationPoint = elevationProfile.reduce((min, p) => 
@@ -2823,7 +2844,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             <div className="stat">
               <span className="stat-label">גובה טיסה מינימלי :</span>
               <span className="stat-value">
-                {minHeightFromMaxPoint.toFixed(1)} מ'
+                {minFlightHeight.toFixed(1)} מ'
               </span>
             </div>
             <div className="stat">

@@ -610,9 +610,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     */
     let selectedDistanceLine: d3.Selection<SVGLineElement, unknown, any, any> | null = null;
     let selectedDistance: number | null = null;
-    let resolutionViolationAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
-    let safetyViolationAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
-    let climbAreas: d3.Selection<SVGPathElement, typeof profileWithPlan[0][], any, any> | null = null;
     let climbEndMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbStartMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbLabels: d3.Selection<SVGTextElement, any, any, any> | null = null;
@@ -688,7 +685,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .y1(d => currentYScale(getSafetyThreshold(d)))
       .curve(d3.curveMonotoneX);
 
-    resolutionViolationAreas = resolutionViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+    resolutionViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(resolutionSegments)
       .enter()
       .append('path')
@@ -696,7 +693,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill-opacity', 0.18)
       .attr('d', d => resolutionAreaGenerator(d));
 
-    safetyViolationAreas = safetyViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+    safetyViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(safetySegments)
       .enter()
       .append('path')
@@ -843,7 +840,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     */
 
     /*
-    climbAreas = climbGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+    _climbAreas = climbGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(climbSegments)
       .enter()
       .append('path')

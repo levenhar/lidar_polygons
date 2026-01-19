@@ -395,9 +395,9 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
         }
       });
 
-      // Always add entry point (גובה כניסה) at the first turn point (second point) with nominal flight height
+      // Always add entry point (גובה כניסה) at the first point with nominal flight height
       const entryPointIndex = allClimbPoints.length;
-      const hasEntryPoint = nominalFlightHeight !== undefined && nominalFlightHeight !== null && routesToExport.length > 0 && routesToExport[0].points.length >= 2;
+      const hasEntryPoint = nominalFlightHeight !== undefined && nominalFlightHeight !== null && routesToExport.length > 0 && routesToExport[0].points.length >= 1;
       
       // Generate Point styles (including entry point style if needed)
       const totalPoints = allClimbPoints.length + (hasEntryPoint ? 1 : 0);
@@ -515,10 +515,10 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 `;
       });
 
-      // Always add entry point (גובה כניסה) at the first turn point (second point) as the last point
-      // Save as absolute altitude (sea level): nominalFlightHeight + ground elevation at first turn point
+      // Always add entry point (גובה כניסה) at the first point (number 1)
+      // Save as absolute altitude (sea level): nominalFlightHeight + ground elevation at first point
       if (hasEntryPoint) {
-        const firstTurnPoint = routesToExport[0].points[1]; // First turn point is the second point (index 1)
+        const firstPoint = routesToExport[0].points[0]; // First point (index 0)
         const groundElevation = firstTurnPointElevation ?? 0; // Use provided elevation or default to 0
         const absoluteAltitude = Math.round(nominalFlightHeight! + groundElevation);
         const entryPointName = `גובה כניסה - ${absoluteAltitude}`;
@@ -603,7 +603,7 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
           <value>Blue</value>
         </Data>
         <Data name="index">
-          <value>${entryPointIndex + 1}</value>
+          <value>1</value>
         </Data>
         <Data name="showlabel">
           <value>True</value>
@@ -613,7 +613,7 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
         </Data>
       </ExtendedData>
       <Point>
-        <coordinates>${firstTurnPoint.lng},${firstTurnPoint.lat}</coordinates>
+        <coordinates>${firstPoint.lng},${firstPoint.lat}</coordinates>
       </Point>
     </Placemark>
 `;

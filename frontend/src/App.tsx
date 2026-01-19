@@ -1138,8 +1138,8 @@ function App() {
                   if (routesWithPoints.length > 1) {
                     setShowExportModal(true);
                   } else {
-                    // Get elevation at first turn point (second point, index 1) from elevation profile
-                    const firstTurnPointElevation = elevationProfile.length > 1 ? elevationProfile[1]?.elevation : undefined;
+                    // Get elevation at first point (index 0) from elevation profile
+                    const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
                     exportKML(climbRequests, climbRequestsByRoute, undefined, nominalFlightHeight, firstTurnPointElevation);
                   }
                 }}
@@ -1276,8 +1276,8 @@ function App() {
         activeRouteId={activeRouteId}
         onClose={() => setShowExportModal(false)}
         onExport={(selectedRouteIds) => {
-          // Get elevation at first turn point (second point, index 1) from elevation profile
-          const firstTurnPointElevation = elevationProfile.length > 1 ? elevationProfile[1]?.elevation : undefined;
+          // Get elevation at first point (index 0) from elevation profile
+          const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
           exportKML(climbRequests, climbRequestsByRoute, selectedRouteIds, nominalFlightHeight, firstTurnPointElevation);
         }}
       />

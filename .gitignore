@@ -17,3 +17,7 @@ package-lock.json
 .venv/
 __pycache__/
 venv/
+
+frontend/ssl/RITM0229799.cer
+frontend/ssl/private.key
+frontend/ssl/domain.csr

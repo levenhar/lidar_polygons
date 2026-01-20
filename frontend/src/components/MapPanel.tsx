@@ -614,27 +614,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (map.current) map.current.removeLayer(marker);
       });
       aoiMarkersRef.current = [];
-      
-      // Automatically upload the clipped DTM file to Node backend uploads folder
-      try {
-        console.log('Uploading clipped DTM file to Node backend...');
-        const uploadResponse = await fetch(`/api/dtm/clipped/${clipResult.clippedId}/upload`, {
-          method: 'POST'
-        });
-        
-        if (uploadResponse.ok) {
-          const uploadData = await uploadResponse.json();
-          console.log('Clipped DTM uploaded successfully:', uploadData);
-        } else {
-          const errorData = await uploadResponse.json().catch(() => ({}));
-          console.warn('Failed to upload clipped DTM file:', errorData.error || 'Unknown error');
-          // Don't fail the whole operation if upload fails - the clipped DTM is still available via Python backend
-        }
-      } catch (uploadError) {
-        console.warn('Error uploading clipped DTM file:', uploadError);
-        // Don't fail the whole operation if upload fails
-      }
-      
+
       // Notify parent with the clipped DTM info
       // Use the dataUrl as the dtmSource (for raster loading)
       onDtmLoad(clipResult.dataUrl, {

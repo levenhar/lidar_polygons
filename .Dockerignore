@@ -12,3 +12,4 @@ uploads/
 *.tiff
 .vscode/
 package-lock.json
+uploads/

@@ -225,7 +225,7 @@ The Node.js backend acts as a proxy/gateway, forwarding requests to the Python b
      }
      ```
 
-### Step 3: Upload Clipped DTM File
+### Step 3: (Deprecated) Upload Clipped DTM File
 
 **Client → Server:**
 
@@ -233,8 +233,10 @@ The Node.js backend acts as a proxy/gateway, forwarding requests to the Python b
    - **Location**: `frontend/src/components/MapPanel.tsx` (line ~597)
    - **Method**: POST
    - **URL Parameter**: `clippedId` - The ID of the clipped DTM
-   - **Purpose**: Upload the clipped DTM file from Python backend cache to Node.js backend uploads folder
-   - **Note**: This happens automatically after clipping completes
+   - **Purpose**: **Deprecated**. This endpoint is now a **no-op** kept for backward compatibility.
+   - **Note**: Clipping already produces the two artifacts we need:
+     - Full-resolution clipped GeoTIFF in `DTM_CACHE_DIR`
+     - Subsampled GeoTIFF (display only) in `DTM_SUBSAMPLED_CACHE_DIR`
 
 **Server → Server (Internal):**
 
@@ -491,7 +493,7 @@ After clipping, the Python backend returns JSON with these **relative URL paths*
 - The Node.js backend acts primarily as a proxy/gateway
 - Clipped DTMs are stored in Python backend's `DTM_CACHE_DIR` (default: `backend_python/DTM_TIFF/Cache/`)
 - Uploaded DTMs (via direct upload) are stored in Python backend's `UPLOADS_DIR`
-- The upload endpoint for clipped DTMs (`/api/dtm/clipped/{clippedId}/upload`) creates a copy in the uploads folder for legacy compatibility
+- The upload endpoint for clipped DTMs (`/api/dtm/clipped/{clippedId}/upload`) is deprecated and no longer creates additional copies
 - All paths use RESTful conventions
 - The Python backend handles all actual DTM processing (clipping, raster operations, etc.)
 - Client never accesses file system directly - all access is through HTTP API endpoints

@@ -70,6 +70,8 @@ export interface FlightRoute {
   color: string;
   visible: boolean;
   points: Coordinate[];
+  // Nominal flight height (AGL) associated with this route
+  nominalFlightHeight: number;
 }
 
 interface FlightRoutesState {
@@ -80,18 +82,21 @@ interface FlightRoutesState {
 
 const colorPalette = ['#ff4d4f', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
 
-function createRoute(index: number): FlightRoute {
+const DEFAULT_NOMINAL_FLIGHT_HEIGHT = 250;
+
+function createRoute(index: number, nominalFlightHeight: number = DEFAULT_NOMINAL_FLIGHT_HEIGHT): FlightRoute {
   return {
     id: `route-${index}-${Date.now()}`,
     name: `מסלול ${index}`,
     color: colorPalette[(index - 1) % colorPalette.length],
     visible: true,
-    points: []
+    points: [],
+    nominalFlightHeight
   };
 }
 
 export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>) {
-  const initialRoute = createRoute(1);
+  const initialRoute = createRoute(1, DEFAULT_NOMINAL_FLIGHT_HEIGHT);
   const { state, setState, undo, redo, canUndo, canRedo, resetHistory } = useUndoRedo<FlightRoutesState>({
     routes: [initialRoute],
     activeRouteId: initialRoute.id,
@@ -104,6 +109,7 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
   );
 
   const flightPath = activeRoute?.points ?? [];
+  const nominalFlightHeight = activeRoute?.nominalFlightHeight ?? DEFAULT_NOMINAL_FLIGHT_HEIGHT;
 
   const updateActiveRoute = useCallback(
     (updater: (route: FlightRoute) => FlightRoute) => {
@@ -128,7 +134,7 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
 
   const addRoute = useCallback(() => {
     const nextIndex = state.routes.length + 1;
-    const newRoute = createRoute(nextIndex);
+    const newRoute = createRoute(nextIndex, activeRoute?.nominalFlightHeight ?? DEFAULT_NOMINAL_FLIGHT_HEIGHT);
     setState(
       {
         ...state,
@@ -137,7 +143,7 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
       },
       true
     );
-  }, [setState, state]);
+  }, [activeRoute?.nominalFlightHeight, setState, state]);
 
   const setActiveRoute = useCallback(
     (routeId: string) => {
@@ -314,13 +320,21 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
   }, [ensureActiveRoute, resetHistory, state]);
 
   const resetToSingleRoute = useCallback(() => {
-    const newRoute = createRoute(1);
+    const newRoute = createRoute(1, DEFAULT_NOMINAL_FLIGHT_HEIGHT);
     resetHistory({
       routes: [newRoute],
       activeRouteId: newRoute.id,
       climbRequestsByRoute: {}
     });
   }, [resetHistory]);
+
+  const setNominalFlightHeight = useCallback(
+    (height: number) => {
+      const safe = Number.isFinite(height) ? Math.max(0, height) : DEFAULT_NOMINAL_FLIGHT_HEIGHT;
+      updateActiveRoute((route) => ({ ...route, nominalFlightHeight: safe }));
+    },
+    [updateActiveRoute]
+  );
 
   const exportKML = useCallback(
     (
@@ -1162,28 +1176,60 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
           });
         }
 
-        // Use functional update to ensure we have the latest state
-        const newActiveRouteId = routes[0].id;
-        
+        // If we found nominal flight height, attach it to all imported routes
+        const routesWithNominal = nominalFlightHeight !== undefined
+          ? routes.map((r) => ({ ...r, nominalFlightHeight }))
+          : routes;
+
         setState(
           (prevState) => {
-            const newRoutes = [...prevState.routes, ...routes];
-            // Update climbRequestsByRoute to include climb requests for the first imported route
+            // If there is an existing route with no points, reuse it for the first imported route.
+            // Otherwise, append imported routes as new routes.
+            const emptyRouteIndex = prevState.routes.findIndex((r) => r.points.length === 0);
+
             const updatedClimbRequestsByRoute = { ...prevState.climbRequestsByRoute };
-            if (climbRequests.length > 0 && routes.length > 0) {
-              updatedClimbRequestsByRoute[newActiveRouteId] = climbRequests;
+            const nextRoutes = [...prevState.routes];
+
+            let nextActiveRouteId = routesWithNominal[0].id;
+
+            if (emptyRouteIndex !== -1) {
+              const existingEmpty = prevState.routes[emptyRouteIndex];
+              const firstImported = routesWithNominal[0];
+
+              // Keep the existing route identity (id/color/visibility), but inject imported geometry + metadata.
+              nextRoutes[emptyRouteIndex] = {
+                ...existingEmpty,
+                name: firstImported.name || existingEmpty.name,
+                points: firstImported.points,
+                nominalFlightHeight: firstImported.nominalFlightHeight
+              };
+
+              nextActiveRouteId = existingEmpty.id;
+
+              // Append any additional imported routes (if KML contains multiple LineStrings)
+              if (routesWithNominal.length > 1) {
+                nextRoutes.push(...routesWithNominal.slice(1));
+              }
+            } else {
+              nextRoutes.push(...routesWithNominal);
             }
+
+            // Attach climb requests to the first imported route (or the reused empty route)
+            if (climbRequests.length > 0 && routesWithNominal.length > 0) {
+              updatedClimbRequestsByRoute[nextActiveRouteId] = climbRequests;
+            }
+
             return {
               ...prevState,
-              routes: newRoutes,
-              activeRouteId: newActiveRouteId,
+              routes: nextRoutes,
+              activeRouteId: nextActiveRouteId,
               climbRequestsByRoute: updatedClimbRequestsByRoute
             };
           },
           true
         );
 
-        return { routes, climbRequests, nominalFlightHeight };
+        return { routes: routesWithNominal, climbRequests, nominalFlightHeight };
       } catch (error) {
         console.error('Error importing KML:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1215,6 +1261,8 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
     routes: state.routes,
     activeRouteId: ensureActiveRoute(state.activeRouteId),
     flightPath,
+    nominalFlightHeight,
+    setNominalFlightHeight,
     climbRequestsByRoute: state.climbRequestsByRoute,
     addRoute,
     setActiveRoute,

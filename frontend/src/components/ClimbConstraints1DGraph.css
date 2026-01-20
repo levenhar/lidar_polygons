@@ -1,0 +1,100 @@
+.climb-constraints-graph {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.climb-constraints-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #0f172a;
+  margin-bottom: 0.5rem;
+}
+
+.climb-constraints-svg {
+  display: block;
+  margin: 0 auto;
+  border-radius: 4px;
+}
+
+.climb-constraints-values {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: center;
+  margin-top: 0.75rem;
+  padding: 0.5rem;
+  background: #f8fafc;
+  border-radius: 6px;
+}
+
+.climb-value {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.climb-value-label {
+  font-size: 0.875rem;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.climb-value-number {
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.climb-value-number.positive {
+  color: #16a34a;
+}
+
+.climb-value-number.negative {
+  color: #dc2626;
+}
+
+.climb-constraints-reasons {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.climb-reason {
+  font-size: 0.85rem;
+  color: #475569;
+  padding: 0.25rem 0.5rem;
+  background: #f1f5f9;
+  border-radius: 4px;
+  border-right: 3px solid #6f42c1;
+}
+
+.climb-reason.info {
+  border-right-color: #0ea5e9;
+  color: #0369a1;
+}
+
+.climb-distances {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed #e5e7eb;
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+/* Responsive adjustments */
+@media (max-width: 500px) {
+  .climb-constraints-values {
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+  
+  .climb-distances {
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+}
+

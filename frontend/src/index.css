@@ -11,6 +11,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+  direction: rtl;
 }
 
 #root {
@@ -86,7 +87,7 @@ code {
 
 .tooltip-bubble {
   position: absolute;
-  left: var(--tt-left, 50%);
+  inset-inline-start: var(--tt-left, 50%);
   bottom: calc(100% + 10px);
   transform: translateY(2px);
   background: rgba(17, 24, 39, 0.96);
@@ -105,16 +106,7 @@ code {
 }
 
 .tooltip-bubble::after {
-  content: '';
-  position: absolute;
-  left: var(--tt-arrow-left, 50%);
-  bottom: -6px;
-  transform: translateX(-50%);
-  width: 0;
-  height: 0;
-  border-left: 6px solid transparent;
-  border-right: 6px solid transparent;
-  border-top: 6px solid rgba(17, 24, 39, 0.96);
+  display: none;
 }
 
 .tooltip-wrap:hover .tooltip-bubble,
@@ -152,7 +144,8 @@ code {
 
 .btn-primary.active {
   /* Active/toggled-on state (used by Draw mode icon button) */
-  background: #16a34a; /* green = active mode */
+  background: #16a34a;
+  /* green = active mode */
   border: 2px solid #15803d;
   color: #ffffff;
 }
@@ -239,3 +232,83 @@ code {
 }
 
 
+
+/* Shared Hover Metadata Tooltip */
+.hover-metadata-tooltip {
+  position: fixed;
+  z-index: 5000;
+  background: rgba(17, 24, 39, 0.85);
+  backdrop-filter: blur(4px);
+  color: #ffffff;
+  padding: 10px 14px;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  font-size: 0.875rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 180px;
+}
+
+.tooltip-section {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.tooltip-label {
+  color: #94a3b8;
+  font-weight: 600;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+}
+
+.tooltip-divider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 4px 0;
+}
+
+/* RTL Support */
+[dir="rtl"] body {
+  direction: rtl;
+  text-align: right;
+}
+
+[dir="rtl"] * {
+  text-align: inherit;
+}
+
+/* Ensure inputs and buttons handle RTL properly */
+[dir="rtl"] input,
+[dir="rtl"] textarea,
+[dir="rtl"] select {
+  text-align: right;
+}
+
+/* Fix for number inputs in RTL */
+[dir="rtl"] input[type="number"]:not(.modern-input) {
+  text-align: left;
+  direction: ltr;
+}
+
+/* Leaflet map controls RTL adjustments */
+[dir="rtl"] .leaflet-control-container .leaflet-top,
+[dir="rtl"] .leaflet-control-container .leaflet-bottom {
+  right: auto;
+  left: 0;
+}
+
+[dir="rtl"] .leaflet-control-container .leaflet-right {
+  right: auto;
+  left: 0;
+}
+
+[dir="rtl"] .leaflet-control-container .leaflet-left {
+  left: auto;
+  right: 0;
+}

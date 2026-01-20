@@ -11,7 +11,12 @@ export function useUndoRedo<T>(initialState: T) {
     return currentIndex < historyRef.current.length - 1;
   }, [currentIndex]);
 
-  const setStateWithHistory = useCallback((newState: T, addToHistory: boolean = true) => {
+  const setStateWithHistory = useCallback((newStateOrUpdater: T | ((prevState: T) => T), addToHistory: boolean = true) => {
+    // Support both direct state and functional updates
+    const newState = typeof newStateOrUpdater === 'function' 
+      ? (newStateOrUpdater as (prevState: T) => T)(state)
+      : newStateOrUpdater;
+    
     if (addToHistory) {
       // Remove any future history if we're not at the end
       if (currentIndex < historyRef.current.length - 1) {
@@ -38,7 +43,7 @@ export function useUndoRedo<T>(initialState: T) {
     }
     
     setState(newState);
-  }, [currentIndex]);
+  }, [currentIndex, state]);
 
   const undo = useCallback(() => {
     if (currentIndex > 0) {

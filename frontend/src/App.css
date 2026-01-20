@@ -15,6 +15,7 @@
   border-bottom: 1px solid #7DD3FC;
   box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
   z-index: 1000;
+  gap: 2rem;
 }
 
 .app-header h1 {
@@ -22,14 +23,71 @@
   font-weight: 600;
   color: #111827;
   margin: 0;
-  padding-top: 0.5rem;
+}
+
+.header-left-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.header-title-container {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.header-parameters {
+  display: flex;
+  align-items: flex-start;
+  align-content: flex-end; /* Align wrapped rows to the right */
+  flex-wrap: wrap;
+  justify-content: flex-end; /* Align items to the right within each row */
+  margin-top: 0.5rem;
+  margin-left: auto; /* Push container to the right */
+  width: fit-content; /* Only take up as much width as needed */
+  max-width: 100%; /* Don't exceed parent width */
+  position: relative;
+  box-sizing: border-box;
+  /* Calculate spacing: (width from window start to export controls - parameters width) / 3 */
+  /* Parameters width: 5 flight inputs (5×80px) + 5 labels (~5×120px) + gaps (~100px) = ~1100px */
+  /*                   2 mission inputs (2×80px) + 2 labels (~2×120px) + gaps (~30px) = ~430px */
+  /*                   Total parameters: ~1530px */
+  /* Width to export controls: viewport width - header padding - export controls width */
+  --parameters-width: 1530px; /* Flight + Mission parameters total width */
+  --export-controls-width: 200px; /* Estimated export controls width */
+  --header-left-padding: 1.25rem; /* Left padding of header (from .app-header padding) */
+  --header-right-padding: 2rem; /* Right padding of header (from .app-header padding) */
+  --width-to-export: calc(100vw - var(--header-left-padding) - var(--header-right-padding) - var(--export-controls-width));
+  --available-space: calc(var(--width-to-export) - var(--parameters-width));
+  --equal-spacing: max(1rem, calc(var(--available-space) / 3));
+  --flight-inputs-count: 5; /* Number of inputs in flight parameters */
+  /* Calculate space-to-export and input-gap so that gap-between-groups equals input-gap */
+  /* space-to-export = (available-space - equal-spacing) * (inputs - 1) / inputs */
+  --space-to-export: calc((var(--available-space) - var(--equal-spacing)) * (var(--flight-inputs-count) - 1) / var(--flight-inputs-count));
+  --input-gap: calc(var(--space-to-export) / (var(--flight-inputs-count) - 1)); /* Gap between inputs and between parameter groups */
+  padding-right: 0; /* No space after mission parameters */
+}
+
+.header-parameters > .header-group:not(:first-child) {
+  margin-right: var(--input-gap); /* Same gap as between inputs */
+  /* When wrapping occurs, this margin ensures proper spacing while maintaining right alignment */
+}
+
+.app-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 
 .header-controls {
   display: flex;
   gap: 2rem;
-  align-items: flex-start;
+  align-items: flex-end;
   flex-wrap: wrap;
+  align-self: flex-end;
 }
 
 .header-group {
@@ -39,7 +97,7 @@
 }
 
 .header-group .group-title {
-  font-size: 0.875rem;
+  font-size: 1rem;
   font-weight: 600;
   color: #0369A1;
   text-transform: uppercase;
@@ -49,35 +107,60 @@
   padding-bottom: 0.25rem;
 }
 
+.header-group .group-title-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: #0369A1;
+  margin-bottom: 0.5rem;
+}
+
+.header-group .group-title-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
 .group-inputs {
   display: flex;
   gap: 0.75rem;
-  align-items: flex-end;
+  align-items: flex-start;
   flex-wrap: wrap;
 }
 
-.header-controls label {
+/* Use calculated gap for both flight and mission parameters inputs */
+.header-parameters > .header-group .group-inputs {
+  gap: var(--input-gap, 0.5rem);
+}
+
+.header-controls label,
+.header-parameters label {
   display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
   font-size: 1rem;
 }
 
 .input-label {
-  font-size: 0.875rem;
+  font-size: 1rem;
   font-weight: 500;
   color: #6b7280;
+  white-space: nowrap;
 }
 
 .modern-input {
-  width: 90px;
-  padding: 0.5rem 0.75rem;
+  width: 80px;
+  padding: 0.35rem 0.5rem;
   border: 1.5px solid #d1d5db;
   border-radius: 8px;
-  font-size: 1rem;
+  font-size: 0.875rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   color: #111827;
   background: #ffffff;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  text-align: center;
 }
 
 .modern-input:focus {
@@ -96,12 +179,81 @@
   align-items: flex-start;
 }
 
+.header-group .group-columns.export-controls-row {
+  flex-direction: row;
+  align-items: center;
+}
+
+.header-group .group-columns.export-controls-row .btn-icon {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .header-group .group-column {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   min-width: 160px;
   max-width: 160px;
+}
+
+/* Button tooltip styles - appears below buttons on hover */
+.header-group .group-column .btn-icon,
+.header-group .group-columns.export-controls-row .btn-icon {
+  position: relative;
+}
+
+.header-group .group-column .btn-icon::after,
+.header-group .group-columns.export-controls-row .btn-icon::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  background: #1F2937;
+  color: #ffffff;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 1000;
+  margin-top: 8px;
+  font-weight: 500;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.header-group .group-column .btn-icon::before,
+.header-group .group-columns.export-controls-row .btn-icon::before {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 5px solid #1F2937;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 1001;
+}
+
+.header-group .group-column .btn-icon:hover:not(:disabled)::after,
+.header-group .group-column .btn-icon:hover:not(:disabled)::before,
+.header-group .group-columns.export-controls-row .btn-icon:hover:not(:disabled)::after,
+.header-group .group-columns.export-controls-row .btn-icon:hover:not(:disabled)::before {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 /* Legacy support */
@@ -132,9 +284,20 @@
     padding: 1rem;
   }
   
+  .header-left-section {
+    width: 100%;
+  }
+  
+  .header-parameters {
+    width: 100%;
+    justify-content: flex-end;
+    align-content: flex-end;
+  }
+  
   .header-controls {
     flex-wrap: wrap;
     justify-content: center;
+    width: 100%;
   }
 }
 

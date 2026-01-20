@@ -14,3 +14,6 @@ uploads/
 package-lock.json
 .geojson
 .kml
+.venv/
+__pycache__/
+venv/

@@ -8,7 +8,7 @@
 
 .elevation-header {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: flex-start;
   padding: 1rem 1.25rem;
   background: #ffffff;
@@ -16,17 +16,12 @@
   box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
 }
 
-.elevation-header h2 {
-  font-size: 1.375rem;
-  font-weight: 600;
-  color: #111827;
-  margin: 0;
-  padding-top: 0.5rem;
-}
-
 .elevation-controls {
   display: flex;
-  gap: 1.5rem;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-left: auto;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
 }
 
 .elevation-controls .control-group {
@@ -41,11 +36,10 @@
   font-size: 0.875rem;
   font-weight: 600;
   color: #0369A1;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   margin-bottom: 0.25rem;
   padding-bottom: 0.25rem;
   border-bottom: 1px solid #7DD3FC;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
 }
 
 .elevation-controls .group-buttons {
@@ -136,5 +130,214 @@
   color: #111827;
   font-weight: 600;
 }
+
+.climb-banner {
+  padding: 0.75rem 1.25rem;
+  background: #f8fafc;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.climb-policy-text {
+  font-size: 0.95rem;
+  color: #0f172a;
+}
+
+.climb-warning-list {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.climb-warning-chip {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecdd3;
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.climb-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 4000;
+}
+
+.climb-modal__card {
+  background: #ffffff;
+  border-radius: 10px;
+  width: 420px;
+  max-width: 90vw;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+}
+
+.climb-modal__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.climb-modal__title {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.climb-modal__close {
+  background: transparent;
+  border: none;
+  font-size: 1.25rem;
+  cursor: pointer;
+}
+
+.climb-modal__body {
+  padding: 1rem 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.climb-modal__title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.climb-modal__label {
+  font-weight: 600;
+  color: #0f172a;
+  font-size: 0.95rem;
+  text-align: right;
+  line-height: 1.5;
+}
+
+.climb-modal__config-name {
+  font-size: 0.875rem;
+  color: #64748b;
+  font-weight: 500;
+  text-align: left;
+  line-height: 1.5;
+}
+
+.climb-modal__input {
+  width: 100%;
+  padding: 0.6rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 1rem;
+  background: white;
+}
+
+.climb-modal__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+  font-size: 0.95rem;
+}
+
+.climb-modal__hint {
+  color: #475569;
+  font-size: 0.9rem;
+  line-height: 1.35;
+  text-align: center;
+  width: 100%;
+  display: block;
+  margin: 0 auto;
+}
+
+.climb-modal__error {
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecdd3;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+}
+
+.climb-modal__max-values {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: center;
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: #f8fafc;
+  border-radius: 6px;
+}
+
+.climb-modal__max-value {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.climb-modal__max-label {
+  font-size: 0.875rem;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.climb-modal__max-number {
+  font-size: 1rem;
+  font-weight: 700;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #000000;
+  display: flex;
+  align-items: baseline;
+}
+
+.climb-modal__max-sign {
+  margin-right: 0;
+}
+
+.climb-modal__actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  padding: 0.75rem 1.25rem 1rem;
+  border-top: 1px solid #e5e7eb;
+}
+
+.climb-context-menu {
+  position: fixed;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+  border-radius: 8px;
+  padding: 0.25rem 0;
+  z-index: 4100;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+}
+
+.climb-context-item {
+  background: transparent;
+  border: none;
+  text-align: left;
+  padding: 0.6rem 1rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+  color: #0f172a;
+}
+
+.climb-context-item:hover {
+  background: #f1f5f9;
+}
+
+.climb-context-item.destructive {
+  color: #b91c1c;
+}
+
 
 

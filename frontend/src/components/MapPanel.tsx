@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 // @ts-ignore - proj4 types may not be perfect
@@ -7,14 +7,49 @@ import { Coordinate, ElevationPoint } from '../App';
 import { FlightRoute } from '../hooks/useFlightPath';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide } from '../utils/geometry';
+import CoordinateTooltip from './CoordinateTooltip';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing } from '../utils/geometry';
+import { latLngToUTM } from '../utils/coordinates';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 
 
-type TileLayerOptionsWithAgent = TileLayerOptions & {
-  httpsAgent?: any;
-};
+type TileLayerOptionsWithAgent = TileLayerOptions;
+
+// DTM Options types
+interface DTMOption {
+  id: string;
+  displayName: string;
+  sizeBytes: number;
+  modifiedAt: string;
+}
+
+interface ClipResponse {
+  clippedId: string;
+  raster: {
+    crs: string;
+    bbox: number[];
+    width: number;
+    height: number;
+  };
+  tilesUrl: string;
+  metadataUrl: string;
+  dataUrl: string;
+}
+
+// AOI selection state
+type AOISelectionMethod = 'bbox' | 'polygon' | 'kml';
+
+interface AOIBounds {
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
+}
+
+interface AOIPolygon {
+  coordinates: [number, number][]; // [lon, lat] pairs
+}
 
 type IconName =
   | 'upload'
@@ -28,7 +63,15 @@ type IconName =
   | 'undo'
   | 'redo'
   | 'fit'
-  | 'home';
+  | 'home'
+  | 'folder'
+  | 'crop'
+  | 'search'
+  | 'close'
+  | 'rectangle'
+  | 'polygon'
+  | 'file'
+  | 'info';
 
 const Icon: React.FC<{ name: IconName }> = ({ name }) => {
   const common = {
@@ -137,6 +180,60 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M5 10v10h14V10" />
         </svg>
       );
+    case 'folder':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M3 7v12a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-7l-2-2H5a2 2 0 00-2 2z" />
+        </svg>
+      );
+    case 'crop':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M6 2v14a2 2 0 002 2h14" />
+          <path {...stroke} d="M18 22V8a2 2 0 00-2-2H2" />
+        </svg>
+      );
+    case 'search':
+      return (
+        <svg {...common}>
+          <circle {...stroke} cx="11" cy="11" r="8" />
+          <path {...stroke} d="M21 21l-4.35-4.35" />
+        </svg>
+      );
+    case 'close':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M18 6L6 18" />
+          <path {...stroke} d="M6 6l12 12" />
+        </svg>
+      );
+    case 'rectangle':
+      return (
+        <svg {...common}>
+          <rect {...stroke} x="3" y="3" width="18" height="18" rx="2" />
+        </svg>
+      );
+    case 'polygon':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 3L3 9l3 12h12l3-12z" />
+        </svg>
+      );
+    case 'file':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+          <path {...stroke} d="M14 2v6h6" />
+        </svg>
+      );
+    case 'info':
+      return (
+        <svg {...common}>
+          <circle {...stroke} cx="12" cy="12" r="10" />
+          <path {...stroke} d="M12 16v-4" />
+          <path {...stroke} d="M12 8h.01" />
+        </svg>
+      );
     default:
       return (
         <svg {...common}>
@@ -177,10 +274,14 @@ L.Icon.Default.mergeOptions({
 
 interface MapPanelProps {
   dtmSource: string | null;
+  clippedId?: string | null;
   routes: FlightRoute[];
   activeRouteId: string;
   flightPath: Coordinate[];
-  onPathPointHover: (point: Coordinate | null) => void;
+  climbMarkers: { lat: number; lng: number; label: string; type: 'start' | 'end' }[];
+  showClimbLabels: boolean;
+  onShowClimbLabelsChange: (show: boolean) => void;
+  onPathPointHover: (point: Coordinate | null, distance?: number) => void;
   onPathChange: (path: Coordinate[]) => void;
   onAddPoint: (point: Coordinate) => void;
   onAddPoints: (points: Coordinate[]) => void;
@@ -195,9 +296,11 @@ interface MapPanelProps {
   onShowAllRoutes: () => void;
   onHideNonActiveRoutes: () => void;
   onResetToSingleRoute: () => void;
-  onDtmLoad: (source: string, info?: any) => void;
+  onDtmLoad: (source: string, info?: any, clippedId?: string) => void;
   onDtmUnload: () => void;
   nominalFlightHeight: number;
+  overlapPercentage: number;
+  fovDegrees: number;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -205,10 +308,15 @@ interface MapPanelProps {
   editPointIndex?: number | null;
   onEditPointIndexChange?: (index: number | null) => void;
   hoveredElevationPoint?: ElevationPoint | null;
+  hoverSource?: 'map' | 'profile' | null;
+  showMetadata: boolean;
+  onShowMetadataChange: (show: boolean) => void;
+  climbRequests?: { endDistance: number; climbAmount: number }[];
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
   dtmSource,
+  clippedId: propClippedId,
   routes,
   activeRouteId,
   flightPath,
@@ -230,13 +338,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onDtmLoad,
   onDtmUnload,
   nominalFlightHeight,
+  overlapPercentage,
+  fovDegrees,
   onUndo,
   onRedo,
   canUndo,
   canRedo,
+  climbMarkers,
+  onShowClimbLabelsChange,
+  showClimbLabels,
   editPointIndex: externalEditPointIndex,
   onEditPointIndexChange,
-  hoveredElevationPoint
+  hoveredElevationPoint,
+  hoverSource,
+  showMetadata,
+  onShowMetadataChange,
+  climbRequests = []
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -249,9 +366,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [dtmBounds, setDtmBounds] = useState<number[] | null>(null);
   const [dtmOpacity, setDtmOpacity] = useState<number>(0.1); // Default 90% transparency (10% opacity)
   const markersRef = useRef<L.Marker[]>([]);
+  const climbMarkersRef = useRef<L.Marker[]>([]);
   const flightPathLineRef = useRef<L.Polyline | null>(null);
   const flightPathClickableLineRef = useRef<L.Polyline | null>(null);
+  const flightPathBufferRef = useRef<L.Polyline | null>(null);
+  const segmentLengthLabelsRef = useRef<L.Marker[]>([]);
   const hoveredPointRef = useRef<number | null>(null);
+  const justFinishedDraggingRef = useRef<boolean>(false);
   const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const dtmTransparencyControlRef = useRef<HTMLDivElement | null>(null);
@@ -266,13 +387,347 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [baseMaps, setBaseMaps] = useState<BaseMapConfig[]>([]);
   const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
   const [previewConfig, setPreviewConfig] = useState<BaseMapPreviewResponse | null>(null);
+  const [isInfoMode, setIsInfoMode] = useState<boolean>(false);
+  const [cursorElevation, setCursorElevation] = useState<{ elevation: number | null; lat: number; lng: number } | null>(null);
+  const elevationQueryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const elevationCacheRef = useRef<Map<string, number | null>>(new Map());
+  const dtmRasterDataRef = useRef<{
+    width: number;
+    height: number;
+    data: number[];
+    bounds: number[];
+    isProjected: boolean;
+    crs: string | null;
+    noDataValue: number | null;
+  } | null>(null);
   const passiveRouteLinesRef = useRef<Record<string, L.Polyline>>({});
+  const suggestedLinesRef = useRef<L.Polyline[]>([]);
   const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
+  const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+  const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number } | null>(null);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
   const [editingRouteName, setEditingRouteName] = useState<string>('');
+  const [dialog, setDialog] = useState<{
+    type: 'height' | 'azimuthDistance' | 'coordinates' | 'uTurn' | 'parallelOffset';
+    title: string;
+  } | null>(null);
+  const [dialogValues, setDialogValues] = useState<Record<string, string>>({});
+  const [dialogError, setDialogError] = useState<string | null>(null);
+
+  // New DTM loading flow state
+  const [showDtmOptionsModal, setShowDtmOptionsModal] = useState(false);
+  const [dtmOptions, setDtmOptions] = useState<DTMOption[]>([]);
+  const [dtmOptionsLoading, setDtmOptionsLoading] = useState(false);
+  const [dtmOptionsError, setDtmOptionsError] = useState<string | null>(null);
+  const [dtmSearchQuery, setDtmSearchQuery] = useState('');
+  const [selectedDtmId, setSelectedDtmId] = useState<string | null>(null);
+  
+  // AOI selection state
+  const [isAoiSelectionMode, setIsAoiSelectionMode] = useState(false);
+  const [aoiSelectionMethod, setAoiSelectionMethod] = useState<AOISelectionMethod | null>(null);
+  const [aoiBounds, setAoiBounds] = useState<AOIBounds | null>(null);
+  const [aoiPolygon, setAoiPolygon] = useState<AOIPolygon | null>(null);
+  const aoiRectRef = useRef<L.Rectangle | null>(null);
+  const aoiPolygonRef = useRef<L.Polygon | null>(null);
+  const aoiPolygonPointsRef = useRef<[number, number][]>([]); // [lon, lat] pairs during drawing
+  const aoiMarkersRef = useRef<L.CircleMarker[]>([]);
+  const aoiFirstClickRef = useRef<L.LatLng | null>(null); // For two-click bbox
+  const kmlInputRef = useRef<HTMLInputElement | null>(null);
+  const [isClipping, setIsClipping] = useState(false);
+  const [activeClippedId, setActiveClippedId] = useState<string | null>(propClippedId || null);
+
+  const resetDialog = () => {
+    setDialog(null);
+    setDialogValues({});
+    setDialogError(null);
+  };
+
+  // ============================================================================
+  // NEW DTM LOADING FLOW FUNCTIONS
+  // ============================================================================
+
+  // Fetch available DTM options from the server
+  const fetchDtmOptions = useCallback(async () => {
+    setDtmOptionsLoading(true);
+    setDtmOptionsError(null);
+    try {
+      const response = await fetch('/api/dtm/options');
+      if (!response.ok) {
+        throw new Error(`Failed to fetch DTM options: ${response.status}`);
+      }
+      const data = await response.json();
+      setDtmOptions(data.options || []);
+    } catch (error) {
+      console.error('Error fetching DTM options:', error);
+      setDtmOptionsError(error instanceof Error ? error.message : 'שגיאה בטעינת רשימת DTM');
+    } finally {
+      setDtmOptionsLoading(false);
+    }
+  }, []);
+
+  // Open DTM options modal
+  const handleOpenDtmOptionsModal = useCallback(() => {
+    setShowDtmOptionsModal(true);
+    setDtmSearchQuery('');
+    setSelectedDtmId(null);
+    fetchDtmOptions();
+  }, [fetchDtmOptions]);
+
+  // Close DTM options modal
+  const handleCloseDtmOptionsModal = useCallback(() => {
+    setShowDtmOptionsModal(false);
+    setSelectedDtmId(null);
+    setDtmSearchQuery('');
+  }, []);
+
+  // Select a DTM and enter AOI selection mode
+  const handleSelectDtm = useCallback((dtmId: string) => {
+    setSelectedDtmId(dtmId);
+    setShowDtmOptionsModal(false);
+    setIsAoiSelectionMode(true);
+    setAoiSelectionMethod(null); // Show method chooser first
+    setAoiBounds(null);
+    setAoiPolygon(null);
+    aoiPolygonPointsRef.current = [];
+    aoiFirstClickRef.current = null;
+    
+    // Clear any existing AOI shapes
+    if (aoiRectRef.current && map.current) {
+      map.current.removeLayer(aoiRectRef.current);
+      aoiRectRef.current = null;
+    }
+    if (aoiPolygonRef.current && map.current) {
+      map.current.removeLayer(aoiPolygonRef.current);
+      aoiPolygonRef.current = null;
+    }
+    // Clear markers
+    aoiMarkersRef.current.forEach(marker => {
+      if (map.current) map.current.removeLayer(marker);
+    });
+    aoiMarkersRef.current = [];
+  }, []);
+
+  // Cancel AOI selection
+  const handleCancelAoiSelection = useCallback(() => {
+    setIsAoiSelectionMode(false);
+    setSelectedDtmId(null);
+    setAoiSelectionMethod(null);
+    setAoiBounds(null);
+    setAoiPolygon(null);
+    aoiPolygonPointsRef.current = [];
+    aoiFirstClickRef.current = null;
+    
+    // Remove AOI shapes
+    if (aoiRectRef.current && map.current) {
+      map.current.removeLayer(aoiRectRef.current);
+      aoiRectRef.current = null;
+    }
+    if (aoiPolygonRef.current && map.current) {
+      map.current.removeLayer(aoiPolygonRef.current);
+      aoiPolygonRef.current = null;
+    }
+    // Clear markers
+    aoiMarkersRef.current.forEach(marker => {
+      if (map.current) map.current.removeLayer(marker);
+    });
+    aoiMarkersRef.current = [];
+  }, []);
+
+  // Clip the DTM to the selected AOI
+  const handleClipDtm = useCallback(async () => {
+    if (!selectedDtmId || (!aoiBounds && !aoiPolygon)) {
+      alert('בחר DTM ושרטט אזור עבודה.');
+      return;
+    }
+
+    setIsClipping(true);
+    try {
+      // Build AOI object based on selection method
+      let aoiPayload: { type: string; crs: string; bbox?: number[]; coordinates?: [number, number][] };
+      
+      if (aoiPolygon && aoiPolygon.coordinates.length >= 3) {
+        // Polygon AOI - close the ring if not already closed
+        const coords = [...aoiPolygon.coordinates];
+        const first = coords[0];
+        const last = coords[coords.length - 1];
+        if (first[0] !== last[0] || first[1] !== last[1]) {
+          coords.push(first);
+        }
+        aoiPayload = {
+          type: 'polygon',
+          crs: 'EPSG:4326',
+          coordinates: coords
+        };
+      } else if (aoiBounds) {
+        // Bbox AOI
+        aoiPayload = {
+          type: 'bbox',
+          crs: 'EPSG:4326',
+          bbox: [aoiBounds.minLon, aoiBounds.minLat, aoiBounds.maxLon, aoiBounds.maxLat]
+        };
+      } else {
+        alert('בחר אזור עבודה תקין.');
+        setIsClipping(false);
+        return;
+      }
+      
+      const response = await fetch('/api/dtm/clip', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          dtmId: selectedDtmId,
+          aoi: aoiPayload
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || errorData.error || `Clip failed: ${response.status}`);
+      }
+
+      const clipResult: ClipResponse = await response.json();
+      
+      // Store the clipped ID
+      setActiveClippedId(clipResult.clippedId);
+      
+      // Exit AOI selection mode
+      setIsAoiSelectionMode(false);
+      setSelectedDtmId(null);
+      setAoiSelectionMethod(null);
+      setAoiPolygon(null);
+      aoiPolygonPointsRef.current = [];
+      
+      // Remove AOI shapes
+      if (aoiRectRef.current && map.current) {
+        map.current.removeLayer(aoiRectRef.current);
+        aoiRectRef.current = null;
+      }
+      if (aoiPolygonRef.current && map.current) {
+        map.current.removeLayer(aoiPolygonRef.current);
+        aoiPolygonRef.current = null;
+      }
+      // Clear markers
+      aoiMarkersRef.current.forEach(marker => {
+        if (map.current) map.current.removeLayer(marker);
+      });
+      aoiMarkersRef.current = [];
+      
+      // Automatically upload the clipped DTM file to Node backend uploads folder
+      try {
+        console.log('Uploading clipped DTM file to Node backend...');
+        const uploadResponse = await fetch(`/api/dtm/clipped/${clipResult.clippedId}/upload`, {
+          method: 'POST'
+        });
+        
+        if (uploadResponse.ok) {
+          const uploadData = await uploadResponse.json();
+          console.log('Clipped DTM uploaded successfully:', uploadData);
+        } else {
+          const errorData = await uploadResponse.json().catch(() => ({}));
+          console.warn('Failed to upload clipped DTM file:', errorData.error || 'Unknown error');
+          // Don't fail the whole operation if upload fails - the clipped DTM is still available via Python backend
+        }
+      } catch (uploadError) {
+        console.warn('Error uploading clipped DTM file:', uploadError);
+        // Don't fail the whole operation if upload fails
+      }
+      
+      // Notify parent with the clipped DTM info
+      // Use the dataUrl as the dtmSource (for raster loading)
+      onDtmLoad(clipResult.dataUrl, {
+        bounds: {
+          minX: clipResult.raster.bbox[0],
+          minY: clipResult.raster.bbox[1],
+          maxX: clipResult.raster.bbox[2],
+          maxY: clipResult.raster.bbox[3]
+        },
+        resolution: {
+          width: clipResult.raster.width,
+          height: clipResult.raster.height
+        },
+        clippedId: clipResult.clippedId,
+        crs: clipResult.raster.crs
+      }, clipResult.clippedId);
+
+    } catch (error) {
+      console.error('Error clipping DTM:', error);
+      alert(`שגיאה בחיתוך DTM: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
+    } finally {
+      setIsClipping(false);
+    }
+  }, [selectedDtmId, aoiBounds, aoiPolygon, onDtmLoad]);
+
+  /*
+  // Delete clipped DTM from cache
+  const deleteClippedDtm = useCallback(async (clippedIdToDelete?: string) => {
+    const targetId = clippedIdToDelete || activeClippedId;
+    if (!targetId) return;
+
+    try {
+      await fetch(`/api/dtm/clipped/${targetId}`, {
+        method: 'DELETE'
+      });
+      console.log(`Deleted clipped DTM: ${targetId}`);
+    } catch (error) {
+      console.error('Error deleting clipped DTM:', error);
+    }
+  }, [activeClippedId]);
+  */
+
+  // Format file size for display
+  const formatFileSize = useCallback((bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }, []);
+
+  // Format date for display
+  const formatDate = useCallback((isoDate: string): string => {
+    try {
+      const date = new Date(isoDate);
+      return date.toLocaleDateString('he-IL', {
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return isoDate;
+    }
+  }, []);
+
+  // Filter DTM options based on search query
+  const filteredDtmOptions = useMemo(() => {
+    if (!dtmSearchQuery.trim()) return dtmOptions;
+    const query = dtmSearchQuery.toLowerCase();
+    return dtmOptions.filter(opt => 
+      opt.displayName.toLowerCase().includes(query) ||
+      opt.id.toLowerCase().includes(query)
+    );
+  }, [dtmOptions, dtmSearchQuery]);
 
   const activeRoute = routes.find((route) => route.id === activeRouteId) || routes[0];
   const activeRouteColor = activeRoute?.color || '#ff0000';
+  const hoveredUtm = useMemo(() => {
+    if (!hoveredElevationPoint) return null;
+    return latLngToUTM(hoveredElevationPoint.latitude, hoveredElevationPoint.longitude);
+  }, [hoveredElevationPoint]);
+
+  const formatSegmentLength = (meters: number): string => {
+    if (!Number.isFinite(meters)) return '—';
+    if (meters >= 1000) {
+      return `${(meters / 1000).toFixed(2)} km`;
+    }
+    if (meters >= 100) {
+      return `${meters.toFixed(0)} m`;
+    }
+    return `${meters.toFixed(1)} m`;
+  };
 
   // Helper function to check if a point is within DTM bounds
   const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
@@ -309,13 +764,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
       .replace('{x}', previewX)
       .replace('{y}', previewY)
       .replace('{s}', 'a'); // Use 'a' subdomain for OSM-style tiles
-    
+
     // Add token if available
     if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
       const separator = previewUrl.includes('?') ? '&' : '?';
       previewUrl = `${previewUrl}${separator}token=${mapTokenRef.current}`;
     }
-    
+
     return previewUrl;
   }, [getPreviewNumericValue]);
 
@@ -341,13 +796,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
 
     let urlWithToken = nextBaseMap.url;
-    
+
     // Only append token if it's not empty
     if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
       const separator = nextBaseMap.url.includes('?') ? '&' : '?';
       urlWithToken = `${nextBaseMap.url}${separator}token=${mapTokenRef.current}`;
     }
-    
+
     console.log('🗺️ New basemap URL:', urlWithToken);
     baseLayerRef.current = L.tileLayer(urlWithToken, tileLayerOptionsRef.current).addTo(map.current);
     setActiveBaseMapId(nextBaseMap.id);
@@ -369,32 +824,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Initialize map
   useEffect(() => {
-    async function initializeHttpAgent() {
-      if (typeof window !== 'undefined') {
-        // We are in the browser no need for agent
-        return null
-      } else {
-        // We are in a Node.js env
-        try {
-          const httpsModule = await import('node:https');
-          const httpsagent_f = new httpsModule.Agent({
-              rejectUnauthorized: false,
-          });
-          return httpsagent_f
-        } catch (error) {
-          console.error("Failed to import node:https:", error);
-          return null // or undefined
-        }
-      }
-    }
     if (!mapContainer.current || map.current) return;
 
-    initializeHttpAgent().then(async(httpsAgent_f) => {
+    const initializeMap = async () => {
       const response_crs = await fetch('/api/crs')
 
-      if (!response_crs.ok){
-        const errorData = await response_crs.json().catch(() => ({error: 'Unknown error'}));
-        throw new Error(errorData.error || 'Failed to get CRS for maps ${response.status}');
+      if (!response_crs.ok) {
+        throw new Error(`Failed to get CRS for maps ${response_crs.status}`);
       }
       const crsResponse = await response_crs.json();
       const crsString = crsResponse.crs;
@@ -407,7 +843,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       } else {
         // Normalize the CRS string (handle both "EPSG4326" and "EPSG:4326" formats)
         const normalizedCrs = crsString.replace(':', '').toUpperCase();
-        
+
         // Map common CRS strings to Leaflet CRS objects
         // Use type assertion to access CRS dynamically, with fallback
         const crsKey = normalizedCrs as keyof typeof L.CRS;
@@ -422,24 +858,23 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (mapContainer.current) {
         map.current = L.map(mapContainer.current, {
           center: [31.50, 35.02], // israel defulat
-          zoom: 7 ,
+          zoom: 7,
           crs: leafletCrs
           // crs: L.CRS.EPSG4326
         });
       }
 
-      // Create option *after* httpsAgent_f is define
+      // Create options
       const options: TileLayerOptionsWithAgent = {
-        maxZoom:19,
-        httpsAgent:httpsAgent_f,
+        maxZoom: 19,
         noWrap: true // prevent repeated world copies when zoomed out
       };
       tileLayerOptionsRef.current = options;
 
       const response_token = await fetch('/api/token')
 
-      if (!response_token.ok){
-        const errorData = await response_token.json().catch(() => ({error: 'Unknown error'}));
+      if (!response_token.ok) {
+        const errorData = await response_token.json().catch(() => ({ error: 'Unknown error' }));
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
       const MAPS_TOKEN = await response_token.json();
@@ -448,8 +883,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       const response_url = await fetch('/api/url')
 
-      if (!response_url.ok){
-        const errorData = await response_url.json().catch(() => ({error: 'Unknown error'}));
+      if (!response_url.ok) {
+        const errorData = await response_url.json().catch(() => ({ error: 'Unknown error' }));
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
       const raw_url = await response_url.json();
@@ -483,7 +918,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
 
       console.log('🗺️ Available basemaps:', availableBaseMaps);
-      
+
       console.log('🔍 Checking dependencies:', {
         mapExists: !!map.current,
         baseMapsCount: availableBaseMaps.length,
@@ -494,13 +929,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (map.current && availableBaseMaps.length > 0 && tileLayerOptionsRef.current) {
         const initialBaseMap = availableBaseMaps[0];
         let initialUrl = initialBaseMap.url;
-        
+
         // Only append token if it's not empty
         if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
           const separator = initialBaseMap.url.includes('?') ? '&' : '?';
           initialUrl = `${initialBaseMap.url}${separator}token=${mapTokenRef.current}`;
         }
-        
+
         console.log('🗺️ Initializing basemap:', { id: initialBaseMap.id, url: initialUrl });
         baseLayerRef.current = L.tileLayer(initialUrl, tileLayerOptionsRef.current).addTo(map.current);
         setActiveBaseMapId(initialBaseMap.id);
@@ -508,9 +943,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       } else {
         console.error('❌ Cannot add basemap - missing dependencies');
       }
-      
+
       setBaseMaps(availableBaseMaps);
-    });
+    };
+
+    initializeMap();
 
     return () => {
       if (map.current) {
@@ -523,23 +960,418 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, []);
 
+  // Clear hover state when mouse leaves the map container
+  useEffect(() => {
+    if (!map.current) return;
+
+    const mapContainer = map.current.getContainer();
+    const handleMouseLeave = () => {
+      setMousePos(null);
+      if (hoverSource === 'map') {
+        onPathPointHover(null);
+      }
+      if (isInfoMode) {
+        setCursorElevation(null);
+      }
+    };
+
+    mapContainer.addEventListener('mouseleave', handleMouseLeave);
+
+    return () => {
+      mapContainer.removeEventListener('mouseleave', handleMouseLeave);
+    };
+  }, [hoverSource, onPathPointHover, isInfoMode]);
+
+  // Calculate tooltip position to keep it on screen
+  useLayoutEffect(() => {
+    if (!mousePos || !tooltipRef.current || !showMetadata || !hoveredElevationPoint || hoverSource !== 'map') {
+      setTooltipPosition(null);
+      return;
+    }
+
+    // Use requestAnimationFrame to ensure the tooltip is rendered and measured
+    requestAnimationFrame(() => {
+      if (!tooltipRef.current) return;
+      const tooltipRect = tooltipRef.current.getBoundingClientRect();
+      const windowWidth = window.innerWidth;
+      const padding = 8;
+      const offset = 15;
+
+      let left = mousePos.x + offset;
+      
+      // Check if tooltip would go off the right edge of the screen
+      if (left + tooltipRect.width > windowWidth - padding) {
+        // Position at the start of the window with padding
+        left = padding;
+      }
+
+      // Also check if it would go off the left edge (shouldn't happen, but just in case)
+      if (left < padding) {
+        left = padding;
+      }
+
+      setTooltipPosition({ left, top: mousePos.y + offset });
+    });
+  }, [mousePos, showMetadata, hoveredElevationPoint, hoverSource]);
+
+  // AOI selection mode handlers
+  useEffect(() => {
+    if (!map.current || !isAoiSelectionMode || !aoiSelectionMethod) return;
+
+    // Helper to add a marker for polygon points
+    const addPolygonMarker = (latlng: L.LatLng, isFirst: boolean = false) => {
+      const marker = L.circleMarker(latlng, {
+        radius: isFirst ? 8 : 6,
+        color: isFirst ? '#ef4444' : '#3b82f6',
+        fillColor: isFirst ? '#ef4444' : '#3b82f6',
+        fillOpacity: 0.8,
+        weight: 2
+      }).addTo(map.current!);
+      
+      if (isFirst) {
+        // Make first marker clickable to close polygon
+        marker.on('click', () => {
+          if (aoiPolygonPointsRef.current.length >= 3) {
+            // Close the polygon
+            setAoiPolygon({ coordinates: [...aoiPolygonPointsRef.current] });
+            // Update polygon style to show completion
+            if (aoiPolygonRef.current) {
+              aoiPolygonRef.current.setStyle({
+                color: '#22c55e',
+                dashArray: ''
+              });
+            }
+          }
+        });
+      }
+      
+      aoiMarkersRef.current.push(marker);
+    };
+
+    // Update the polygon preview
+    const updatePolygonPreview = () => {
+      if (aoiPolygonPointsRef.current.length < 2) return;
+      
+      const latlngs = aoiPolygonPointsRef.current.map(([lon, lat]) => [lat, lon] as [number, number]);
+      
+      if (aoiPolygonRef.current) {
+        aoiPolygonRef.current.setLatLngs(latlngs);
+      } else {
+        aoiPolygonRef.current = L.polygon(latlngs, {
+          color: '#3b82f6',
+          weight: 2,
+          fillColor: '#3b82f6',
+          fillOpacity: 0.2,
+          dashArray: '5, 5'
+        }).addTo(map.current!);
+      }
+    };
+
+    if (aoiSelectionMethod === 'bbox') {
+      // Two-click bounding box mode
+      const handleBboxClick = (e: L.LeafletMouseEvent) => {
+        if (!aoiFirstClickRef.current) {
+          // First click - store the start point
+          aoiFirstClickRef.current = e.latlng;
+          setAoiBounds(null);
+          
+          // Create initial rectangle at click point
+          if (aoiRectRef.current) {
+            map.current!.removeLayer(aoiRectRef.current);
+          }
+          
+          aoiRectRef.current = L.rectangle(
+            L.latLngBounds(e.latlng, e.latlng),
+            {
+              color: '#3b82f6',
+              weight: 2,
+              fillColor: '#3b82f6',
+              fillOpacity: 0.2,
+              dashArray: '5, 5'
+            }
+          ).addTo(map.current!);
+        } else {
+          // Second click - finalize the bbox
+          const start = aoiFirstClickRef.current;
+          const end = e.latlng;
+          
+          const minLat = Math.min(start.lat, end.lat);
+          const maxLat = Math.max(start.lat, end.lat);
+          const minLon = Math.min(start.lng, end.lng);
+          const maxLon = Math.max(start.lng, end.lng);
+          
+          // Check if area is large enough
+          if (Math.abs(maxLat - minLat) < 0.0001 || Math.abs(maxLon - minLon) < 0.0001) {
+            // Too small, reset
+            if (aoiRectRef.current) {
+              map.current!.removeLayer(aoiRectRef.current);
+              aoiRectRef.current = null;
+            }
+            aoiFirstClickRef.current = null;
+            setAoiBounds(null);
+            return;
+          }
+          
+          setAoiBounds({ minLon, minLat, maxLon, maxLat });
+          
+          // Update rectangle to final bounds with success style
+          if (aoiRectRef.current) {
+            aoiRectRef.current.setBounds([[minLat, minLon], [maxLat, maxLon]]);
+            aoiRectRef.current.setStyle({
+              color: '#22c55e',
+              dashArray: ''
+            });
+          }
+          
+          aoiFirstClickRef.current = null;
+        }
+      };
+
+      const handleBboxMouseMove = (e: L.LeafletMouseEvent) => {
+        if (!aoiFirstClickRef.current || !aoiRectRef.current) return;
+        const bounds = L.latLngBounds(aoiFirstClickRef.current, e.latlng);
+        aoiRectRef.current.setBounds(bounds);
+      };
+
+      map.current.on('click', handleBboxClick);
+      map.current.on('mousemove', handleBboxMouseMove);
+      map.current.getContainer().style.cursor = 'crosshair';
+
+      return () => {
+        if (map.current) {
+          map.current.off('click', handleBboxClick);
+          map.current.off('mousemove', handleBboxMouseMove);
+          map.current.getContainer().style.cursor = '';
+        }
+      };
+    } else if (aoiSelectionMethod === 'polygon') {
+      // Multi-click polygon mode
+      const handlePolygonClick = (e: L.LeafletMouseEvent) => {
+        const newPoint: [number, number] = [e.latlng.lng, e.latlng.lat];
+        
+        // Check if clicking near the first point to close the polygon
+        if (aoiPolygonPointsRef.current.length >= 3) {
+          const firstPoint = aoiPolygonPointsRef.current[0];
+          const dist = Math.sqrt(
+            Math.pow(e.latlng.lng - firstPoint[0], 2) + 
+            Math.pow(e.latlng.lat - firstPoint[1], 2)
+          );
+          // If within ~500m at equator (0.005 degrees), close the polygon
+          if (dist < 0.005) {
+            setAoiPolygon({ coordinates: [...aoiPolygonPointsRef.current] });
+            if (aoiPolygonRef.current) {
+              aoiPolygonRef.current.setStyle({
+                color: '#22c55e',
+                dashArray: ''
+              });
+            }
+            return;
+          }
+        }
+        
+        // Add the new point
+        aoiPolygonPointsRef.current.push(newPoint);
+        addPolygonMarker(e.latlng, aoiPolygonPointsRef.current.length === 1);
+        updatePolygonPreview();
+      };
+
+      const handlePolygonDblClick = (e: L.LeafletMouseEvent) => {
+        e.originalEvent.preventDefault();
+        e.originalEvent.stopPropagation();
+        
+        // Close polygon on double-click if we have at least 3 points
+        if (aoiPolygonPointsRef.current.length >= 3) {
+          setAoiPolygon({ coordinates: [...aoiPolygonPointsRef.current] });
+          if (aoiPolygonRef.current) {
+            aoiPolygonRef.current.setStyle({
+              color: '#22c55e',
+              dashArray: ''
+            });
+          }
+        }
+      };
+
+      // Disable double-click zoom while drawing
+      map.current.doubleClickZoom.disable();
+      map.current.on('click', handlePolygonClick);
+      map.current.on('dblclick', handlePolygonDblClick);
+      map.current.getContainer().style.cursor = 'crosshair';
+
+      return () => {
+        if (map.current) {
+          map.current.doubleClickZoom.enable();
+          map.current.off('click', handlePolygonClick);
+          map.current.off('dblclick', handlePolygonDblClick);
+          map.current.getContainer().style.cursor = '';
+        }
+      };
+    }
+    // KML mode doesn't need map click handlers - it uses file upload
+  }, [isAoiSelectionMode, aoiSelectionMethod]);
+
+  // KML file handler
+  const handleKmlFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const content = e.target?.result as string;
+      try {
+        // Parse KML to extract polygon coordinates
+        const parser = new DOMParser();
+        const kmlDoc = parser.parseFromString(content, 'text/xml');
+        
+        // Look for coordinates in Polygon elements
+        const coordinatesElements = kmlDoc.getElementsByTagName('coordinates');
+        
+        if (coordinatesElements.length === 0) {
+          alert('לא נמצאו קואורדינטות בקובץ KML');
+          return;
+        }
+
+        // Get the first coordinates element
+        const coordsText = coordinatesElements[0].textContent?.trim() || '';
+        const coordPairs = coordsText.split(/\s+/).filter(s => s.length > 0);
+        
+        const coordinates: [number, number][] = [];
+        for (const pair of coordPairs) {
+          const [lon, lat] = pair.split(',').map(Number);
+          if (!isNaN(lon) && !isNaN(lat)) {
+            coordinates.push([lon, lat]);
+          }
+        }
+
+        if (coordinates.length < 3) {
+          alert('הפוליגון בקובץ KML חייב להכיל לפחות 3 נקודות');
+          return;
+        }
+
+        // Store the polygon
+        setAoiPolygon({ coordinates });
+        aoiPolygonPointsRef.current = coordinates;
+
+        // Draw the polygon on map
+        if (map.current) {
+          // Clear existing shapes
+          if (aoiPolygonRef.current) {
+            map.current.removeLayer(aoiPolygonRef.current);
+          }
+          aoiMarkersRef.current.forEach(marker => map.current!.removeLayer(marker));
+          aoiMarkersRef.current = [];
+
+          const latlngs = coordinates.map(([lon, lat]) => [lat, lon] as [number, number]);
+          aoiPolygonRef.current = L.polygon(latlngs, {
+            color: '#22c55e',
+            weight: 2,
+            fillColor: '#22c55e',
+            fillOpacity: 0.2
+          }).addTo(map.current);
+
+          // Zoom to the polygon
+          map.current.fitBounds(aoiPolygonRef.current.getBounds(), { padding: [50, 50] });
+        }
+      } catch (error) {
+        console.error('Error parsing KML:', error);
+        alert('שגיאה בקריאת קובץ KML');
+      }
+    };
+    reader.readAsText(file);
+    
+    // Reset input so same file can be selected again
+    event.target.value = '';
+  }, []);
+
+  // Reset AOI selection (for re-drawing)
+  const handleResetAoiSelection = useCallback(() => {
+    setAoiBounds(null);
+    setAoiPolygon(null);
+    aoiPolygonPointsRef.current = [];
+    aoiFirstClickRef.current = null;
+    
+    // Clear shapes
+    if (aoiRectRef.current && map.current) {
+      map.current.removeLayer(aoiRectRef.current);
+      aoiRectRef.current = null;
+    }
+    if (aoiPolygonRef.current && map.current) {
+      map.current.removeLayer(aoiPolygonRef.current);
+      aoiPolygonRef.current = null;
+    }
+    aoiMarkersRef.current.forEach(marker => {
+      if (map.current) map.current.removeLayer(marker);
+    });
+    aoiMarkersRef.current = [];
+  }, []);
+
+  // Cleanup clipped DTM on unload or navigation
+  useEffect(() => {
+    const cleanupClippedDtm = () => {
+      if (activeClippedId) {
+        try {
+          // Use fetch with keepalive for reliable cleanup on page unload
+          // sendBeacon only supports POST, so we use fetch with keepalive for DELETE
+          fetch(`/api/dtm/clipped/${activeClippedId}`, {
+            method: 'DELETE',
+            keepalive: true
+          }).catch(() => {
+            // Ignore errors during cleanup - page might be unloading
+          });
+        } catch (error) {
+          // Ignore errors during cleanup
+        }
+      }
+    };
+
+    const handleBeforeUnload = () => {
+      cleanupClippedDtm();
+    };
+
+    const handlePageHide = (event: PageTransitionEvent) => {
+      // Only cleanup if page is not being cached (e.g., back/forward navigation)
+      if (!event.persisted) {
+        cleanupClippedDtm();
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      // Cleanup when page becomes hidden (user switching tabs, closing window, etc.)
+      if (document.visibilityState === 'hidden') {
+        cleanupClippedDtm();
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [activeClippedId]);
+
   // Set up click handler for adding points, editing points, and parallel line creation
   useEffect(() => {
     if (!map.current) return;
 
     const handleClick = (e: L.LeafletMouseEvent) => {
+      // Skip if in AOI selection mode
+      if (isAoiSelectionMode) return;
+      
       // If editing a point, move it to the new location
       const currentEditingIndex = externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
       if (currentEditingIndex !== null && dtmLoaded) {
         const lng = e.latlng.lng;
         const lat = e.latlng.lat;
-        
+
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
-          alert('Cannot move point outside DTM bounding box. Please select a point within the DTM extent.');
+          alert('נקודה חייבת להישאר בתוך גבולות ה-DTM.');
           return;
         }
-        
+
         const currentPoint = flightPath[currentEditingIndex];
         onUpdatePoint(currentEditingIndex, {
           lng,
@@ -559,10 +1391,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const clickPoint = { lng: e.latlng.lng, lat: e.latlng.lat };
         let closestSegmentIndex = -1;
         let closestDistance = Infinity;
-        
+
         for (let i = 0; i < flightPath.length - 1; i++) {
           const result = findClosestPointOnLine(clickPoint, flightPath[i], flightPath[i + 1]);
-          
+
           // Check if click is close enough to the segment (100 meters threshold)
           if (result.distance < 100) {
             if (result.distance < closestDistance) {
@@ -571,62 +1403,39 @@ const MapPanel: React.FC<MapPanelProps> = ({
             }
           }
         }
-        
+
         if (closestSegmentIndex >= 0) {
-          // Prompt for offset distance
-          const distanceInput = prompt(
-            `Enter offset distance in meters for parallel line:\n(Positive = right side, Negative = left side)`,
-            '50'
-          );
-          
-          if (distanceInput !== null) {
-            const offsetDistance = parseFloat(distanceInput);
-            if (!isNaN(offsetDistance)) {
-              const segmentStart = flightPath[closestSegmentIndex];
-              const segmentEnd = flightPath[closestSegmentIndex + 1];
-              
-              // Calculate parallel line
-              const [parallelStart, parallelEnd] = calculateParallelLine(
-                segmentStart,
-                segmentEnd,
-                offsetDistance
-              );
-              
-              // Check if parallel points are within bounds
-              if (
-                isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
-                isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
-              ) {
-                // Add parallel line points at the end of the flight path as a single operation
-                // Point 3 should be closer to point 2, so we add parallelEnd first (which corresponds to point 2)
-                // Then add parallelStart (which corresponds to point 1)
-                onAddPoints([parallelEnd, parallelStart]); // Add both points in a single undoable action
-                setIsParallelLineMode(false);
-                alert(`Parallel line created with offset of ${offsetDistance}m. Added 2 new points at the end of the path.`);
-              } else {
-                alert('Parallel line points would be outside DTM bounds. Please use a smaller offset.');
-              }
-            } else {
-              alert('Invalid distance. Please enter a number.');
-            }
-          }
+          setDialog({
+            type: 'parallelOffset',
+            title: 'היסט מקביל'
+          });
+          setDialogValues({
+            segmentIndex: closestSegmentIndex.toString(),
+            offset: '50'
+          });
+          setDialogError(null);
         } else {
-          alert('Could not determine which line segment was clicked. Please click closer to a line segment.');
+          alert('לחץ קרוב יותר למקטע קו.');
         }
         return;
       }
 
       // Otherwise, add new point if drawing
       if (isDrawing && dtmLoaded) {
-        const lng = e.latlng.lng;
-        const lat = e.latlng.lat;
-        
-        // Check if point is within DTM bounds
-        if (!isPointWithinBounds(lng, lat)) {
-          alert('Cannot add point outside DTM bounding box. Please select a point within the DTM extent.');
+        // Skip creating a new point if we just finished dragging a point
+        if (justFinishedDraggingRef.current) {
           return;
         }
-        
+
+        const lng = e.latlng.lng;
+        const lat = e.latlng.lat;
+
+        // Check if point is within DTM bounds
+        if (!isPointWithinBounds(lng, lat)) {
+          alert('נקודה חייבת להיות בתוך גבולות ה-DTM.');
+          return;
+        }
+
         const newPoint: Coordinate = {
           lng,
           lat
@@ -642,7 +1451,149 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current.off('click', handleClick);
       }
     };
-  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints]);
+  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints, isAoiSelectionMode]);
+
+  // Reset info mode when DTM is unloaded or not available
+  useEffect(() => {
+    if (!dtmSource || !dtmLoaded) {
+      setIsInfoMode(false);
+      setCursorElevation(null);
+      setMousePos(null);
+      elevationCacheRef.current.clear();
+      dtmRasterDataRef.current = null;
+    }
+  }, [dtmSource, dtmLoaded]);
+
+  // Client-side elevation calculation function
+  const calculateElevationAtPoint = useCallback((lat: number, lng: number): number | null => {
+    const rasterData = dtmRasterDataRef.current;
+    if (!rasterData) return null;
+
+    const { width, height, data, bounds, noDataValue } = rasterData;
+    const [minLon, minLat, maxLon, maxLat] = bounds;
+
+    // Check if point is within bounds
+    if (lng < minLon || lng > maxLon || lat < minLat || lat > maxLat) {
+      return null;
+    }
+
+    // Calculate pixel coordinates
+    // Normalize coordinates to 0-1 range
+    const xNorm = (lng - minLon) / (maxLon - minLon);
+    const yNorm = 1 - (lat - minLat) / (maxLat - minLat); // Invert Y because image coordinates start at top
+
+    // Convert to pixel coordinates
+    const col = Math.floor(xNorm * width);
+    const row = Math.floor(yNorm * height);
+
+    // Clamp to valid range
+    const clampedCol = Math.max(0, Math.min(width - 1, col));
+    const clampedRow = Math.max(0, Math.min(height - 1, row));
+
+    // Get elevation value from data array (row-major order)
+    const index = clampedRow * width + clampedCol;
+    if (index < 0 || index >= data.length) {
+      return null;
+    }
+
+    const elevation = data[index];
+
+    // Check for no-data values
+    if (noDataValue !== null && elevation === noDataValue) {
+      return null;
+    }
+
+    if (isNaN(elevation) || !isFinite(elevation)) {
+      return null;
+    }
+
+    return elevation;
+  }, []);
+
+  // Handle information mode - query elevation on mouse move
+  useEffect(() => {
+    if (!map.current || !isInfoMode || !dtmSource) {
+      setCursorElevation(null);
+      return;
+    }
+
+    const handleMouseMove = async (e: L.LeafletMouseEvent) => {
+      const latlng = e.latlng;
+      const lat = latlng.lat;
+      const lng = latlng.lng;
+
+      // Check if point is within DTM bounds first
+      const withinBounds = isPointWithinBounds(lng, lat);
+      if (!withinBounds) {
+        setCursorElevation(null);
+        setMousePos(null); // Clear mouse position to hide tooltip
+        return;
+      }
+
+      // Update mouse position for tooltip (use screen coordinates)
+      const originalEvent = e.originalEvent as MouseEvent | undefined;
+      if (originalEvent) {
+        setMousePos({ x: originalEvent.clientX, y: originalEvent.clientY });
+      }
+
+      // Round coordinates to reduce cache misses (about 10m precision)
+      const roundedLat = Math.round(lat * 10000) / 10000;
+      const roundedLng = Math.round(lng * 10000) / 10000;
+      const cacheKey = `${roundedLat},${roundedLng}`;
+      
+      // Check cache first
+      if (elevationCacheRef.current.has(cacheKey)) {
+        const cachedElevation = elevationCacheRef.current.get(cacheKey);
+        setCursorElevation({
+          elevation: cachedElevation ?? null,
+          lat: lat,
+          lng: lng
+        });
+        return;
+      }
+
+      // Debounce elevation queries (increased to 200ms for better performance)
+      if (elevationQueryTimeoutRef.current) {
+        clearTimeout(elevationQueryTimeoutRef.current);
+      }
+
+      elevationQueryTimeoutRef.current = setTimeout(() => {
+        // Calculate elevation client-side for instant response
+        const elevation = calculateElevationAtPoint(lat, lng);
+        
+        // Cache the result
+        elevationCacheRef.current.set(cacheKey, elevation);
+        
+        // Limit cache size to prevent memory issues
+        if (elevationCacheRef.current.size > 1000) {
+          const firstKey = elevationCacheRef.current.keys().next().value;
+          if (firstKey !== undefined) {
+            elevationCacheRef.current.delete(firstKey);
+          }
+        }
+        
+        setCursorElevation({
+          elevation: elevation,
+          lat: lat,
+          lng: lng
+        });
+      }, 50); // Reduced debounce since calculation is instant
+    };
+
+    map.current.on('mousemove', handleMouseMove);
+
+    return () => {
+      if (map.current) {
+        map.current.off('mousemove', handleMouseMove);
+      }
+      if (elevationQueryTimeoutRef.current) {
+        clearTimeout(elevationQueryTimeoutRef.current);
+      }
+      setCursorElevation(null);
+      // Clear cache when info mode is disabled
+      elevationCacheRef.current.clear();
+    };
+  }, [isInfoMode, dtmSource, propClippedId, isPointWithinBounds, calculateElevationAtPoint]);
 
   // Update flight path on map
   useEffect(() => {
@@ -651,6 +1602,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
     // Remove existing markers
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
+
+    climbMarkersRef.current.forEach(marker => marker.remove());
+    climbMarkersRef.current = [];
 
     // Remove existing flight path lines
     if (flightPathLineRef.current) {
@@ -661,27 +1615,49 @@ const MapPanel: React.FC<MapPanelProps> = ({
       map.current.removeLayer(flightPathClickableLineRef.current);
       flightPathClickableLineRef.current = null;
     }
+    if (flightPathBufferRef.current) {
+      map.current.removeLayer(flightPathBufferRef.current);
+      flightPathBufferRef.current = null;
+    }
+
+    // Remove existing segment length labels
+    segmentLengthLabelsRef.current.forEach((label) => label.remove());
+    segmentLengthLabelsRef.current = [];
 
     if (flightPath.length === 0) return;
 
     // Convert coordinates to Leaflet format (lat, lng)
     const latlngs = flightPath.map(p => [p.lat, p.lng] as [number, number]);
 
+    // Add visual buffer line (footprint) - invisible but keeps size for clickable area calculation
+    flightPathBufferRef.current = L.polyline(latlngs, {
+      color: activeRouteColor,
+      weight: 20,
+      opacity: 0, // Hide the buffer as per user request
+      interactive: false,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(map.current);
+
     // Add invisible clickable line for line segment selection (wide stroke)
+    // We make this interactive and it will also cover the buffer area
     flightPathClickableLineRef.current = L.polyline(latlngs, {
       color: 'transparent',
-      weight: 20, // Wide invisible line for easier clicking
+      weight: 80,
       opacity: 0,
       interactive: true
     }).addTo(map.current);
 
     // Allow inserting a new vertex by clicking on a line segment.
-    // This works even in drawing mode, and stops propagation to avoid double-adding points.
+    // Only works when Shift+LeftClick is pressed.
     const handleClickableLineClick = (e: L.LeafletMouseEvent) => {
       const originalEvent = e.originalEvent as MouseEvent | undefined;
       if (originalEvent && originalEvent.button !== 0) return; // left-click only
       if (!dtmLoaded) return;
       if (isParallelLineMode) return;
+      
+      // Only insert points when Shift key is pressed
+      if (!originalEvent || !originalEvent.shiftKey) return;
 
       // If editing a point via "click to move", don't insert
       const currentEditingIndex =
@@ -716,7 +1692,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const lat = start.lat + closestT * (end.lat - start.lat);
 
       if (!isPointWithinBounds(lng, lat)) {
-        alert('Cannot add point outside DTM bounding box. Please select a point within the DTM extent.');
+        alert('נקודה חייבת להיות בתוך גבולות ה-DTM.');
         return;
       }
 
@@ -740,12 +1716,134 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     flightPathClickableLineRef.current.on('click', handleClickableLineClick);
 
-    // Add flight path line (will be on top)
+    // Add mousemove handler to flight path to sync with elevation profile
+    const handlePathMouseMove = (e: L.LeafletMouseEvent) => {
+      if (flightPath.length < 2) return;
+
+      const mousePt = { lng: e.latlng.lng, lat: e.latlng.lat };
+      let minSegDist = Infinity;
+      let hoveredDistance = 0;
+      let bestPoint = mousePt;
+
+      let currentCumulative = 0;
+      for (let i = 0; i < flightPath.length - 1; i++) {
+        const start = flightPath[i];
+        const end = flightPath[i + 1];
+        const segmentLen = calculateDistance(start, end);
+        const result = findClosestPointOnLine(mousePt, start, end);
+
+        if (result.distance < minSegDist) {
+          minSegDist = result.distance;
+          hoveredDistance = currentCumulative + result.t * segmentLen;
+          bestPoint = {
+            lng: start.lng + result.t * (end.lng - start.lng),
+            lat: start.lat + result.t * (end.lat - start.lat)
+          };
+        }
+        currentCumulative += segmentLen;
+      }
+
+      setMousePos({ x: (e as any).originalEvent.clientX, y: (e as any).originalEvent.clientY });
+      onPathPointHover(bestPoint, hoveredDistance);
+    };
+
+    flightPathClickableLineRef.current.on('mousemove', handlePathMouseMove);
+    flightPathClickableLineRef.current.on('mouseout', (e) => {
+      setMousePos(null);
+      const originalEvent = (e as any).originalEvent as MouseEvent;
+      const relatedTarget = originalEvent?.relatedTarget as HTMLElement;
+      if (relatedTarget && (relatedTarget.classList?.contains('flight-point-marker') || relatedTarget.closest?.('.flight-point-marker'))) {
+        return;
+      }
+      onPathPointHover(null);
+    });
+
+    // Add flight path line (will be on top visually)
     flightPathLineRef.current = L.polyline(latlngs, {
       color: activeRouteColor,
       weight: 3,
-      opacity: 0.8
+      opacity: 0.8,
+      interactive: false // Disable interaction to prevent flickering with the wide clickable layer
     }).addTo(map.current);
+
+    // Add segment length labels at midpoints
+    for (let i = 0; i < flightPath.length - 1; i++) {
+      const start = flightPath[i];
+      const end = flightPath[i + 1];
+      const distanceMeters = calculateDistance(start, end);
+      const midpointLat = (start.lat + end.lat) / 2;
+      const midpointLng = (start.lng + end.lng) / 2;
+
+      const bearingDeg = (calculateBearing(start, end) * 180) / Math.PI;
+      const normalizedBearing = ((bearingDeg % 360) + 360) % 360;
+      let displayAngle = normalizedBearing <= 270 ? bearingDeg - 90 : bearingDeg + 90;
+      // Add extra 180 degree rotation for azimuth between 180-270
+      if (normalizedBearing >= 180 && normalizedBearing <= 270) {
+        displayAngle += 180;
+      }
+
+      const labelIcon = L.divIcon({
+        className: 'segment-length-label',
+        html: `<span style="transform: translate(-50%, -50%) rotate(${displayAngle}deg);">${formatSegmentLength(distanceMeters)}</span>`
+      });
+
+      const labelMarker = L.marker([midpointLat, midpointLng], {
+        icon: labelIcon,
+        interactive: false,
+        zIndexOffset: 500
+      }).addTo(map.current!);
+
+      segmentLengthLabelsRef.current.push(labelMarker);
+    }
+
+    // Add climb markers (both start and end) with optional labels
+    climbMarkers.forEach((climb) => {
+      const isStart = climb.type === 'start';
+      const iconClass = isStart ? 'climb-marker-dot climb-marker-dot--start' : 'climb-marker-dot';
+      const iconHtml = isStart 
+        ? '<span class="climb-marker-dot__square"></span>'
+        : '<span class="climb-marker-dot__circle"></span>';
+
+      const dotIcon = L.divIcon({
+        className: iconClass,
+        html: iconHtml,
+        iconSize: [16, 16],
+        iconAnchor: [8, 8]
+      });
+
+      const dotMarker = L.marker([climb.lat, climb.lng], {
+        icon: dotIcon,
+        interactive: false,
+        zIndexOffset: 620
+      }).addTo(map.current!);
+
+      climbMarkersRef.current.push(dotMarker);
+
+      // Only show labels for end markers
+      if (showClimbLabels && !isStart && climb.label) {
+        const labelIcon = L.divIcon({
+          className: 'climb-marker-label',
+          html: `<span class="climb-marker-label__text">${climb.label}</span>`,
+          iconSize: [1, 1],
+          iconAnchor: [0, -4]
+        });
+
+        const labelMarker = L.marker([climb.lat, climb.lng], {
+          icon: labelIcon,
+          interactive: false,
+          zIndexOffset: 610
+        }).addTo(map.current!);
+
+        climbMarkersRef.current.push(labelMarker);
+      }
+    });
+
+    // Force initial update of buffer weight
+    setTimeout(() => {
+      if (map.current) {
+        map.current.fire('zoomend');
+      }
+    }, 100);
 
     // Update cursor style for clickable line layer when in parallel line mode
     if (isParallelLineMode && flightPathClickableLineRef.current) {
@@ -780,17 +1878,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
       el.addEventListener('mousedown', (e) => {
         // Only handle left mouse button (button 0)
         if (e.button !== 0) return;
-        
+
         e.preventDefault();
         e.stopPropagation();
-        
+
         // Start left-click drag mode
         isDraggingWithLeftClick = true;
         lastValidPosition = [point.lat, point.lng];
         el.style.cursor = 'grabbing';
         el.classList.add('is-dragging');
         marker.setZIndexOffset(1000);
-        
+
         // Prevent all map interactions while dragging
         if (map.current) {
           map.current.dragging.disable();
@@ -816,7 +1914,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Handle mouse move to update marker position during drag
       const handleMouseMove = (e: MouseEvent) => {
         if (!isDraggingWithLeftClick || !map.current) return;
-        
+
         e.preventDefault();
         e.stopPropagation();
 
@@ -824,12 +1922,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const latlng = map.current.mouseEventToLatLng(e as any);
         const lng = latlng.lng;
         const lat = latlng.lat;
-        
+
         // Check if point is within DTM bounds
         if (!isPointWithinBounds(lng, lat)) {
           return; // Don't update if outside bounds
         }
-        
+
         // Update marker position
         marker.setLatLng([lat, lng]);
         lastValidPosition = [lat, lng];
@@ -838,7 +1936,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Handle mouse up to end drag
       const handleMouseUp = (e: MouseEvent) => {
         if (!isDraggingWithLeftClick) return;
-        
+
         e.preventDefault();
         e.stopPropagation();
 
@@ -850,18 +1948,55 @@ const MapPanel: React.FC<MapPanelProps> = ({
           const dropLat = dropLatLng.lat;
 
           if (isPointWithinBounds(dropLng, dropLat)) {
+            // Check if point position actually changed
+            const positionChanged = Math.abs(dropLng - point.lng) > 1e-9 || Math.abs(dropLat - point.lat) > 1e-9;
+            
+            // If position changed and there are climb points, show warning
+            if (positionChanged && climbRequests.length > 0) {
+              const confirmed = window.confirm(
+                'אזהרה: עריכת מיקום הנקודה תמחק את נקודות העלייה במסלול הרלוונטי.\n\nהאם אתה בטוח שברצונך להמשיך?'
+              );
+              
+              if (!confirmed) {
+                // User cancelled - reset marker to original position
+                marker.setLatLng([point.lat, point.lng]);
+                lastValidPosition = [point.lat, point.lng];
+                isDraggingWithLeftClick = false;
+                el.style.cursor = 'pointer';
+                el.classList.remove('is-dragging');
+                marker.setZIndexOffset(0);
+                
+                // Re-enable all map interactions
+                if (map.current) {
+                  map.current.dragging.enable();
+                  map.current.touchZoom.enable();
+                  map.current.doubleClickZoom.enable();
+                  map.current.scrollWheelZoom.enable();
+                  map.current.boxZoom.enable();
+                  map.current.keyboard.enable();
+                }
+                
+                // Set flag to prevent map click handler from creating a new point
+                justFinishedDraggingRef.current = true;
+                setTimeout(() => {
+                  justFinishedDraggingRef.current = false;
+                }, 100);
+                return;
+              }
+            }
+            
             marker.setLatLng([dropLat, dropLng]);
             lastValidPosition = [dropLat, dropLng];
             // Update React state ONCE at the end to avoid re-rendering/remounting markers mid-drag
             onUpdatePoint(index, { lng: dropLng, lat: dropLat, height: point.height });
           }
         }
-        
+
         isDraggingWithLeftClick = false;
         el.style.cursor = 'pointer';
         el.classList.remove('is-dragging');
         marker.setZIndexOffset(0);
-        
+
         // Re-enable all map interactions
         if (map.current) {
           map.current.dragging.enable();
@@ -871,21 +2006,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
           map.current.boxZoom.enable();
           map.current.keyboard.enable();
         }
-        
+
         // Validate final position
         const finalLatLng = marker.getLatLng();
         if (!isPointWithinBounds(finalLatLng.lng, finalLatLng.lat)) {
           // Reset to last valid position if outside bounds
           marker.setLatLng(lastValidPosition);
           onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
-          alert('Cannot move point outside DTM bounding box. Point has been reset to the previous valid position.');
+          alert('לא ניתן להזיז נקודה מחוץ לתיבת התוחם של ה-DTM. הנקודה אופסה למיקום החוקי הקודם.');
         }
+
+        // Set flag to prevent map click handler from creating a new point
+        justFinishedDraggingRef.current = true;
+        // Reset the flag after a short delay to allow the click event to be ignored
+        setTimeout(() => {
+          justFinishedDraggingRef.current = false;
+        }, 100);
       };
 
       // Add event listeners to document for mouse move and up
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
-      
+
       // Store cleanup function
       marker.on('remove', () => {
         document.removeEventListener('mousemove', handleMouseMove);
@@ -897,7 +2039,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
         onPathPointHover(point);
       });
 
-      el.addEventListener('mouseleave', () => {
+      el.addEventListener('mouseleave', (e) => {
+        const relatedTarget = (e as any).relatedTarget as HTMLElement;
+        if (relatedTarget && (relatedTarget.classList?.contains('leaflet-interactive') || relatedTarget.tagName === 'path')) {
+          // Standard check for Leaflet: if we move to the line, don't clear
+          // This helps avoid flickering when transitioning between marker and line
+          // return; // But we need to clear the marker-specific hover state? 
+          // Actually let's just clear, the mousemove on line will pick it up.
+        }
         hoveredPointRef.current = null;
         onPathPointHover(null);
       });
@@ -920,8 +2069,116 @@ const MapPanel: React.FC<MapPanelProps> = ({
     nominalFlightHeight,
     editingPointIndex,
     externalEditPointIndex,
-    activeRouteColor
+    activeRouteColor,
+    climbMarkers,
+    showClimbLabels
   ]);
+
+  // Handle zoom-dependent buffer width
+  useEffect(() => {
+    if (!map.current) return;
+
+    const updateWeights = () => {
+      if (!map.current || !flightPathBufferRef.current || !flightPathClickableLineRef.current) return;
+
+      const center = map.current.getCenter();
+
+      // Calculate pixels per meter at current zoom and latitude
+      // We use a small offset to get local scale
+      const latlng1 = center;
+      const latlng2 = L.latLng(center.lat, center.lng + 0.01);
+      const distanceMeters = latlng1.distanceTo(latlng2);
+      if (distanceMeters === 0) return;
+
+      const p1 = map.current.latLngToLayerPoint(latlng1);
+      const p2 = map.current.latLngToLayerPoint(latlng2);
+      const pixels = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+      const pixelsPerMeter = pixels / distanceMeters;
+
+      // LiDAR footprint width = 2 * H * tan(FOV/2)
+      const bufferWidthMeters = 2 * nominalFlightHeight * Math.tan((fovDegrees / 2) * Math.PI / 180);
+      const weightPixels = bufferWidthMeters * pixelsPerMeter;
+
+      flightPathBufferRef.current.setStyle({ weight: weightPixels });
+      // Clickable area should be at least as wide as the buffer, with a generous minimum for usability
+      // Increased to 80px for a very smooth "catch" area
+      flightPathClickableLineRef.current.setStyle({ weight: Math.max(weightPixels, 80) });
+    };
+
+    map.current.on('zoomend', updateWeights);
+    map.current.on('moveend', updateWeights);
+
+    // Initial update
+    const timer = setTimeout(updateWeights, 150);
+
+    return () => {
+      clearTimeout(timer);
+      if (map.current) {
+        map.current.off('zoomend', updateWeights);
+        map.current.off('moveend', updateWeights);
+      }
+    };
+  }, [nominalFlightHeight, fovDegrees, flightPath]);
+
+  // Render suggested parallel lines based on mission parameters
+  useEffect(() => {
+    if (!map.current) return;
+
+    // Clear previous suggestion overlays
+    suggestedLinesRef.current.forEach((line) => {
+      map.current?.removeLayer(line);
+    });
+    suggestedLinesRef.current = [];
+
+    if (flightPath.length < 2) return;
+
+    const safeOverlap = Math.max(0, Math.min(overlapPercentage, 99.9));
+    const overlapFraction = safeOverlap / 100;
+    const safeFov = Math.max(1, Math.min(fovDegrees, 179.9));
+    const fovRadians = (safeFov * Math.PI) / 180;
+    const spacingFactor = 1 - overlapFraction;
+
+    if (!(spacingFactor > 0) || !(fovRadians > 0)) return;
+
+    for (let i = 0; i < flightPath.length - 1; i++) {
+      const start = flightPath[i];
+      const end = flightPath[i + 1];
+      const startHeight = start.height ?? nominalFlightHeight;
+      const endHeight = end.height ?? nominalFlightHeight;
+      const avgHeight = (startHeight + endHeight) / 2;
+
+      // Calculate half-width based on user request (height * tan(fov/2))
+      const swathWidth = avgHeight * Math.tan(fovRadians / 2);
+      const spacing = swathWidth * spacingFactor;
+
+      if (!Number.isFinite(spacing) || spacing <= 0) continue;
+
+      [spacing, -spacing].forEach((offset) => {
+        const [parallelStart, parallelEnd] = calculateParallelLine(start, end, offset);
+        const suggestion = L.polyline(
+          [
+            [parallelStart.lat, parallelStart.lng],
+            [parallelEnd.lat, parallelEnd.lng]
+          ],
+          {
+            color: activeRouteColor,
+            weight: 2,
+            opacity: 0.25,
+            dashArray: '4 8',
+            interactive: false
+          }
+        ).addTo(map.current!);
+
+        suggestedLinesRef.current.push(suggestion);
+      });
+    }
+    return () => {
+      suggestedLinesRef.current.forEach((line) => {
+        map.current?.removeLayer(line);
+      });
+      suggestedLinesRef.current = [];
+    };
+  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight, activeRouteColor]);
 
   // Render passive polylines for non-active routes
   useEffect(() => {
@@ -953,7 +2210,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           color: route.color,
           weight: 3,
           opacity: 0.6,
-          dashArray: '6 6'
+          dashArray: '6 6',
+          interactive: false
         }).addTo(map.current!);
       }
     });
@@ -966,6 +2224,54 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, [routes, activeRouteId]);
 
+  // Auto-fit map bounds to show all routes when routes are imported/added
+  const previousRoutesCountRef = useRef<number>(0);
+  useEffect(() => {
+    if (!map.current) return;
+    
+    const currentRoutesCount = routes.filter(route => route.visible && route.points.length >= 2).length;
+    
+    // Only fit bounds when new routes are added (count increases)
+    // Skip if routes count decreased or stayed the same (user might be editing)
+    if (currentRoutesCount <= previousRoutesCountRef.current) {
+      previousRoutesCountRef.current = currentRoutesCount;
+      return;
+    }
+    
+    previousRoutesCountRef.current = currentRoutesCount;
+    
+    // Collect all visible routes (active + passive)
+    const visibleRoutes = routes.filter(route => route.visible && route.points.length >= 2);
+    if (visibleRoutes.length === 0) return;
+
+    // Collect all coordinates from all visible routes
+    const allCoordinates: L.LatLng[] = [];
+    visibleRoutes.forEach(route => {
+      route.points.forEach(point => {
+        allCoordinates.push(L.latLng(point.lat, point.lng));
+      });
+    });
+
+    if (allCoordinates.length === 0) return;
+
+    // Create a bounds group and fit map to show all routes
+    // Use a small delay to ensure routes are rendered first
+    setTimeout(() => {
+      if (!map.current) return;
+      try {
+        const bounds = L.latLngBounds(allCoordinates);
+        // Add padding to the bounds
+        map.current.fitBounds(bounds, { 
+          padding: [50, 50],
+          maxZoom: 18 // Don't zoom in too much
+        });
+        console.log('MapPanel: Fitted bounds to show', visibleRoutes.length, 'route(s)');
+      } catch (error) {
+        console.warn('Failed to fit bounds to routes:', error);
+      }
+    }, 100);
+  }, [routes, activeRouteId]);
+
   // Update hovered elevation point marker
   useEffect(() => {
     if (!map.current) return;
@@ -976,8 +2282,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       hoveredElevationMarkerRef.current = null;
     }
 
-    // Add new marker if there's a hovered elevation point
-    if (hoveredElevationPoint) {
+    // Add new marker if there's a hovered elevation point (from either map or profile)
+    if (hoveredElevationPoint && (hoverSource === 'map' || hoverSource === 'profile')) {
       const icon = L.divIcon({
         className: 'hovered-elevation-marker',
         html: '<div style="background-color: #9B59B6; width: 14px; height: 14px; border-radius: 50%; border: 2px solid black; box-shadow: 0 0 6px rgba(155,89,182,0.8);"></div>',
@@ -987,10 +2293,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       hoveredElevationMarkerRef.current = L.marker(
         [hoveredElevationPoint.latitude, hoveredElevationPoint.longitude],
-        { icon }
+        {
+          icon,
+          interactive: false // Disable interaction on the hover dot to prevent interaction dead-zones
+        }
       ).addTo(map.current);
     }
-  }, [hoveredElevationPoint]);
+  }, [hoveredElevationPoint, hoverSource]);
 
   // Exit drawing mode if DTM is unloaded
   useEffect(() => {
@@ -1025,11 +2334,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (!dtmTransparencyControlRef.current || !map.current) return;
 
     const element = dtmTransparencyControlRef.current;
-    
+
     // Use Leaflet's built-in methods to prevent map interactions
     L.DomEvent.disableClickPropagation(element);
     L.DomEvent.disableScrollPropagation(element);
-    
+
     // Prevent drag events
     L.DomEvent.on(element, 'mousedown', L.DomEvent.stopPropagation);
     L.DomEvent.on(element, 'mouseup', L.DomEvent.stopPropagation);
@@ -1080,15 +2389,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
       setDtmLoaded(false); // Reset loading state when starting to load
       setIsDtmProcessing(true);
       try {
-        // Extract filename from path
-        const filename = dtmSource.split('/').pop();
-        if (!filename) {
-          setIsDtmProcessing(false);
-          return;
+        // Check if dtmSource is a clipped DTM API path or a filename
+        let rasterUrl: string;
+        if (dtmSource.startsWith('/api/dtm/clipped/')) {
+          // For clipped DTMs, dtmSource is already the API endpoint path (e.g., /api/dtm/clipped/{clippedId}/raster)
+          rasterUrl = dtmSource;
+          console.log('Loading clipped DTM from API path:', rasterUrl);
+        } else {
+          // For uploaded DTMs, extract filename and construct API path
+          const filename = dtmSource.split('/').pop();
+          if (!filename) {
+            setIsDtmProcessing(false);
+            return;
+          }
+          rasterUrl = `/api/dtm/${filename}/raster`;
+          console.log('Loading uploaded DTM from filename:', filename, 'API path:', rasterUrl);
         }
 
         // Fetch raster data
-        const response = await fetch(`/api/dtm/${filename}/raster`);
+        const response = await fetch(rasterUrl);
         if (!response.ok) {
           const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
           throw new Error(errorData.error || `Failed to load DTM data: ${response.status}`);
@@ -1105,26 +2424,32 @@ const MapPanel: React.FC<MapPanelProps> = ({
         });
 
         const { width, height, data, min, max, bounds, isProjected, epsg, crs } = rasterData;
-        
+
         if (!data || !Array.isArray(data) || data.length === 0) {
           throw new Error('Invalid DTM data: empty or invalid data array');
         }
-        
+
         if (!bounds || !Array.isArray(bounds) || bounds.length !== 4) {
           throw new Error('Invalid DTM bounds');
         }
-        
+
         // Transform projected coordinates to WGS84 (lat/lon) if needed
+        // Note: Clipped DTMs already have bounds in WGS84 (transformed by backend), so skip transformation
+        const isClippedDtm = dtmSource.startsWith('/api/dtm/clipped/');
         let transformedBounds = bounds;
-        
-        if (isProjected) {
+
+        if (isClippedDtm) {
+          console.log('Clipped DTM - bounds already in WGS84 (transformed by backend), skipping transformation');
+        }
+
+        if (isProjected && !isClippedDtm) {
           console.log('DTM uses projected coordinates. Attempting coordinate transformation...');
           console.log('EPSG Code:', epsg);
           console.log('CRS Info:', crs);
-          
+
           // Try to determine source projection from EPSG code
           let sourceProj: string | null = null;
-          
+
           if (epsg) {
             // Use the EPSG code directly
             sourceProj = `EPSG:${epsg}`;
@@ -1134,48 +2459,59 @@ const MapPanel: React.FC<MapPanelProps> = ({
             sourceProj = `EPSG:${crs.projectedCSType}`;
             console.log('Using source projection from CRS:', sourceProj);
           }
-          
+
           if (!sourceProj) {
             // Default to UTM Zone 36N (EPSG:32636) when no coordinate system is detected
             sourceProj = 'EPSG:32636';
             console.warn('Could not determine EPSG code from GeoTIFF metadata.');
             console.warn('Assuming UTM Zone 36N (EPSG:32636) as default coordinate system.');
           }
-          
+
           if (sourceProj) {
             try {
               // Transform bounds from projected to WGS84
               const [minX, minY, maxX, maxY] = bounds;
-              
+
               console.log(`Transforming from ${sourceProj} to EPSG:4326 (WGS84)...`);
-              
+
               // Transform all four corners
               const topLeft = proj4(sourceProj, 'EPSG:4326', [minX, maxY]);
               const topRight = proj4(sourceProj, 'EPSG:4326', [maxX, maxY]);
               const bottomRight = proj4(sourceProj, 'EPSG:4326', [maxX, minY]);
               const bottomLeft = proj4(sourceProj, 'EPSG:4326', [minX, minY]);
-              
+
               // Create new bounds from transformed coordinates
               const transformedMinX = Math.min(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
               const transformedMinY = Math.min(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
               const transformedMaxX = Math.max(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
               const transformedMaxY = Math.max(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
-              
+
               transformedBounds = [transformedMinX, transformedMinY, transformedMaxX, transformedMaxY];
-              
+
               console.log('Original bounds (projected):', bounds);
               console.log('Transformed bounds (WGS84):', transformedBounds);
               console.log('✅ Coordinate transformation successful!');
             } catch (transformError) {
               console.error('Error transforming coordinates:', transformError);
               console.error('Source projection:', sourceProj);
-              alert(`Failed to transform coordinates: ${transformError instanceof Error ? transformError.message : 'Unknown error'}\n\nSource projection: ${sourceProj}\n\nPlease check that the EPSG code in your GeoTIFF is correct.`);
+              alert(`Transform failed: ${transformError instanceof Error ? transformError.message : 'Unknown error'}\nSource projection: ${sourceProj}\nCheck the EPSG in your GeoTIFF.`);
               throw new Error(`Coordinate transformation failed: ${transformError instanceof Error ? transformError.message : 'Unknown error'}`);
             }
           }
         } else {
           console.log('DTM already uses geographic coordinates (WGS84) - no transformation needed');
         }
+
+        // Store raster data for client-side elevation calculation
+        dtmRasterDataRef.current = {
+          width,
+          height,
+          data,
+          bounds: transformedBounds,
+          isProjected: isProjected || false,
+          crs: crs || (epsg ? `EPSG:${epsg}` : null),
+          noDataValue: rasterData.noDataValue ?? null
+        };
 
         // Create canvas to render elevation as image
         const canvas = document.createElement('canvas');
@@ -1192,18 +2528,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const noDataValue = rasterData.noDataValue;
         for (let i = 0; i < data.length; i++) {
           let elevation = data[i];
-          
+
           // Skip no-data values
           if (noDataValue !== null && noDataValue !== undefined && elevation === noDataValue) {
             elevation = min; // Use min for no-data to render as lowest elevation
           }
-          
+
           if (isNaN(elevation) || !isFinite(elevation)) {
             elevation = min;
           }
-          
+
           const normalized = (elevation - min) / range;
-          
+
           // Grayscale: black (low) -> white (high)
           // Convert normalized value (0-1) to grayscale (0-255)
           const gray = Math.floor(normalized * 255);
@@ -1296,7 +2632,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             console.error('Error details:', sourceError);
             setDtmLoaded(false);
             setIsDtmProcessing(false);
-            alert(`Failed to add DTM to map: ${sourceError instanceof Error ? sourceError.message : 'Unknown error'}\n\nCheck browser console for details.`);
+            alert(`Can't add DTM: ${sourceError instanceof Error ? sourceError.message : 'Unknown error'}\nSee console for details.`);
           }
         };
 
@@ -1305,7 +2641,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         img.onload = () => {
           console.log('DTM image loaded successfully, dimensions:', img.width, 'x', img.height);
           console.log('Image src length:', img.src.length);
-          
+
           // Wait for map to be fully loaded
           if (!map.current) {
             console.error('Map not initialized');
@@ -1319,7 +2655,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           console.error('Error loading DTM image:', error);
           setDtmLoaded(false);
           setIsDtmProcessing(false);
-          alert('Failed to create DTM image from canvas. Check console for details.');
+          alert('לא ניתן ליצור תמונת DTM. ראה קונסולה.');
         };
 
         const dataUrl = canvas.toDataURL();
@@ -1330,10 +2666,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
         img.src = dataUrl;
       } catch (error) {
         console.error('Error loading DTM:', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        const errorMessage = error instanceof Error ? error.message : 'שגיאה לא ידועה';
         setDtmLoaded(false);
         setIsDtmProcessing(false);
-        alert(`Failed to load DTM: ${errorMessage}\n\nPlease ensure the file is a valid GeoTIFF with elevation data.`);
+        alert(`טעינת DTM נכשלה: ${errorMessage}\nוודא שהקובץ הוא GeoTIFF תקין.`);
       }
     };
 
@@ -1351,29 +2687,29 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const hasValidExtension = allowedExtensions.some((ext) => lowerName.endsWith(ext));
 
     if (!hasValidExtension) {
-      alert('Please upload a GeoTIFF file (.tif, .tiff, .geotiff).');
+      alert('העלה קובץ GeoTIFF (.tif/.tiff/.geotiff).');
       resetFileInput();
       return;
     }
 
     if (isUploading) {
-      alert('A DTM upload is already in progress. Please wait for it to finish.');
+      alert('העלאה מתבצעת. אנא המתן.');
       resetFileInput();
       return;
     }
 
-    // Check file size (199 MB = 199 * 1024 * 1024 bytes)
-    const maxSizeBytes = 199 * 1024 * 1024; // 199 MB
+    // Check file size (2 GB = 2048 * 1024 * 1024 bytes)
+    const maxSizeBytes = 2048 * 1024 * 1024; // 2 GB
     if (file.size > maxSizeBytes) {
-      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
-      alert(`File size (${fileSizeMB} MB) exceeds the maximum allowed size of 199 MB. Please use a smaller DTM file.`);
+      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(0);
+      alert(`הקובץ הוא ${fileSizeMB} MB (מקסימום 2048). השתמש ב-DTM קטן יותר.`);
       resetFileInput();
       return;
     }
 
     // Prevent uploading if a DTM is already loaded
     if (dtmLoaded) {
-      alert('A DTM is already loaded. Please unload it first before loading a new one.');
+      alert('פרוק את ה-DTM הנוכחי לפני טעינת אחר.');
       resetFileInput();
       return;
     }
@@ -1409,7 +2745,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             }
           } catch (parseError) {
             console.error('Error parsing response:', parseError);
-            alert('Failed to parse server response');
+            alert('ניתוח תגובת השרת נכשל');
           }
         } else {
           try {
@@ -1431,7 +2767,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Handle errors
       xhr.addEventListener('error', () => {
         console.error('Error uploading DTM:', xhr.statusText);
-        alert('Failed to upload DTM file');
+        alert('העלאת קובץ DTM נכשלה');
       });
 
       // Handle abort
@@ -1447,7 +2783,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       xhr.send(formData);
     } catch (error) {
       console.error('Error uploading DTM:', error);
-      alert('Failed to upload DTM file');
+      alert('העלאת קובץ DTM נכשלה');
       setIsUploading(false);
       setUploadProgress(0);
       resetFileInput();
@@ -1492,7 +2828,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     e.stopPropagation();
     setIsDragOver(false);
     if (isUploading) {
-      alert('A DTM upload is already in progress. Please wait for it to finish.');
+      alert('העלאה מתבצעת. אנא המתן.');
       return;
     }
     const file = e.dataTransfer?.files?.[0];
@@ -1502,7 +2838,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleFitToDTM = () => {
     if (!map.current || !dtmBounds) return;
-    
+
     const [minX, minY, maxX, maxY] = dtmBounds;
     try {
       const imageBounds: L.LatLngBoundsExpression = [
@@ -1523,7 +2859,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   };
 
   const handleDeleteAllPoints = () => {
-    if (window.confirm('Are you sure you want to delete all points?')) {
+    if (window.confirm('למחוק את כל הנקודות?')) {
       onPathChange([]);
     }
   };
@@ -1536,82 +2872,38 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const handleSetFlightHeight = (pointIndex: number) => {
     const currentPoint = flightPath[pointIndex];
     const currentHeight = currentPoint.height ?? nominalFlightHeight;
-    const heightInput = prompt(`Enter flight height (AGL in meters) for point ${pointIndex + 1}:`, currentHeight.toString());
-    
-    if (heightInput !== null) {
-      const height = parseFloat(heightInput);
-      if (!isNaN(height) && height >= 0) {
-        onUpdatePoint(pointIndex, {
-          ...currentPoint,
-          height
-        });
-      } else {
-        alert('Invalid height. Please enter a positive number.');
-      }
-    }
+    setDialog({
+      type: 'height',
+      title: `גובה נקודה ${pointIndex + 1}`
+    });
+    setDialogValues({ height: currentHeight.toString(), pointIndex: pointIndex.toString() });
+    setDialogError(null);
   };
 
   const handleCreatePointFromAzimuthDistance = () => {
     if (flightPath.length === 0) {
-      alert('Please add at least one point first before creating a point from azimuth and distance.');
+      alert('הוסף נקודה תחילה.');
       return;
     }
 
     if (!dtmLoaded) {
-      alert('Please load a DTM first.');
+      alert('טען DTM תחילה.');
       return;
     }
 
-    const lastPoint = flightPath[flightPath.length - 1];
-    
-    // Prompt for azimuth (in degrees, 0-360, measured from north)
-    const azimuthInput = prompt(
-      `Enter azimuth in degrees (0-360, measured from north):\n` +
-      `0° = North, 90° = East, 180° = South, 270° = West`,
-      '0'
-    );
-    
-    if (azimuthInput === null) return;
-    
-    const azimuth = parseFloat(azimuthInput);
-    if (isNaN(azimuth) || azimuth < 0 || azimuth >= 360) {
-      alert('Invalid azimuth. Please enter a number between 0 and 360.');
-      return;
-    }
-
-    // Prompt for distance (in meters)
-    const distanceInput = prompt('Enter distance in meters:', '100');
-    
-    if (distanceInput === null) return;
-    
-    const distance = parseFloat(distanceInput);
-    if (isNaN(distance) || distance <= 0) {
-      alert('Invalid distance. Please enter a positive number.');
-      return;
-    }
-
-    // Convert azimuth (degrees from north) to bearing (radians from north)
-    // Azimuth and bearing are the same, just need to convert to radians
-    const bearing = (azimuth * Math.PI) / 180;
-
-    // Calculate new point
-    const newPoint = calculateDestination(lastPoint, bearing, distance);
-
-    // Check if new point is within DTM bounds
-    if (!isPointWithinBounds(newPoint.lng, newPoint.lat)) {
-      alert('The calculated point is outside DTM bounding box. Please use a smaller distance or different azimuth.');
-      return;
-    }
-
-    // Add the new point
-    onAddPoint(newPoint);
+    setDialog({
+      type: 'azimuthDistance',
+      title: 'אזימוט + מרחק'
+    });
+    setDialogValues({ azimuth: '0', distance: '100' });
+    setDialogError(null);
   };
 
   // Handle DTM opacity change
   const handleDtmOpacityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newOpacity = parseFloat(e.target.value);
     setDtmOpacity(newOpacity);
-    
+
     // Update the DTM overlay opacity if it exists
     if (dtmImageOverlayRef.current) {
       dtmImageOverlayRef.current.setOpacity(newOpacity);
@@ -1620,189 +2912,46 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleCreatePointFromCoordinates = () => {
     if (!dtmLoaded) {
-      alert('Please load a DTM first.');
+      alert('טען DTM תחילה.');
       return;
     }
 
-    // Prompt user to choose coordinate system
-    const coordTypeInput = prompt(
-      `Select coordinate system:\n` +
-      `1 - Geographic (Lat/Lng)\n` +
-      `2 - UTM\n\n` +
-      `Enter 1 or 2:`,
-      '1'
-    );
-
-    if (coordTypeInput === null) return;
-
-    const coordType = coordTypeInput.trim();
-    let lng: number, lat: number;
-
-    if (coordType === '1') {
-      // Geographic coordinates (Lat/Lng)
-      const lngInput = prompt('Enter Longitude (decimal degrees, -180 to 180):', '');
-      if (lngInput === null) return;
-
-      const latInput = prompt('Enter Latitude (decimal degrees, -90 to 90):', '');
-      if (latInput === null) return;
-
-      lng = parseFloat(lngInput);
-      lat = parseFloat(latInput);
-
-      if (isNaN(lng) || isNaN(lat)) {
-        alert('Invalid coordinates. Please enter valid numbers.');
-        return;
-      }
-
-      if (lng < -180 || lng > 180) {
-        alert('Invalid longitude. Please enter a value between -180 and 180.');
-        return;
-      }
-
-      if (lat < -90 || lat > 90) {
-        alert('Invalid latitude. Please enter a value between -90 and 90.');
-        return;
-      }
-    } else if (coordType === '2') {
-      // UTM coordinates
-      const eastingInput = prompt('Enter UTM Easting (meters):', '');
-      if (eastingInput === null) return;
-
-      const northingInput = prompt('Enter UTM Northing (meters):', '');
-      if (northingInput === null) return;
-
-      const zoneInput = prompt('Enter UTM Zone (1-60):', '36');
-      if (zoneInput === null) return;
-
-      const hemisphereInput = prompt('Enter Hemisphere (N for North, S for South):', 'N');
-      if (hemisphereInput === null) return;
-
-      const easting = parseFloat(eastingInput);
-      const northing = parseFloat(northingInput);
-      const zone = parseInt(zoneInput, 10);
-      const hemisphere = hemisphereInput.trim().toUpperCase();
-
-      if (isNaN(easting) || isNaN(northing) || isNaN(zone)) {
-        alert('Invalid UTM coordinates. Please enter valid numbers.');
-        return;
-      }
-
-      if (zone < 1 || zone > 60) {
-        alert('Invalid UTM zone. Please enter a value between 1 and 60.');
-        return;
-      }
-
-      if (hemisphere !== 'N' && hemisphere !== 'S') {
-        alert('Invalid hemisphere. Please enter N for North or S for South.');
-        return;
-      }
-
-      // Convert UTM to WGS84 using proj4
-      try {
-        // Define UTM projection using proj4 string format
-        // UTM zones: central meridian at 6° intervals, false easting 500,000m, false northing 10,000,000m for Southern hemisphere
-        const utmProjString = `+proj=utm +zone=${zone} +${hemisphere === 'N' ? 'north' : 'south'} +datum=WGS84 +units=m +no_defs`;
-        
-        // Define WGS84 (EPSG:4326) projection
-        const wgs84Proj = '+proj=longlat +datum=WGS84 +no_defs';
-        
-        // Transform from UTM to WGS84
-        const [transformedLng, transformedLat] = proj4(utmProjString, wgs84Proj, [easting, northing]);
-        lng = transformedLng;
-        lat = transformedLat;
-        
-        console.log(`Converted UTM (Zone ${zone}${hemisphere}, ${easting}, ${northing}) to WGS84: (${lng}, ${lat})`);
-      } catch (transformError) {
-        console.error('Error transforming UTM coordinates:', transformError);
-        alert(`Failed to convert UTM coordinates: ${transformError instanceof Error ? transformError.message : 'Unknown error'}`);
-        return;
-      }
-    } else {
-      alert('Invalid selection. Please enter 1 for Geographic or 2 for UTM.');
-      return;
-    }
-
-    // Check if point is within DTM bounds
-    if (!isPointWithinBounds(lng, lat)) {
-      alert('The specified point is outside DTM bounding box. Please enter coordinates within the DTM extent.');
-      return;
-    }
-
-    // Create and add the new point
-    const newPoint: Coordinate = {
-      lng,
-      lat
-    };
-    onAddPoint(newPoint);
+    setDialog({
+      type: 'coordinates',
+      title: 'הוסף נקודה לפי קואורדינטות'
+    });
+    setDialogValues({
+      mode: 'geo',
+      lng: '',
+      lat: '',
+      easting: '',
+      northing: '',
+      zone: '36',
+      hemisphere: 'N'
+    });
+    setDialogError(null);
   };
 
   const handleAddUTurn = () => {
     if (!dtmLoaded) {
-      alert('Please load a DTM first.');
+      alert('טען DTM תחילה.');
       return;
     }
 
     if (flightPath.length < 2) {
-      alert('Please add at least two points first (so the U-turn can follow your current direction).');
+      alert('הוסף לפחות שתי נקודות תחילה.');
       return;
     }
 
-    const radiusInput = prompt('Enter U-turn radius in meters (positive = right, negative = left):', '50');
-    if (radiusInput === null) return;
-
-    const radius = parseFloat(radiusInput);
-    if (isNaN(radius) || radius === 0) {
-      alert('Invalid radius. Please enter a non-zero number.');
-      return;
-    }
-
-    const side: UTurnSide = radius > 0 ? 'R' : 'L';
-    const radiusMeters = Math.abs(radius);
-
-    const prev = flightPath[flightPath.length - 2];
-    const start = flightPath[flightPath.length - 1];
-
-    const numUTurnPoints = 10;
-    const maxStartEndDistance = radiusMeters * 2;
-    const distanceInput = prompt(
-      `Enter distance between U-turn start and end points in meters (max ${maxStartEndDistance.toFixed(2)}). End stays on the perpendicular line.`,
-      maxStartEndDistance.toString()
-    );
-    if (distanceInput === null) return;
-
-    const startEndDistance = parseFloat(distanceInput);
-    if (isNaN(startEndDistance) || startEndDistance <= 0) {
-      alert('Invalid distance. Please enter a positive number.');
-      return;
-    }
-
-    const clampedDistance = Math.min(startEndDistance, maxStartEndDistance);
-    if (startEndDistance > maxStartEndDistance) {
-      alert(`Distance reduced to ${maxStartEndDistance} meters (must be <= 2 x radius).`);
-    }
-
-    const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
-
-    if (pts.length !== numUTurnPoints) {
-      alert('Failed to generate U-turn points.');
-      return;
-    }
-
-    // Validate bounds (all points must be inside DTM extent)
-    const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
-    if (outOfBounds) {
-      alert('U-turn points fall outside the DTM bounding box. Try a smaller radius.');
-      return;
-    }
-
-    const startHeight = start.height;
-    const uTurnPoints: Coordinate[] =
-      startHeight !== undefined
-        ? pts.map(p => ({ ...p, height: startHeight }))
-        : pts;
-
-    // Add all points in one undoable action
-    onAddPoints(uTurnPoints);
+    setDialog({
+      type: 'uTurn',
+      title: 'הוסף פרסה'
+    });
+    setDialogValues({
+      radius: '50',
+      distance: '100'
+    });
+    setDialogError(null);
   };
 
   const currentBaseIndex = baseMaps.findIndex((entry) => entry.id === activeBaseMapId);
@@ -1810,8 +2959,403 @@ const MapPanel: React.FC<MapPanelProps> = ({
     ? baseMaps[(Math.max(currentBaseIndex, 0) + 1) % baseMaps.length]
     : null;
 
+  const handleDialogSubmit = () => {
+    if (!dialog) return;
+    setDialogError(null);
+
+    if (dialog.type === 'height') {
+      const target = dialogValues.height;
+      const height = target ? parseFloat(target) : NaN;
+      const index = parseInt(dialogValues.pointIndex || '0', 10);
+      if (isNaN(height) || height < 0) {
+        setDialogError('גובה חייב להיות >= 0.');
+        return;
+      }
+      const point = flightPath[index];
+      if (!point) {
+        setDialogError('נקודה לא נמצאה.');
+        return;
+      }
+      onUpdatePoint(index, { ...point, height });
+      resetDialog();
+      return;
+    }
+
+    if (dialog.type === 'azimuthDistance') {
+      const azimuth = parseFloat(dialogValues.azimuth || '');
+      const distance = parseFloat(dialogValues.distance || '');
+      if (isNaN(azimuth) || azimuth < 0 || azimuth >= 360) {
+        setDialogError('אזימוט חייב להיות 0-360.');
+        return;
+      }
+      if (isNaN(distance) || distance <= 0) {
+        setDialogError('מרחק חייב להיות > 0.');
+        return;
+      }
+      const lastPoint = flightPath[flightPath.length - 1];
+      const bearing = (azimuth * Math.PI) / 180;
+      const newPoint = calculateDestination(lastPoint, bearing, distance);
+      if (!isPointWithinBounds(newPoint.lng, newPoint.lat)) {
+        setDialogError('נקודה מחוץ ל-DTM.');
+        return;
+      }
+      onAddPoint(newPoint);
+      resetDialog();
+      return;
+    }
+
+    if (dialog.type === 'parallelOffset') {
+      const offset = parseFloat(dialogValues.offset || '');
+      const segmentIndex = parseInt(dialogValues.segmentIndex || '-1', 10);
+      if (isNaN(offset)) {
+        setDialogError('נדרש היסט.');
+        return;
+      }
+      if (segmentIndex < 0 || segmentIndex >= flightPath.length - 1) {
+        setDialogError('בחר מקטע שוב.');
+        return;
+      }
+      const segmentStart = flightPath[segmentIndex];
+      const segmentEnd = flightPath[segmentIndex + 1];
+      const [parallelStart, parallelEnd] = calculateParallelLine(
+        segmentStart,
+        segmentEnd,
+        offset
+      );
+      if (
+        isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
+        isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
+      ) {
+        onAddPoints([parallelEnd, parallelStart]);
+        setIsParallelLineMode(false);
+        resetDialog();
+      } else {
+        setDialogError('היסט יוצא מ-DTM.');
+      }
+      return;
+    }
+
+    if (dialog.type === 'coordinates') {
+      const mode = dialogValues.mode || 'geo';
+      let lng: number | null = null;
+      let lat: number | null = null;
+
+      if (mode === 'geo') {
+        lng = parseFloat(dialogValues.lng || '');
+        lat = parseFloat(dialogValues.lat || '');
+        if (isNaN(lng) || isNaN(lat)) {
+          setDialogError('הזן מספרים.');
+          return;
+        }
+        if (lng < -180 || lng > 180) {
+          setDialogError('קו אורך: -180..180.');
+          return;
+        }
+        if (lat < -90 || lat > 90) {
+          setDialogError('קו רוחב: -90..90.');
+          return;
+        }
+      } else {
+        const easting = parseFloat(dialogValues.easting || '');
+        const northing = parseFloat(dialogValues.northing || '');
+        const zone = parseInt(dialogValues.zone || '', 10);
+        const hemisphere = (dialogValues.hemisphere || 'N').toUpperCase();
+        if (isNaN(easting) || isNaN(northing) || isNaN(zone)) {
+          setDialogError('UTM: מספרים בלבד.');
+          return;
+        }
+        if (zone < 1 || zone > 60) {
+          setDialogError('אזור: 1-60.');
+          return;
+        }
+        if (hemisphere !== 'N' && hemisphere !== 'S') {
+          setDialogError('חצי כדור: N/S.');
+          return;
+        }
+        try {
+          const utmProjString = `+proj=utm +zone=${zone} +${hemisphere === 'N' ? 'north' : 'south'} +datum=WGS84 +units=m +no_defs`;
+          const wgs84Proj = '+proj=longlat +datum=WGS84 +no_defs';
+          const [transformedLng, transformedLat] = proj4(utmProjString, wgs84Proj, [easting, northing]);
+          lng = transformedLng;
+          lat = transformedLat;
+        } catch (transformError) {
+          console.error('Error transforming UTM coordinates:', transformError);
+          setDialogError('המרת UTM נכשלה.');
+          return;
+        }
+      }
+
+      if (lng === null || lat === null) {
+        setDialogError('קואורדינטות חסרות.');
+        return;
+      }
+
+      if (!isPointWithinBounds(lng, lat)) {
+        setDialogError('נקודה מחוץ ל-DTM.');
+        return;
+      }
+
+      onAddPoint({ lng, lat });
+      resetDialog();
+      return;
+    }
+
+    if (dialog.type === 'uTurn') {
+      const radius = parseFloat(dialogValues.radius || '');
+      const distance = parseFloat(dialogValues.distance || '');
+      if (isNaN(radius) || radius === 0) {
+        setDialogError('רדיוס חייב להיות שונה מאפס.');
+        return;
+      }
+      if (isNaN(distance) || distance <= 0) {
+        setDialogError('מרחק חייב להיות > 0.');
+        return;
+      }
+      const side: UTurnSide = radius > 0 ? 'R' : 'L';
+      const radiusMeters = Math.abs(radius);
+      const prev = flightPath[flightPath.length - 2];
+      const start = flightPath[flightPath.length - 1];
+      const numUTurnPoints = 10;
+      const maxStartEndDistance = radiusMeters * 2;
+      const clampedDistance = Math.min(distance, maxStartEndDistance);
+      if (distance > maxStartEndDistance) {
+        setDialogError(`מרחק מוגבל ל-${maxStartEndDistance}מ'.`);
+      }
+      const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
+      if (pts.length !== numUTurnPoints) {
+        setDialogError('לא ניתן לבנות פרסה.');
+        return;
+      }
+      const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
+      if (outOfBounds) {
+        setDialogError('פרסה מחוץ ל-DTM.');
+        return;
+      }
+      const startHeight = start.height;
+      const uTurnPoints: Coordinate[] =
+        startHeight !== undefined
+          ? pts.map(p => ({ ...p, height: startHeight }))
+          : pts;
+      onAddPoints(uTurnPoints);
+      resetDialog();
+    }
+  };
+
+  const renderDialogFields = () => {
+    if (!dialog) return null;
+    if (dialog.type === 'height') {
+      return (
+        <>
+          <label className="quick-modal__label" htmlFor="height-input">גובה (מ')</label>
+          <input
+            id="height-input"
+            type="number"
+            step="0.1"
+            value={dialogValues.height ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, height: e.target.value }))}
+            className="quick-modal__input"
+          />
+          <input type="hidden" value={dialogValues.pointIndex ?? ''} readOnly />
+        </>
+      );
+    }
+    if (dialog.type === 'azimuthDistance') {
+      return (
+        <>
+          <label className="quick-modal__label" htmlFor="azimuth-input">
+            אזימוט (0-360)
+          </label>
+          <input
+            id="azimuth-input"
+            type="number"
+            step="0.1"
+            value={dialogValues.azimuth ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, azimuth: e.target.value }))}
+            className="quick-modal__input"
+          />
+          <label className="quick-modal__label" htmlFor="distance-input">
+            מרחק (מ')
+          </label>
+          <input
+            id="distance-input"
+            type="number"
+            step="1"
+            value={dialogValues.distance ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, distance: e.target.value }))}
+            className="quick-modal__input"
+          />
+        </>
+      );
+    }
+    if (dialog.type === 'parallelOffset') {
+      return (
+        <>
+          <label className="quick-modal__label" htmlFor="offset-input">
+            היסט (מ')
+            <Tooltip tooltip="חיובי = ימינה, שלילי = שמאלה">
+              <span className="quick-modal__info" aria-label="מידע כיוון היסט">i</span>
+            </Tooltip>
+          </label>
+          <input
+            id="offset-input"
+            type="number"
+            step="1"
+            value={dialogValues.offset ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, offset: e.target.value }))}
+            className="quick-modal__input"
+          />
+        </>
+      );
+    }
+    if (dialog.type === 'coordinates') {
+      const mode = dialogValues.mode || 'geo';
+      return (
+        <>
+          <div className="quick-modal__segmented">
+            <button
+              type="button"
+              className={`quick-modal__pill ${mode === 'geo' ? 'active' : ''}`}
+              onClick={() => setDialogValues((prev) => ({ ...prev, mode: 'geo' }))}
+            >
+              קו רוחב/אורך
+            </button>
+            <button
+              type="button"
+              className={`quick-modal__pill ${mode === 'utm' ? 'active' : ''}`}
+              onClick={() => setDialogValues((prev) => ({ ...prev, mode: 'utm' }))}
+            >
+              UTM
+            </button>
+          </div>
+          {mode === 'geo' ? (
+            <>
+              <label className="quick-modal__label" htmlFor="lng-input">קו אורך</label>
+              <input
+                id="lng-input"
+                type="number"
+                step="0.000001"
+                value={dialogValues.lng ?? ''}
+                onChange={(e) => setDialogValues((prev) => ({ ...prev, lng: e.target.value }))}
+                className="quick-modal__input"
+              />
+              <label className="quick-modal__label" htmlFor="lat-input">קו רוחב</label>
+              <input
+                id="lat-input"
+                type="number"
+                step="0.000001"
+                value={dialogValues.lat ?? ''}
+                onChange={(e) => setDialogValues((prev) => ({ ...prev, lat: e.target.value }))}
+                className="quick-modal__input"
+              />
+            </>
+          ) : (
+            <>
+              <label className="quick-modal__label" htmlFor="easting-input">מזרחית (מ')</label>
+              <input
+                id="easting-input"
+                type="number"
+                step="1"
+                value={dialogValues.easting ?? ''}
+                onChange={(e) => setDialogValues((prev) => ({ ...prev, easting: e.target.value }))}
+                className="quick-modal__input"
+              />
+              <label className="quick-modal__label" htmlFor="northing-input">צפונית (מ')</label>
+              <input
+                id="northing-input"
+                type="number"
+                step="1"
+                value={dialogValues.northing ?? ''}
+                onChange={(e) => setDialogValues((prev) => ({ ...prev, northing: e.target.value }))}
+                className="quick-modal__input"
+              />
+              <div className="quick-modal__split">
+                <div>
+                  <label className="quick-modal__label" htmlFor="zone-input">אזור</label>
+                  <input
+                    id="zone-input"
+                    type="number"
+                    step="1"
+                    value={dialogValues.zone ?? ''}
+                    onChange={(e) => setDialogValues((prev) => ({ ...prev, zone: e.target.value }))}
+                    className="quick-modal__input"
+                  />
+                </div>
+                <div>
+                  <label className="quick-modal__label" htmlFor="hemisphere-input">חצי כדור</label>
+                  <input
+                    id="hemisphere-input"
+                    type="text"
+                    maxLength={1}
+                    value={dialogValues.hemisphere ?? 'N'}
+                    onChange={(e) => setDialogValues((prev) => ({ ...prev, hemisphere: e.target.value }))}
+                    className="quick-modal__input"
+                  />
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      );
+    }
+    if (dialog.type === 'uTurn') {
+      return (
+        <>
+          <label className="quick-modal__label" htmlFor="radius-input">
+            רדיוס (מ')
+            <Tooltip tooltip="חיובי = ימינה, שלילי = שמאלה">
+              <span className="quick-modal__info" aria-label="מידע כיוון רדיוס">i</span>
+            </Tooltip>
+          </label>
+          <input
+            id="radius-input"
+            type="number"
+            step="1"
+            value={dialogValues.radius ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, radius: e.target.value }))}
+            className="quick-modal__input"
+          />
+          <label className="quick-modal__label" htmlFor="distance-ut-input">מרווח (מ')</label>
+          <input
+            id="distance-ut-input"
+            type="number"
+            step="1"
+            value={dialogValues.distance ?? ''}
+            onChange={(e) => setDialogValues((prev) => ({ ...prev, distance: e.target.value }))}
+            className="quick-modal__input"
+          />
+        </>
+      );
+    }
+    return null;
+  };
+
   return (
     <div className="map-panel">
+      {dialog && (
+        <div className="quick-modal__backdrop" role="dialog" aria-modal="true">
+          <div className="quick-modal__card">
+            <div className="quick-modal__header">
+              <div className="quick-modal__title">{dialog.title}</div>
+              <button
+                type="button"
+                className="quick-modal__close"
+                onClick={resetDialog}
+                aria-label="סגירת חלון קלט"
+              >
+                ×
+              </button>
+            </div>
+            <div className="quick-modal__body">
+              {renderDialogFields()}
+              {dialogError && <div className="quick-modal__error">{dialogError}</div>}
+            </div>
+            <div className="quick-modal__actions">
+              <button type="button" className="btn btn-tertiary" onClick={resetDialog}>ביטול</button>
+              <button type="button" className="btn btn-primary" onClick={handleDialogSubmit}>החל</button>
+            </div>
+          </div>
+        </div>
+      )}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
@@ -1829,25 +3373,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
       )}
       {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex) !== null && (
         <div className="edit-mode-indicator">
-          Edit mode: Click on the map to move point {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex)! + 1}
+          מצב עריכה: לחץ על המפה כדי להזיז את נקודה {(externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex)! + 1}
         </div>
       )}
       {isParallelLineMode && (
         <div className="edit-mode-indicator">
-          Parallel Line mode: Click on a line segment to create a parallel line
+          לחץ על מקטע קו כדי ליצור קו מקביל
         </div>
       )}
       <div className="map-controls">
         <div className={`control-group routes-panel ${isRoutesPanelOpen ? 'open' : 'closed'}`}>
           <div className="routes-panel-header">
-            <span className="group-title">Routes</span>
+            <span className="group-title">מסלולים</span>
             <button
               type="button"
               className="btn btn-tertiary btn-compact"
               onClick={() => setIsRoutesPanelOpen((prev) => !prev)}
-              aria-label={isRoutesPanelOpen ? 'Collapse routes panel' : 'Expand routes panel'}
+              aria-label={isRoutesPanelOpen ? 'סגירת לוח המסלולים' : 'פתיחת לוח המסלולים'}
             >
-              {isRoutesPanelOpen ? 'Hide' : 'Show'}
+              {isRoutesPanelOpen ? 'הסתר' : 'הצג'}
             </button>
           </div>
           {isRoutesPanelOpen && (
@@ -1858,7 +3402,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     key={route.id}
                     className={`route-row ${route.id === activeRouteId ? 'active' : ''} ${editingRouteId === route.id ? 'editing' : ''}`}
                   >
-                    <div className="route-main" title="Select active route">
+                    <div className="route-main" title="בחר מסלול פעיל">
                       <label className="route-radio">
                         <input
                           type="radio"
@@ -1901,7 +3445,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                                 setEditingRouteName('');
                               }
                             }}
-                            placeholder={`Route ${idx + 1}`}
+                            placeholder={`מסלול ${idx + 1}`}
                           />
                         ) : (
                           <button
@@ -1911,7 +3455,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                               setEditingRouteId(route.id);
                               setEditingRouteName(route.name);
                             }}
-                            title={`${route.name} (Double-click to rename)`}
+                            title={`${route.name} (לחיצה כפולה לשינוי שם)`}
                           >
                             <span className="route-name-text">{route.name}</span>
                           </button>
@@ -1923,10 +3467,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
                         className="route-visibility switch"
                         title={
                           route.id === activeRouteId
-                            ? 'Active route is always visible.'
+                            ? 'המסלול הפעיל נשאר גלוי.'
                             : route.visible
-                              ? 'Hide this route on the map'
-                              : 'Show this route on the map'
+                              ? 'הסתר מסלול'
+                              : 'הצג מסלול'
                         }
                       >
                         <input
@@ -1937,21 +3481,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
                         />
                         <span className="switch-slider" aria-hidden />
                       </label>
-                      <Tooltip tooltip={routes.length <= 1 ? 'At least one route is required.' : 'Delete this route.'}>
+                      <Tooltip tooltip={routes.length <= 1 ? 'השאר לפחות מסלול אחד' : 'מחק מסלול'}>
                         <button
                           type="button"
                           className="btn btn-destructive btn-icon btn-compact"
                           onClick={() => {
                             if (routes.length <= 1) return;
-                            if (window.confirm(`Delete "${route.name}"? This cannot be undone.`)) {
+                            if (window.confirm(`למחוק את "${route.name}"? לא ניתן לבטל.`)) {
                               onDeleteRoute(route.id);
                             }
                           }}
                           disabled={routes.length <= 1}
-                          aria-label={`Delete ${route.name}`}
+                          aria-label={`מחיקת ${route.name}`}
                         >
                           <Icon name="trash" />
-                          <span className="sr-only">Delete route</span>
+                          <span className="sr-only">מחיקת מסלול</span>
                         </button>
                       </Tooltip>
                     </div>
@@ -1961,9 +3505,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   type="button"
                   className="btn btn-primary"
                   onClick={onAddRoute}
-                  aria-label="Add new route"
+                  aria-label="הוסף מסלול חדש"
                 >
-                  + New Route
+                  + מסלול חדש
                 </button>
                 <div className="route-bulk-actions">
                   <button
@@ -1971,30 +3515,30 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     className="btn btn-tertiary"
                     onClick={onShowAllRoutes}
                     disabled={routes.length === 0}
-                    aria-label="Show all routes"
+                    aria-label="הצג את כל המסלולים"
                   >
-                    Show all
+                    הצג הכול
                   </button>
                   <button
                     type="button"
                     className="btn btn-tertiary"
                     onClick={onHideNonActiveRoutes}
                     disabled={routes.length === 0}
-                    aria-label="Hide non-active routes"
+                    aria-label="הסתר מסלולים לא פעילים"
                   >
-                    Show active only
+                    הצג פעיל בלבד
                   </button>
                   <button
                     type="button"
                     className="btn btn-destructive"
                     onClick={() => {
-                      if (window.confirm('Reset routes to a single empty route? This will remove all other routes and points.')) {
+                      if (window.confirm('לאפס למסלול ריק אחד? ימחק את כל המסלולים והנקודות.')) {
                         onResetToSingleRoute();
                       }
                     }}
-                    aria-label="Reset to single route"
+                    aria-label="איפוס למסלול אחד"
                   >
-                    Reset routes
+                    איפוס מסלולים
                   </button>
                 </div>
               </div>
@@ -2002,7 +3546,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           )}
         </div>
         <div className="control-group">
-          <div className="group-title">Data Management</div>
+          <div className="group-title">ניהול נתונים</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
               <input
@@ -2014,47 +3558,61 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 style={{ display: 'none' }}
                 disabled={dtmLoaded}
               />
-              <Tooltip tooltip={dtmLoaded ? 'DTM already loaded. Unload it before loading another.' : 'Load a Digital Terrain Model (GeoTIFF) to enable planning.'}>
+              {/* New: Load DTM from server options */}
+              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי' : 'בחר DTM מהשרת'}>
+                <button
+                  onClick={handleOpenDtmOptionsModal}
+                  className={`btn btn-primary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
+                  disabled={dtmLoaded || isAoiSelectionMode}
+                  aria-label="טעינת DTM מהשרת"
+                  type="button"
+                >
+                  <Icon name="folder" />
+                  <span className="sr-only">טעינת DTM מהשרת</span>
+                </button>
+              </Tooltip>
+              {/* Legacy: Upload DTM file */}
+              <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי' : 'העלאת קובץ DTM (GeoTIFF)'}>
                 <label
                   htmlFor="dtm-upload"
                   className={`btn btn-secondary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
                   style={dtmLoaded ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
-                  aria-label="Load DTM"
+                  aria-label="העלאת DTM"
                 >
                   <Icon name="upload" />
-                  <span className="sr-only">Load DTM</span>
+                  <span className="sr-only">העלאת DTM</span>
                 </label>
               </Tooltip>
               <Tooltip
                 tooltip={
                   !dtmSource || !dtmLoaded
-                    ? 'No DTM loaded.'
-                    : 'Unload DTM and clear all routes and points.'
+                    ? 'לא נטען DTM'
+                    : 'פרוק DTM ונקה מסלולים'
                 }
               >
                 <button
                   onClick={onDtmUnload}
                   className="btn btn-destructive btn-icon"
                   disabled={!dtmSource || !dtmLoaded}
-                  aria-label="Unload DTM and clear routes"
+                  aria-label="פריקת DTM וניקוי מסלולים"
                   type="button"
                 >
                   <Icon name="eject" />
-                  <span className="sr-only">Unload DTM and clear routes</span>
+                  <span className="sr-only">פריקת DTM וניקוי מסלולים</span>
                 </button>
               </Tooltip>
             </div>
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={flightPath.length === 0 ? 'No points to delete.' : 'Delete all flight path points (clears the route).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'אין נקודות למחיקה' : 'נקה את כל הנקודות'}>
                 <button
                   onClick={handleDeleteAllPoints}
                   className="btn btn-destructive btn-icon"
                   disabled={flightPath.length === 0}
-                  aria-label="Delete all points"
+                  aria-label="מחיקת כל הנקודות"
                   type="button"
                 >
                   <Icon name="trash" />
-                  <span className="sr-only">Delete All Points</span>
+                  <span className="sr-only">מחיקת כל הנקודות</span>
                 </button>
               </Tooltip>
             </div>
@@ -2062,10 +3620,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
 
         <div className="control-group">
-          <div className="group-title">Planning Options</div>
+          <div className="group-title">אפשרויות תכנון</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first to enable drawing.' : isDrawing ? 'Stop drawing (exit click-to-add mode).' : 'Draw path: click on the map to add points.'}>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : isDrawing ? 'עצור שרטוט' : 'צייר מסלול (קליק על המפה)'}>
                 <button
                   onClick={() => {
                     setIsDrawing(!isDrawing);
@@ -2077,22 +3635,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   }}
                   className={`btn btn-primary btn-icon ${isDrawing ? 'active' : ''}`}
                   disabled={!dtmLoaded}
-                  aria-label={isDrawing ? 'Stop drawing' : 'Draw path'}
+                  aria-label={isDrawing ? 'עצירת שרטוט' : 'שרטט מסלול'}
                   type="button"
                 >
                   <Icon name="pencil" />
-                  <span className="sr-only">{isDrawing ? 'Stop Drawing' : 'Draw Path'}</span>
+                  <span className="sr-only">{isDrawing ? 'עצירת שרטוט' : 'שרטט מסלול'}</span>
                 </button>
               </Tooltip>
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'Load a DTM first to enable parallel line creation.'
+                    ? 'טען DTM תחילה'
                     : flightPath.length < 2
-                      ? 'Add at least 2 points first.'
+                      ? 'הוסף לפחות שתי נקודות תחילה'
                       : isParallelLineMode
-                        ? 'Cancel parallel line mode.'
-                        : 'Create a parallel line: click a segment, then enter offset (meters).'
+                        ? 'עצור מצב קו מקביל'
+                        : 'קו מקביל: לחץ על מקטע, קבע היסט'
                 }
               >
                 <button
@@ -2106,11 +3664,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   }}
                   className={`btn btn-secondary btn-icon ${isParallelLineMode ? 'active' : ''}`}
                   disabled={!dtmLoaded || flightPath.length < 2}
-                  aria-label={isParallelLineMode ? 'Cancel parallel line' : 'Create parallel line'}
+                  aria-label={isParallelLineMode ? 'בטל קו מקביל' : 'צור קו מקביל'}
                   type="button"
                 >
                   <Icon name="parallel" />
-                  <span className="sr-only">{isParallelLineMode ? 'Cancel Parallel Line' : 'Create Parallel Line'}</span>
+                  <span className="sr-only">{isParallelLineMode ? 'בטל קו מקביל' : 'צור קו מקביל'}</span>
                 </button>
               </Tooltip>
             </div>
@@ -2118,53 +3676,53 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'Load a DTM first.'
+                    ? 'טען DTM תחילה'
                     : flightPath.length === 0
-                      ? 'Add at least 1 point first.'
-                      : 'Add a point from the last point using azimuth (deg) and distance (m).'
+                      ? 'הוסף נקודה תחילה'
+                      : 'הוסף נקודה לפי אזימוט + מרחק'
                 }
               >
                 <button
                   onClick={handleCreatePointFromAzimuthDistance}
                   className="btn btn-secondary btn-icon"
                   disabled={!dtmLoaded || flightPath.length === 0}
-                  aria-label="Add point by azimuth and distance"
+                  aria-label="הוסף נקודה לפי אזימוט ומרחק"
                   type="button"
                 >
                   <Icon name="compass" />
-                  <span className="sr-only">Azimuth + Distance</span>
+                  <span className="sr-only">אזימוט + מרחק</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Add a point by entering coordinates (Geographic or UTM).'}>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : 'הוסף נקודה לפי קואורדינטות'}>
                 <button
                   onClick={handleCreatePointFromCoordinates}
                   className="btn btn-secondary btn-icon"
                   disabled={!dtmLoaded}
-                  aria-label="Add point by coordinate"
+                  aria-label="הוסף נקודה לפי קואורדינטות"
                   type="button"
                 >
                   <Icon name="crosshair" />
-                  <span className="sr-only">Point by Coordinate</span>
+                  <span className="sr-only">נקודה לפי קואורדינטות</span>
                 </button>
               </Tooltip>
               <Tooltip
                 tooltip={
                   !dtmLoaded
-                    ? 'Load a DTM first.'
+                    ? 'טען DTM תחילה'
                     : flightPath.length < 2
-                      ? 'Add at least 2 points first.'
-                      : 'Add a U-turn (adds 10 points) using radius + distance (end on perpendicular).'
+                      ? 'הוסף לפחות שתי נקודות תחילה'
+                      : 'הוסף פרסה עם רדיוס + מרחק'
                 }
               >
                 <button
                   onClick={handleAddUTurn}
                   className="btn btn-secondary btn-icon"
                   disabled={!dtmLoaded || flightPath.length < 2}
-                  aria-label="Add U-turn"
+                  aria-label="הוסף פרסה"
                   type="button"
                 >
                   <Icon name="uturn" />
-                  <span className="sr-only">U-turn</span>
+                  <span className="sr-only">פרסה</span>
                 </button>
               </Tooltip>
             </div>
@@ -2172,31 +3730,31 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
 
         <div className="control-group">
-          <div className="group-title">History</div>
+          <div className="group-title">היסטוריה</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Undo last action (Ctrl+Z).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה' : 'בטל (Ctrl+Z)'}>
                 <button
                   onClick={onUndo}
                   disabled={!canUndo || flightPath.length === 0}
                   className="btn btn-secondary btn-icon"
-                  aria-label="Undo"
+                  aria-label="בטל"
                   type="button"
                 >
                   <Icon name="undo" />
-                  <span className="sr-only">Undo</span>
+                  <span className="sr-only">בטל</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={flightPath.length === 0 ? 'Draw points first.' : 'Redo last action (Ctrl+Y or Ctrl+Shift+Z).'}>
+              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה' : 'בצע שוב (Ctrl+Y או Ctrl+Shift+Z)'}>
                 <button
                   onClick={onRedo}
                   disabled={!canRedo || flightPath.length === 0}
                   className="btn btn-secondary btn-icon"
-                  aria-label="Redo"
+                  aria-label="בצע שוב"
                   type="button"
                 >
                   <Icon name="redo" />
-                  <span className="sr-only">Redo</span>
+                  <span className="sr-only">בצע שוב</span>
                 </button>
               </Tooltip>
             </div>
@@ -2204,34 +3762,106 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
 
         <div className="control-group">
-          <div className="group-title">View Controls</div>
+          <div className="group-title">בקרות תצוגה</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'Load a DTM first.' : 'Fit map view to the DTM bounding box.'}>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : 'התאם תצוגה ל‑DTM'}>
                 <button
                   onClick={handleFitToDTM}
                   className="btn btn-tertiary btn-icon"
                   disabled={!dtmLoaded}
-                  aria-label="Fit to DTM"
+                  aria-label="התאם ל‑DTM"
                   type="button"
                 >
                   <Icon name="fit" />
-                  <span className="sr-only">Fit to DTM</span>
+                  <span className="sr-only">התאם ל‑DTM</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip="Reset map view to the default extent.">
+              <Tooltip tooltip="אפס תצוגת מפה לברירת מחדל">
                 <button
                   onClick={handleResetView}
                   className="btn btn-tertiary btn-icon"
-                  aria-label="Reset view"
+                  aria-label="איפוס תצוגה"
                   type="button"
                 >
                   <Icon name="home" />
-                  <span className="sr-only">Reset View</span>
+                  <span className="sr-only">איפוס תצוגה</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע במיקום העכבר'}>
+                <button
+                  onClick={() => {
+                    const newInfoMode = !isInfoMode;
+                    setIsInfoMode(newInfoMode);
+                    if (newInfoMode) {
+                      // Turn off route info when turning on info mode
+                      onShowMetadataChange(false);
+                      setCursorElevation(null);
+                    } else {
+                      setCursorElevation(null);
+                      setMousePos(null);
+                      elevationCacheRef.current.clear();
+                    }
+                  }}
+                  className={isInfoMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  disabled={!dtmLoaded}
+                  aria-label={isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}
+                  type="button"
+                >
+                  <Icon name="info" />
+                  <span className="sr-only">{isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}</span>
                 </button>
               </Tooltip>
             </div>
+            <div
+              className="group-column group-column-icons"
+              style={{ display: 'flex', flexDirection: 'row', gap: '12px', alignItems: 'center' }}
+            >
+              <Tooltip tooltip="הצג/הסתר נתונים בזמן ריחוף">
+                <label
+                  className="switch"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showMetadata}
+                    onChange={(e) => {
+                      const newShowMetadata = e.target.checked;
+                      onShowMetadataChange(newShowMetadata);
+                      if (newShowMetadata) {
+                        // Turn off info mode when turning on route info
+                        setIsInfoMode(false);
+                        setCursorElevation(null);
+                        setMousePos(null);
+                        elevationCacheRef.current.clear();
+                      }
+                    }}
+                  />
+                  <span className="switch-slider" />
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>נתונים</span>
+                </label>
+              </Tooltip>
+              <Tooltip tooltip="הצג/הסתר תווית ליד נקודות הגבהה">
+                <label
+                  className="switch"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showClimbLabels}
+                    onChange={(e) => onShowClimbLabelsChange(e.target.checked)}
+                  />
+                  <span className="switch-slider" />
+                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>נקודות הגבהה</span>
+                </label>
+              </Tooltip>
+            </div>
           </div>
+        </div>
+      </div>
+      <div className="map-instruction-banner">
+        <div className="map-instruction-text">
+          לחץ Shift על מנת להוסיף נקודה בין נקודות קיימות
         </div>
       </div>
       <div
@@ -2247,8 +3877,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
             <div className="dtm-drop-content">
               <Icon name="upload" />
               <div className="dtm-drop-text">
-                <div className="dtm-drop-title">Drop DTM GeoTIFF to upload</div>
-                <div className="dtm-drop-subtitle">.tif, .tiff, .geotiff • Max 199 MB</div>
+                <div className="dtm-drop-title">גרור ושחרר קובץ DTM GeoTIFF להעלאה</div>
+                <div className="dtm-drop-subtitle">.tif, .tiff, .geotiff • עד 199MB</div>
               </div>
             </div>
           </div>
@@ -2256,10 +3886,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
         {isUploading && (
           <div className="upload-progress-overlay">
             <div className="upload-progress-container">
-              <div className="upload-progress-label">Uploading DTM: {uploadProgress}%</div>
+              <div className="upload-progress-label">מעלה DTM: {uploadProgress}%</div>
               <div className="upload-progress-bar">
-                <div 
-                  className="upload-progress-fill" 
+                <div
+                  className="upload-progress-fill"
                   style={{ width: `${uploadProgress}%` }}
                 />
               </div>
@@ -2272,12 +3902,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
         )}
         {dtmLoaded && (
-          <div 
+          <div
             ref={dtmTransparencyControlRef}
             className="dtm-transparency-control"
           >
             <label htmlFor="dtm-opacity-slider" className="dtm-opacity-label">
-              DTM Transparency: {Math.round((1 - dtmOpacity) * 100)}%
+              שקפיות {Math.round((1 - dtmOpacity) * 100)}%
             </label>
             <input
               id="dtm-opacity-slider"
@@ -2296,10 +3926,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
             type="button"
             className="basemap-toggle"
             onClick={handleBaseMapButtonClick}
-            title={`Switch to ${nextBaseMap.name}`}
+            title={`החלף ל‑${nextBaseMap.name}`}
           >
-            <div 
-              className="basemap-preview" 
+            <div
+              className="basemap-preview"
               style={{
                 backgroundImage: `url(${getPreviewTileUrl(nextBaseMap)})`
               }}
@@ -2307,6 +3937,268 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </button>
         )}
       </div>
+      {showMetadata && hoveredElevationPoint && mousePos && hoverSource === 'map' && !contextMenu && (
+        <div
+          ref={tooltipRef}
+          className="hover-metadata-tooltip"
+          style={{
+            left: tooltipPosition?.left ?? mousePos.x + 15,
+            top: tooltipPosition?.top ?? mousePos.y + 15,
+            visibility: tooltipPosition ? 'visible' : 'hidden'
+          }}
+        >
+          <CoordinateTooltip point={hoveredElevationPoint} utm={hoveredUtm} />
+        </div>
+      )}
+      {isInfoMode && mousePos && cursorElevation && (
+        <div
+          className="hover-metadata-tooltip"
+          style={{
+            left: mousePos.x + 15,
+            top: mousePos.y + 15
+          }}
+        >
+          <div className="tooltip-section">
+            <span className="tooltip-label">גובה קרקע:</span> {cursorElevation.elevation !== null ? `${cursorElevation.elevation.toFixed(1)} מ'` : '—'}
+          </div>
+        </div>
+      )}
+
+      {/* DTM Options Modal */}
+      {showDtmOptionsModal && (
+        <div className="dtm-modal-overlay" onClick={handleCloseDtmOptionsModal}>
+          <div className="dtm-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="dtm-modal-header">
+              <h2>בחר קובץ DTM</h2>
+              <button
+                type="button"
+                className="btn btn-icon btn-tertiary"
+                onClick={handleCloseDtmOptionsModal}
+                aria-label="סגור"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+            
+            <div className="dtm-modal-search">
+              <Icon name="search" />
+              <input
+                type="text"
+                placeholder="חיפוש קובץ DTM..."
+                value={dtmSearchQuery}
+                onChange={(e) => setDtmSearchQuery(e.target.value)}
+                autoFocus
+              />
+            </div>
+
+            <div className="dtm-modal-content">
+              {dtmOptionsLoading && (
+                <div className="dtm-modal-loading">
+                  <div className="loading-spinner" />
+                  <span>טוען רשימת DTM...</span>
+                </div>
+              )}
+              
+              {dtmOptionsError && (
+                <div className="dtm-modal-error">
+                  <span>⚠️ {dtmOptionsError}</span>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={fetchDtmOptions}
+                  >
+                    נסה שוב
+                  </button>
+                </div>
+              )}
+              
+              {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length === 0 && (
+                <div className="dtm-modal-empty">
+                  {dtmSearchQuery ? (
+                    <span>לא נמצאו קבצים התואמים לחיפוש "{dtmSearchQuery}"</span>
+                  ) : (
+                    <span>לא נמצאו קבצי DTM בתיקייה. ודא ש-DTM_DATA_DIR מוגדר נכון.</span>
+                  )}
+                </div>
+              )}
+              
+              {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length > 0 && (
+                <div className="dtm-options-list">
+                  {filteredDtmOptions.map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className="dtm-option-item"
+                      onClick={() => handleSelectDtm(option.id)}
+                    >
+                      <div className="dtm-option-icon">
+                        <Icon name="folder" />
+                      </div>
+                      <div className="dtm-option-info">
+                        <div className="dtm-option-name">{option.displayName}</div>
+                        <div className="dtm-option-meta">
+                          <span>{formatFileSize(option.sizeBytes)}</span>
+                          <span>•</span>
+                          <span>{formatDate(option.modifiedAt)}</span>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            
+            <div className="dtm-modal-footer">
+              <span className="dtm-modal-count">
+                {dtmOptions.length} קבצים זמינים
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* AOI Selection Overlay */}
+      {isAoiSelectionMode && (
+        <div className="aoi-selection-overlay">
+          <div className="aoi-selection-panel">
+            <div className="aoi-selection-header">
+              <Icon name="crop" />
+              <div className="aoi-selection-title">
+                <h3>בחר אזור עבודה (AOI)</h3>
+                <span className="aoi-selection-dtm">{selectedDtmId}</span>
+              </div>
+            </div>
+            
+            {/* Method Selection */}
+            {!aoiSelectionMethod && (
+              <div className="aoi-method-selection">
+                <span className="aoi-method-label">בחר שיטת בחירה:</span>
+                <div className="aoi-method-options">
+                  <button
+                    type="button"
+                    className="aoi-method-btn"
+                    onClick={() => setAoiSelectionMethod('bbox')}
+                  >
+                    <Icon name="rectangle" />
+                    <span>מלבן (שתי לחיצות)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="aoi-method-btn"
+                    onClick={() => setAoiSelectionMethod('polygon')}
+                  >
+                    <Icon name="polygon" />
+                    <span>פוליגון (נקודות מרובות)</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="aoi-method-btn"
+                    onClick={() => setAoiSelectionMethod('kml')}
+                  >
+                    <Icon name="file" />
+                    <span>טעינה מקובץ KML</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Active Method Instructions */}
+            {aoiSelectionMethod && (
+              <div className="aoi-selection-instructions">
+                {aoiSelectionMethod === 'bbox' && !aoiBounds && (
+                  <span>לחץ על המפה לקביעת הפינה הראשונה, ואז לחץ שוב לקביעת הפינה השנייה</span>
+                )}
+                {aoiSelectionMethod === 'polygon' && !aoiPolygon && (
+                  <span>לחץ על המפה להוספת נקודות. לחץ פעמיים או לחץ על הנקודה הראשונה לסגירת הפוליגון</span>
+                )}
+                {aoiSelectionMethod === 'kml' && !aoiPolygon && (
+                  <div className="aoi-kml-upload">
+                    <input
+                      ref={kmlInputRef}
+                      type="file"
+                      accept=".kml,.kmz"
+                      onChange={handleKmlFileSelect}
+                      style={{ display: 'none' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => kmlInputRef.current?.click()}
+                    >
+                      <Icon name="upload" />
+                      בחר קובץ KML
+                    </button>
+                  </div>
+                )}
+                
+                {/* Show bounds info when bbox is selected */}
+                {aoiBounds && (
+                  <div className="aoi-bounds-info">
+                    <div>מינ' רוחב: {aoiBounds.minLat.toFixed(6)}</div>
+                    <div>מקס' רוחב: {aoiBounds.maxLat.toFixed(6)}</div>
+                    <div>מינ' אורך: {aoiBounds.minLon.toFixed(6)}</div>
+                    <div>מקס' אורך: {aoiBounds.maxLon.toFixed(6)}</div>
+                  </div>
+                )}
+                
+                {/* Show polygon info when polygon is selected */}
+                {aoiPolygon && (
+                  <div className="aoi-polygon-info">
+                    <div>מספר נקודות: {aoiPolygon.coordinates.length}</div>
+                    <div className="aoi-polygon-ready">✓ פוליגון מוכן</div>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            <div className="aoi-selection-actions">
+              {aoiSelectionMethod && (aoiBounds || aoiPolygon) && (
+                <button
+                  type="button"
+                  className="btn btn-tertiary"
+                  onClick={handleResetAoiSelection}
+                  disabled={isClipping}
+                >
+                  שרטט מחדש
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={handleCancelAoiSelection}
+                disabled={isClipping}
+              >
+                ביטול
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleClipDtm}
+                disabled={(!aoiBounds && !aoiPolygon) || isClipping}
+              >
+                {isClipping ? (
+                  <>
+                    <div className="loading-spinner-small" />
+                    חותך...
+                  </>
+                ) : (
+                  'טען אזור נבחר'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clipping Progress Overlay */}
+      {isClipping && (
+        <div className="upload-progress-overlay">
+          <div className="upload-progress-container">
+            <div className="loading-spinner" />
+            <div className="upload-progress-label">חותך DTM לאזור הנבחר...</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -68,7 +68,6 @@ function App() {
   // @ts-ignore
   const [dtmInfo, setDtmInfo] = useState<DTMInfo | null>(null);
   const [activeClippedId, setActiveClippedId] = useState<string | null>(null);
-  const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(250);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
   const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
@@ -123,6 +122,8 @@ function App() {
     routes,
     activeRouteId,
     flightPath,
+    nominalFlightHeight,
+    setNominalFlightHeight,
     climbRequestsByRoute,
     addRoute,
     setActiveRoute,
@@ -1130,7 +1131,7 @@ function App() {
         </div>
         <div className="header-controls">
           <div className="header-group">
-            <div className="group-title">ייצוא מסלולים</div>
+            <div className="group-title">ייצוא/ייבוא מסלולים</div>
             <div className="group-columns export-controls-row">
               <button
                 onClick={() => {
@@ -1164,11 +1165,7 @@ function App() {
                 onChange={async (e) => {
                   const file = e.target.files?.[0];
                   if (file) {
-                    const result = await importKML(file, dtmSource);
-                    // Update nominal flight height if found in KML
-                    if (result?.nominalFlightHeight !== undefined) {
-                      setNominalFlightHeight(result.nominalFlightHeight);
-                    }
+                    await importKML(file, dtmSource);
                     // Note: climbRequestsByRoute is now set inside importKML's setState to avoid race conditions
                     // No need to call setClimbRequestsByRoute here anymore
                     // Reset input so same file can be imported again

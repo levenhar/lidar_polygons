@@ -58,7 +58,8 @@ if DTM_CACHE_DIR_ENV:
 else:
     # Default to a path relative to the backend_python directory, independent of uploads
     backend_python_dir = os.path.dirname(os.path.abspath(__file__))
-    DTM_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, "DTM_TIFF/CACHE"))
+    # Use correct on-disk casing ('Cache') to work on case-sensitive filesystems (Linux prod)
+    DTM_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, "DTM_TIFF/Cache"))
 
 # Subsampled cache directory - where subsampled versions for display are stored
 DTM_SUBSAMPLED_CACHE_DIR = os.path.join(DTM_CACHE_DIR, "upload")

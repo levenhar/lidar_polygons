@@ -1001,26 +1001,23 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
         });
 
         // If we found absolute altitude in "גובה כניסה", calculate nominalFlightHeight
-        // by subtracting ground elevation at first point
-        // Formula: nominalFlightHeight = "גובה כניסה" value - ground height of first point
+        // by subtracting ground elevation at the entry point location
+        // Formula: nominalFlightHeight = "גובה כניסה" value - ground elevation at entry point
         if (absoluteAltitudeInfo && routes.length > 0) {
-          const firstRoute = routes[0];
-          if (firstRoute.points.length > 0) {
-            const firstPoint = firstRoute.points[0]; // First point (starting point)
-            // TypeScript: absoluteAltitudeInfo is guaranteed to be defined here due to the if check
-            const absoluteAltitude = (absoluteAltitudeInfo as { altitude: number; coord: Coordinate }).altitude;
-            
-            // Try to get ground elevation at first point
-            // The API requires at least 2 points, so we'll create a minimal path with the first point duplicated
-            let groundElevation = 0;
-            if (dtmSource) {
-              try {
-                // API requires at least 2 points, so duplicate the first point to create a valid path
-                const coordinates = [[firstPoint.lng, firstPoint.lat], [firstPoint.lng, firstPoint.lat]];
-                const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
-                const clippedId = clippedIdMatch ? clippedIdMatch[1] : undefined;
-                
-                console.log('KML import: Querying elevation for first point:', { lng: firstPoint.lng, lat: firstPoint.lat, dtmSource, clippedId });
+          // TypeScript: absoluteAltitudeInfo is guaranteed to be defined here due to the if check
+          const { altitude: absoluteAltitude, coord: entryPointCoord } = absoluteAltitudeInfo as { altitude: number; coord: Coordinate };
+          
+          // Try to get ground elevation at the entry point location
+          // The API requires at least 2 points, so we'll create a minimal path with the entry point duplicated
+          let groundElevation: number | null = null;
+          if (dtmSource) {
+            try {
+              // API requires at least 2 points, so duplicate the entry point to create a valid path
+              const coordinates = [[entryPointCoord.lng, entryPointCoord.lat], [entryPointCoord.lng, entryPointCoord.lat]];
+              const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
+              const clippedId = clippedIdMatch ? clippedIdMatch[1] : undefined;
+              
+              console.log('KML import: Querying elevation for entry point (גובה כניסה):', { lng: entryPointCoord.lng, lat: entryPointCoord.lat, dtmSource, clippedId });
                 
                 const response = await fetch('/api/elevation-profile', {
                   method: 'POST',
@@ -1055,27 +1052,38 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
                     groundElevation = typeof data[0] === 'number' ? data[0] : data[0].elevation;
                   }
                   
-                  console.log('KML import: Extracted ground elevation:', groundElevation, 'from absolute altitude:', absoluteAltitude);
+                  if (groundElevation !== null && !isNaN(groundElevation)) {
+                    console.log('KML import: Extracted ground elevation:', groundElevation, 'from absolute altitude:', absoluteAltitude);
+                  } else {
+                    console.warn('KML import: Failed to extract ground elevation from API response');
+                    groundElevation = null;
+                  }
                 } else {
                   const errorText = await response.text();
                   console.warn('KML import: Elevation API error:', response.status, errorText);
                 }
               } catch (error) {
-                console.warn('KML import: Failed to query elevation for first point:', error);
+                console.warn('KML import: Failed to query elevation for entry point:', error);
               }
             } else {
               console.warn('KML import: No DTM source available, cannot query ground elevation');
             }
             
             // Calculate nominalFlightHeight = absoluteAltitude - groundElevation
-            // This gives us: nominalFlightHeight = "גובה כניסה" - ground height of first point
-            console.log('KML import: Calculating nominal height:', {
-              absoluteAltitude,
-              groundElevation,
-              calculated: absoluteAltitude - groundElevation
-            });
-            nominalFlightHeight = Math.round(absoluteAltitude - groundElevation);
-          }
+            // This gives us: nominalFlightHeight = "גובה כניסה" value - ground elevation at entry point
+            // IMPORTANT: We MUST subtract ground elevation. If we can't get it, we should not set nominalFlightHeight
+            if (groundElevation !== null && !isNaN(groundElevation)) {
+              console.log('KML import: Calculating nominal height:', {
+                absoluteAltitude,
+                groundElevation,
+                calculated: absoluteAltitude - groundElevation
+              });
+              nominalFlightHeight = Math.round(absoluteAltitude - groundElevation);
+            } else {
+              console.warn('KML import: Cannot calculate nominal flight height - ground elevation not available. Absolute altitude:', absoluteAltitude);
+              // Don't set nominalFlightHeight if we can't get ground elevation
+              // This ensures we don't use the absolute altitude as-is
+            }
         }
         
         // Calculate distances for climb points if we have routes

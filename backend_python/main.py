@@ -62,7 +62,12 @@ else:
     DTM_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, "DTM_TIFF/Cache"))
 
 # Subsampled cache directory - where subsampled versions for display are stored
-DTM_SUBSAMPLED_CACHE_DIR = os.path.join(DTM_CACHE_DIR, "upload")
+DTM_SUBSAMPLED_CACHE_DIR_ENV = os.environ.get("DTM_SUBSAMPLED_CACHE_DIR")
+if DTM_SUBSAMPLED_CACHE_DIR_ENV:
+    DTM_SUBSAMPLED_CACHE_DIR = os.path.abspath(DTM_SUBSAMPLED_CACHE_DIR_ENV)
+else:
+    # Default: store subsampled artifacts directly in the cache folder (no "upload" subfolder)
+    DTM_SUBSAMPLED_CACHE_DIR = DTM_CACHE_DIR
 
 # Ensure cache directories exist
 os.makedirs(DTM_CACHE_DIR, exist_ok=True)
@@ -498,7 +503,7 @@ async def upload_dtm(dtm: UploadFile = File(...)):
             logger.info(f"UPLOADS_DIR and DTM_CACHE_DIR are the same, skipping copy")
             cache_file_path = file_path  # Use the same file
         
-        # Create subsampled version for display in cache/upload
+        # Create subsampled version for display in subsampled cache directory
         # Ensure subsampled cache directory exists
         os.makedirs(DTM_SUBSAMPLED_CACHE_DIR, exist_ok=True)
         subsampled_filename = get_subsampled_filename(filename)
@@ -612,18 +617,18 @@ async def delete_uploaded_dtm(filename: str):
             except Exception as e:
                 logger.error(f"Error deleting file from DTM_CACHE_DIR {cache_file_path}: {e}", exc_info=True)
         
-        # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR (which is DTM_CACHE_DIR/upload)
+        # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR
         subsampled_filename = get_subsampled_filename(filename)
         subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
-        logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR} (cache/upload folder)")
+        logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR}")
         logger.info(f"Looking for subsampled file: {subsampled_filename} at path: {subsampled_file_path}")
         
         # First try the exact subsampled filename
         if os.path.exists(subsampled_file_path):
             try:
                 os.remove(subsampled_file_path)
-                deleted_files.append(f"upload/{subsampled_filename}")
-                logger.info(f"Deleted subsampled DTM file from cache/upload folder: {subsampled_file_path}")
+                deleted_files.append(f"cache/{subsampled_filename}")
+                logger.info(f"Deleted subsampled DTM file: {subsampled_file_path}")
                 not_found = False
             except Exception as e:
                 logger.error(f"Error deleting subsampled file {subsampled_file_path}: {e}", exc_info=True)
@@ -642,8 +647,8 @@ async def delete_uploaded_dtm(filename: str):
                             if os.path.isfile(file_path):
                                 try:
                                     os.remove(file_path)
-                                    deleted_files.append(f"upload/{file}")
-                                    logger.info(f"Deleted subsampled DTM file (found by pattern match) from cache/upload folder: {file_path}")
+                                    deleted_files.append(f"cache/{file}")
+                                    logger.info(f"Deleted subsampled DTM file (found by pattern match): {file_path}")
                                     not_found = False
                                 except Exception as e:
                                     logger.error(f"Error deleting subsampled file {file_path}: {e}", exc_info=True)
@@ -700,8 +705,8 @@ async def cleanup_dtm(request: Request):
                             except Exception as e:
                                 logger.error(f"Error deleting {file_path}: {e}")
                 
-                    # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR (which is DTM_CACHE_DIR/upload)
-                    logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR} (cache/upload folder)")
+                    # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR
+                    logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR}")
                     if os.path.exists(DTM_SUBSAMPLED_CACHE_DIR):
                         subsampled_files = os.listdir(DTM_SUBSAMPLED_CACHE_DIR)
                         logger.info(f"Found {len(subsampled_files)} files in subsampled cache directory")
@@ -716,8 +721,8 @@ async def cleanup_dtm(request: Request):
                                 try:
                                     if os.path.isfile(file_path):
                                         os.remove(file_path)
-                                        deleted_files.append(f"upload/{file}")
-                                        logger.info(f"Deleted subsampled DTM file from cache/upload folder: {file_path}")
+                                        deleted_files.append(f"cache/{file}")
+                                        logger.info(f"Deleted subsampled DTM file: {file_path}")
                                         not_found = False
                                 except Exception as e:
                                     logger.error(f"Error deleting {file_path}: {e}")
@@ -776,18 +781,18 @@ async def cleanup_dtm(request: Request):
             except Exception as e:
                 logger.error(f"Error deleting file from DTM_CACHE_DIR {cache_file_path}: {e}", exc_info=True)
         
-        # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR (which is DTM_CACHE_DIR/upload)
+        # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR
         subsampled_filename = get_subsampled_filename(safe_filename)
         subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
-        logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR} (cache/upload folder)")
+        logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR}")
         logger.info(f"Looking for subsampled file: {subsampled_filename} at path: {subsampled_file_path}")
         
         # First try the exact subsampled filename
         if os.path.exists(subsampled_file_path):
             try:
                 os.remove(subsampled_file_path)
-                deleted_files.append(f"upload/{subsampled_filename}")
-                logger.info(f"Deleted subsampled DTM file from cache/upload folder: {subsampled_file_path}")
+                deleted_files.append(f"cache/{subsampled_filename}")
+                logger.info(f"Deleted subsampled DTM file: {subsampled_file_path}")
                 not_found = False
             except Exception as e:
                 logger.error(f"Error deleting subsampled file {subsampled_file_path}: {e}", exc_info=True)
@@ -806,8 +811,8 @@ async def cleanup_dtm(request: Request):
                             if os.path.isfile(file_path):
                                 try:
                                     os.remove(file_path)
-                                    deleted_files.append(f"upload/{file}")
-                                    logger.info(f"Deleted subsampled DTM file (found by pattern match) from cache/upload folder: {file_path}")
+                                    deleted_files.append(f"cache/{file}")
+                                    logger.info(f"Deleted subsampled DTM file (found by pattern match): {file_path}")
                                     not_found = False
                                 except Exception as e:
                                     logger.error(f"Error deleting subsampled file {file_path}: {e}", exc_info=True)
@@ -1377,12 +1382,12 @@ async def delete_clipped_dtm(clipped_id: str):
         # Start recursive deletion
         delete_recursive(DTM_CACHE_DIR)
         
-        # Also explicitly check and delete from subsampled cache directory (DTM_CACHE_DIR/upload)
-        logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR} (cache/upload folder)")
+        # Also explicitly check and delete from subsampled cache directory
+        logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR}")
         if os.path.exists(DTM_SUBSAMPLED_CACHE_DIR):
             try:
                 subsampled_files = os.listdir(DTM_SUBSAMPLED_CACHE_DIR)
-                logger.info(f"Found {len(subsampled_files)} files in subsampled cache directory (cache/upload)")
+                logger.info(f"Found {len(subsampled_files)} files in subsampled cache directory")
                 for item in subsampled_files:
                     item_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, item)
                     if os.path.isfile(item_path):
@@ -1395,8 +1400,8 @@ async def delete_clipped_dtm(clipped_id: str):
                         if has_subsample and should_delete_file(item_path, item):
                             try:
                                 os.remove(item_path)
-                                deleted_files.append(f"upload/{item}")
-                                logger.info(f"Deleted subsampled DTM file from cache/upload folder: upload/{item} at {item_path}")
+                                deleted_files.append(f"cache/{item}")
+                                logger.info(f"Deleted subsampled DTM file: cache/{item} at {item_path}")
                                 not_found = False
                             except Exception as e:
                                 logger.error(f"Error deleting subsampled file {item}: {e}", exc_info=True)
@@ -1404,9 +1409,9 @@ async def delete_clipped_dtm(clipped_id: str):
                             # Log when we find a subsampled file but it doesn't match (for debugging)
                             logger.debug(f"Found subsampled file but doesn't match clipped_id: {item}")
             except Exception as e:
-                logger.warning(f"Error checking subsampled cache directory (cache/upload): {e}")
+                logger.warning(f"Error checking subsampled cache directory: {e}")
         else:
-            logger.warning(f"Subsampled cache directory (cache/upload) does not exist: {DTM_SUBSAMPLED_CACHE_DIR}")
+            logger.warning(f"Subsampled cache directory does not exist: {DTM_SUBSAMPLED_CACHE_DIR}")
         
         if not_found:
             logger.warning(f"Clipped DTM not found: {clipped_id} in directory: {DTM_CACHE_DIR}")

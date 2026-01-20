@@ -1001,23 +1001,34 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
         });
 
         // If we found absolute altitude in "גובה כניסה", calculate nominalFlightHeight
-        // by subtracting ground elevation at the entry point location
-        // Formula: nominalFlightHeight = "גובה כניסה" value - ground elevation at entry point
+        // by subtracting ground elevation at the *first point of the imported route* (from elevation profile).
+        // This matches how we export: absoluteAltitude = nominalFlightHeight + elevationProfile[0].elevation
+        // Formula: nominalFlightHeight = "גובה כניסה" value - (elevationProfile[0].elevation at route start)
         if (absoluteAltitudeInfo && routes.length > 0) {
           // TypeScript: absoluteAltitudeInfo is guaranteed to be defined here due to the if check
-          const { altitude: absoluteAltitude, coord: entryPointCoord } = absoluteAltitudeInfo as { altitude: number; coord: Coordinate };
+          const { altitude: absoluteAltitude } = absoluteAltitudeInfo as { altitude: number; coord: Coordinate };
+          const firstRoute = routes[0];
           
-          // Try to get ground elevation at the entry point location
-          // The API requires at least 2 points, so we'll create a minimal path with the entry point duplicated
+          // Try to get ground elevation from the elevation profile at the start of the imported route.
+          // The API requires at least 2 points, so use the first segment of the route (or duplicate if needed).
           let groundElevation: number | null = null;
           if (dtmSource) {
             try {
-              // API requires at least 2 points, so duplicate the entry point to create a valid path
-              const coordinates = [[entryPointCoord.lng, entryPointCoord.lat], [entryPointCoord.lng, entryPointCoord.lat]];
+              const p0 = firstRoute.points[0];
+              const p1 = firstRoute.points[1] ?? firstRoute.points[0];
+              const coordinates = [
+                [p0.lng, p0.lat],
+                [p1.lng, p1.lat]
+              ];
               const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
               const clippedId = clippedIdMatch ? clippedIdMatch[1] : undefined;
               
-              console.log('KML import: Querying elevation for entry point (גובה כניסה):', { lng: entryPointCoord.lng, lat: entryPointCoord.lat, dtmSource, clippedId });
+              console.log('KML import: Querying elevation profile for route start (for nominal height):', {
+                lng: p0.lng,
+                lat: p0.lat,
+                dtmSource,
+                clippedId
+              });
                 
                 const response = await fetch('/api/elevation-profile', {
                   method: 'POST',
@@ -1039,7 +1050,7 @@ export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { end
                   // Based on useElevationProfile.ts, the response has data.profile array
                   if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
                     // Profile format: array of ElevationPoint objects with elevation property
-                    // Get the elevation of the first point
+                    // Get the elevation of the first point (route start)
                     groundElevation = data.profile[0].elevation;
                   } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
                     // Direct elevations array

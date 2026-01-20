@@ -139,7 +139,25 @@ const clearUploadsDirectory = async () => {
   }
 };
 
-clearUploadsDirectory();
+// In production we generally want uploads/cache to survive restarts (e.g. DTM cache).
+// Allow explicit override via CLEAR_UPLOADS_ON_STARTUP=true/false.
+const parseEnvBool = (value) => {
+  if (value === undefined) return undefined;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false;
+  return undefined;
+};
+
+const clearUploadsOverride = parseEnvBool(process.env.CLEAR_UPLOADS_ON_STARTUP);
+const shouldClearUploadsOnStartup =
+  clearUploadsOverride !== undefined ? clearUploadsOverride : process.env.NODE_ENV !== 'production';
+
+if (shouldClearUploadsOnStartup) {
+  clearUploadsDirectory();
+} else {
+  console.log('Skipping uploads cache clear on startup (set CLEAR_UPLOADS_ON_STARTUP=true to enable)');
+}
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({

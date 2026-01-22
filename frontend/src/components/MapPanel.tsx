@@ -489,6 +489,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const viewshedImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmTransparencyControlRef = useRef<HTMLDivElement | null>(null);
+  const basemapToggleRef = useRef<HTMLButtonElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hoveredElevationMarkerRef = useRef<L.Marker | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
@@ -2498,6 +2499,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
       L.DomEvent.off(element, 'contextmenu', L.DomEvent.stopPropagation);
     };
   }, [dtmLoaded]);
+
+  // Prevent basemap toggle clicks from creating points in draw mode
+  useEffect(() => {
+    if (!basemapToggleRef.current) return;
+
+    const element = basemapToggleRef.current;
+
+    L.DomEvent.disableClickPropagation(element);
+    L.DomEvent.disableScrollPropagation(element);
+    L.DomEvent.on(element, 'mousedown', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'mouseup', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'mousemove', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchstart', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchend', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchmove', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'dblclick', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'contextmenu', L.DomEvent.stopPropagation);
+
+    return () => {
+      L.DomEvent.off(element, 'mousedown', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'mouseup', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'mousemove', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchstart', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchend', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchmove', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'dblclick', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'contextmenu', L.DomEvent.stopPropagation);
+    };
+  }, [baseMaps.length]);
 
   // Handle DTM source changes - load and display DTM
   useEffect(() => {
@@ -4660,6 +4690,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             className="basemap-toggle"
             onClick={handleBaseMapButtonClick}
             title={`החלף ל‑${nextBaseMap.name}`}
+            ref={basemapToggleRef}
           >
             <div
               className="basemap-preview"

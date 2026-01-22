@@ -197,8 +197,8 @@
 
 .routes-panel {
   position: absolute;
-  left: 16px;
-  bottom: 16px;
+  right: 16px;
+  top: 16px;
   width: 300px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
@@ -235,6 +235,12 @@
   text-align: left;
   color: inherit;
   font-family: inherit;
+  cursor: pointer;
+}
+
+.routes-panel.closed .routes-panel-toggle {
+  width: auto;
+  justify-content: flex-start;
 }
 
 .routes-panel-toggle:focus-visible {
@@ -242,7 +248,8 @@
 }
 
 .routes-panel.closed {
-  padding-bottom: 0.5rem;
+  width: auto;
+  padding: 0.5rem 0.75rem;
   gap: 0;
 }
 
@@ -559,6 +566,53 @@
   flex: 1;
   width: 100%;
   position: relative;
+}
+
+/* Leaflet zoom control - square buttons */
+.leaflet-control-zoom.leaflet-bar.leaflet-control {
+  border: none !important;
+  border-radius: 8px !important;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+  margin: 0 16px 16px 16px !important;
+  z-index: 1000 !important;
+}
+
+.leaflet-control-zoom.leaflet-bar a {
+  width: 28px !important;
+  height: 28px !important;
+  line-height: 28px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: #334155 !important;
+  background: #ffffff !important;
+  border: none !important;
+  border-radius: 0 !important;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.leaflet-control-zoom.leaflet-bar a:hover {
+  background: #f1f5f9 !important;
+  color: #0369a1 !important;
+}
+
+.leaflet-control-zoom.leaflet-bar a:active {
+  background: #e2e8f0 !important;
+}
+
+.leaflet-control-zoom.leaflet-bar a.leaflet-control-zoom-in {
+  border-bottom: 1px solid #e2e8f0 !important;
+  border-radius: 8px 8px 0 0 !important;
+}
+
+.leaflet-control-zoom.leaflet-bar a.leaflet-control-zoom-out {
+  border-radius: 0 0 8px 8px !important;
+}
+
+.leaflet-control-zoom.leaflet-bar a.leaflet-disabled {
+  background: #f8fafc !important;
+  color: #cbd5e1 !important;
+  cursor: not-allowed;
 }
 
 .dtm-drop-overlay {

@@ -1071,9 +1071,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current = L.map(mapContainer.current, {
           center: [31.50, 35.02], // israel defulat
           zoom: 7,
-          crs: leafletCrs
+          crs: leafletCrs,
+          zoomControl: false // disable default zoom control
           // crs: L.CRS.EPSG4326
         });
+        // Add zoom control at bottom-left (use 'bottomright' because RTL flips it)
+        L.control.zoom({ position: 'bottomright' }).addTo(map.current);
       }
 
       // Create options
@@ -4184,173 +4187,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
       )}
       <div className="map-controls">
-        <div className={`control-group routes-panel ${isRoutesPanelOpen ? 'open' : 'closed'}`}>
-          <div className="routes-panel-header header-group">
-            <button
-              type="button"
-              className="routes-panel-toggle"
-              onClick={() => setIsRoutesPanelOpen((prev) => !prev)}
-              aria-label={isRoutesPanelOpen ? 'סגירת לוח המסלולים' : 'פתיחת לוח המסלולים'}
-            >
-              <span className="group-title">מסלולים</span>
-              <span className={`header-chevron ${isRoutesPanelOpen ? 'open' : ''}`}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
-                  <polyline points="6 9 12 15 18 9"></polyline>
-                </svg>
-              </span>
-            </button>
-          </div>
-          {isRoutesPanelOpen && (
-            <div className="group-columns">
-              <div className="group-column route-list">
-                {routes.map((route, idx) => (
-                  <div
-                    key={route.id}
-                    className={`route-row ${route.id === activeRouteId ? 'active' : ''} ${editingRouteId === route.id ? 'editing' : ''}`}
-                  >
-                    <div 
-                      className="route-main" 
-                      title="בחר מסלול פעיל"
-                      onClick={() => onActiveRouteChange(route.id)}
-                      style={{ cursor: 'pointer' }}
-                    >
-                      <span
-                        className="route-color-dot"
-                        style={{ backgroundColor: route.color }}
-                        aria-hidden
-                      />
-                      <span className="route-name-block">
-                        <span className="route-index">#{idx + 1}</span>
-                        {editingRouteId === route.id ? (
-                          <input
-                            className="route-name-input"
-                            value={editingRouteName}
-                            autoFocus
-                            onChange={(e) => setEditingRouteName(e.target.value)}
-                            onBlur={() => {
-                              if (editingRouteId) {
-                                onRenameRoute(editingRouteId, editingRouteName);
-                              }
-                              setEditingRouteId(null);
-                              setEditingRouteName('');
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                if (editingRouteId) {
-                                  onRenameRoute(editingRouteId, editingRouteName);
-                                }
-                                setEditingRouteId(null);
-                                setEditingRouteName('');
-                              } else if (e.key === 'Escape') {
-                                e.preventDefault();
-                                setEditingRouteId(null);
-                                setEditingRouteName('');
-                              }
-                            }}
-                            placeholder={`מסלול ${idx + 1}`}
-                          />
-                        ) : (
-                          <button
-                            type="button"
-                            className="route-name-button"
-                            onDoubleClick={() => {
-                              setEditingRouteId(route.id);
-                              setEditingRouteName(route.name);
-                            }}
-                            title={`${route.name} (לחיצה כפולה לשינוי שם)`}
-                          >
-                            <span className="route-name-text">{route.name}</span>
-                          </button>
-                        )}
-                      </span>
-                    </div>
-                    <div className="route-actions">
-                      <label
-                        className="route-visibility switch"
-                        title={
-                          route.id === activeRouteId
-                            ? 'המסלול הפעיל נשאר גלוי.'
-                            : route.visible
-                              ? 'הסתר מסלול'
-                              : 'הצג מסלול'
-                        }
-                      >
-                        <input
-                          type="checkbox"
-                          checked={route.visible}
-                          disabled={route.id === activeRouteId}
-                          onChange={() => onToggleRouteVisibility(route.id)}
-                        />
-                        <span className="switch-slider" aria-hidden />
-                      </label>
-                      <Tooltip tooltip={routes.length <= 1 ? 'השאר לפחות מסלול אחד' : 'מחק מסלול'}>
-                        <button
-                          type="button"
-                          className="btn btn-destructive btn-icon btn-compact"
-                          onClick={(e) => {
-                            e.stopPropagation(); // Prevent selecting the route when clicking delete
-                            if (routes.length <= 1) return;
-                            if (window.confirm(`למחוק את "${route.name}"? לא ניתן לבטל.`)) {
-                              onDeleteRoute(route.id);
-                            }
-                          }}
-                          disabled={routes.length <= 1}
-                          aria-label={`מחיקת ${route.name}`}
-                        >
-                          <Icon name="trash" />
-                          <span className="sr-only">מחיקת מסלול</span>
-                        </button>
-                      </Tooltip>
-                    </div>
-                  </div>
-                ))}
-                <div className="route-bulk-actions">
-                  <Tooltip tooltip="הוסף מסלול חדש">
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-icon btn-compact"
-                      onClick={onAddRoute}
-                      aria-label="הוסף מסלול חדש"
-                    >
-                      <Icon name="plus" />
-                    </button>
-                  </Tooltip>
-                  <Tooltip tooltip="איפוס למסלול אחד">
-                    <button
-                      type="button"
-                      className="btn btn-destructive btn-icon btn-compact"
-                      onClick={() => {
-                        if (window.confirm('לאפס למסלול ריק אחד? ימחק את כל המסלולים והנקודות.')) {
-                          onResetToSingleRoute();
-                        }
-                      }}
-                      aria-label="איפוס מסלולים"
-                    >
-                      <Icon name="eject" />
-                    </button>
-                  </Tooltip>
-                  <button
-                    type="button"
-                    className={`btn btn-visibility-cycle ${routeVisibilityMode === 'custom' ? 'is-custom' : ''}`}
-                    onClick={handleCycleRoutesVisibility}
-                    disabled={routes.length === 0}
-                    title={`שינוי מצב תצוגה (כרגע: ${routeVisibilityLabel})`}
-                  >
-                    <Icon name={
-                      routeVisibilityMode === 'all' 
-                        ? 'checklist' 
-                        : routeVisibilityMode === 'active' 
-                          ? 'checklist-single' 
-                          : 'silent'
-                    } />
-                    <span style={{ marginRight: '0.4rem' }}>{routeVisibilityLabel}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
         <div className="control-group">
           <div className="group-title">ניהול נתונים</div>
           <div className="group-columns">
@@ -4702,6 +4538,174 @@ const MapPanel: React.FC<MapPanelProps> = ({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
+        {/* Routes Panel - positioned inside map */}
+        <div className={`control-group routes-panel ${isRoutesPanelOpen ? 'open' : 'closed'}`}>
+          <div className="routes-panel-header header-group">
+            <button
+              type="button"
+              className="routes-panel-toggle"
+              onClick={() => setIsRoutesPanelOpen((prev) => !prev)}
+              aria-label={isRoutesPanelOpen ? 'סגירת לוח המסלולים' : 'פתיחת לוח המסלולים'}
+            >
+              <span className="group-title">מסלולים</span>
+              <span className={`header-chevron ${isRoutesPanelOpen ? 'open' : ''}`}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="16" height="16">
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </span>
+            </button>
+          </div>
+          {isRoutesPanelOpen && (
+            <div className="group-columns">
+              <div className="group-column route-list">
+                {routes.map((route, idx) => (
+                  <div
+                    key={route.id}
+                    className={`route-row ${route.id === activeRouteId ? 'active' : ''} ${editingRouteId === route.id ? 'editing' : ''}`}
+                  >
+                    <div 
+                      className="route-main" 
+                      title="בחר מסלול פעיל"
+                      onClick={() => onActiveRouteChange(route.id)}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <span
+                        className="route-color-dot"
+                        style={{ backgroundColor: route.color }}
+                        aria-hidden
+                      />
+                      <span className="route-name-block">
+                        <span className="route-index">#{idx + 1}</span>
+                        {editingRouteId === route.id ? (
+                          <input
+                            className="route-name-input"
+                            value={editingRouteName}
+                            autoFocus
+                            onChange={(e) => setEditingRouteName(e.target.value)}
+                            onBlur={() => {
+                              if (editingRouteId) {
+                                onRenameRoute(editingRouteId, editingRouteName);
+                              }
+                              setEditingRouteId(null);
+                              setEditingRouteName('');
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                if (editingRouteId) {
+                                  onRenameRoute(editingRouteId, editingRouteName);
+                                }
+                                setEditingRouteId(null);
+                                setEditingRouteName('');
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault();
+                                setEditingRouteId(null);
+                                setEditingRouteName('');
+                              }
+                            }}
+                            placeholder={`מסלול ${idx + 1}`}
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            className="route-name-button"
+                            onDoubleClick={() => {
+                              setEditingRouteId(route.id);
+                              setEditingRouteName(route.name);
+                            }}
+                            title={`${route.name} (לחיצה כפולה לשינוי שם)`}
+                          >
+                            <span className="route-name-text">{route.name}</span>
+                          </button>
+                        )}
+                      </span>
+                    </div>
+                    <div className="route-actions">
+                      <label
+                        className="route-visibility switch"
+                        title={
+                          route.id === activeRouteId
+                            ? 'המסלול הפעיל נשאר גלוי.'
+                            : route.visible
+                              ? 'הסתר מסלול'
+                              : 'הצג מסלול'
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          checked={route.visible}
+                          disabled={route.id === activeRouteId}
+                          onChange={() => onToggleRouteVisibility(route.id)}
+                        />
+                        <span className="switch-slider" aria-hidden />
+                      </label>
+                      <Tooltip tooltip={routes.length <= 1 ? 'השאר לפחות מסלול אחד' : 'מחק מסלול'}>
+                        <button
+                          type="button"
+                          className="btn btn-destructive btn-icon btn-compact"
+                          onClick={(e) => {
+                            e.stopPropagation(); // Prevent selecting the route when clicking delete
+                            if (routes.length <= 1) return;
+                            if (window.confirm(`למחוק את "${route.name}"? לא ניתן לבטל.`)) {
+                              onDeleteRoute(route.id);
+                            }
+                          }}
+                          disabled={routes.length <= 1}
+                          aria-label={`מחיקת ${route.name}`}
+                        >
+                          <Icon name="trash" />
+                          <span className="sr-only">מחיקת מסלול</span>
+                        </button>
+                      </Tooltip>
+                    </div>
+                  </div>
+                ))}
+                <div className="route-bulk-actions">
+                  <Tooltip tooltip="הוסף מסלול חדש">
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-icon btn-compact"
+                      onClick={onAddRoute}
+                      aria-label="הוסף מסלול חדש"
+                    >
+                      <Icon name="plus" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip tooltip="איפוס למסלול אחד">
+                    <button
+                      type="button"
+                      className="btn btn-destructive btn-icon btn-compact"
+                      onClick={() => {
+                        if (window.confirm('לאפס למסלול ריק אחד? ימחק את כל המסלולים והנקודות.')) {
+                          onResetToSingleRoute();
+                        }
+                      }}
+                      aria-label="איפוס מסלולים"
+                    >
+                      <Icon name="eject" />
+                    </button>
+                  </Tooltip>
+                  <button
+                    type="button"
+                    className={`btn btn-visibility-cycle ${routeVisibilityMode === 'custom' ? 'is-custom' : ''}`}
+                    onClick={handleCycleRoutesVisibility}
+                    disabled={routes.length === 0}
+                    title={`שינוי מצב תצוגה (כרגע: ${routeVisibilityLabel})`}
+                  >
+                    <Icon name={
+                      routeVisibilityMode === 'all' 
+                        ? 'checklist' 
+                        : routeVisibilityMode === 'active' 
+                          ? 'checklist-single' 
+                          : 'silent'
+                    } />
+                    <span style={{ marginRight: '0.4rem' }}>{routeVisibilityLabel}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
         {isDragOver && !isUploading && !isDtmProcessing && (
           <div className="dtm-drop-overlay">
             <div className="dtm-drop-content">

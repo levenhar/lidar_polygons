@@ -23,6 +23,8 @@ const Tooltip: React.FC<TooltipProps> = ({ tooltip, children, className }) => {
     const wrapRect = wrap.getBoundingClientRect();
     const bubbleRect = bubble.getBoundingClientRect();
     const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+    const menuBoundary = wrap.closest('.display-settings-popover') as HTMLElement | null;
+    const boundaryRect = menuBoundary?.getBoundingClientRect();
 
     // If bubble width is 0 or invalid, try again on next frame
     if (bubbleRect.width === 0) {
@@ -35,12 +37,64 @@ const Tooltip: React.FC<TooltipProps> = ({ tooltip, children, className }) => {
     // Center bubble above the trigger
     const desiredLeftViewport = wrapRect.left + wrapRect.width / 2 - bubbleRect.width / 2;
 
+    // Use menu boundary when tooltip is inside display settings popover
+    if (boundaryRect) {
+      const minLeftViewport = boundaryRect.left + pad;
+      const maxLeftViewport = Math.max(minLeftViewport, boundaryRect.right - pad - bubbleRect.width);
+      const clampedLeftViewport = clamp(desiredLeftViewport, minLeftViewport, maxLeftViewport);
+      const needsFixed = desiredLeftViewport < minLeftViewport || desiredLeftViewport > maxLeftViewport;
+
+      if (needsFixed) {
+        // Use fixed positioning to ensure tooltip stays inside the menu boundary
+        const top = wrapRect.top - bubbleRect.height - 10; // 10px gap above
+        bubble.style.position = 'fixed';
+        bubble.style.left = `${clampedLeftViewport}px`;
+        bubble.style.top = `${top}px`;
+        bubble.style.right = 'auto';
+        bubble.style.bottom = 'auto';
+        bubble.style.transform = 'translateY(0)';
+        bubble.style.insetInlineStart = 'auto';
+        bubble.style.insetInlineEnd = 'auto';
+        wrap.style.setProperty('--tt-left', 'auto');
+
+        // Arrow positioning - point towards trigger center
+        const triggerCenterViewport = wrapRect.left + wrapRect.width / 2;
+        const arrowLeftWithinBubble = triggerCenterViewport - clampedLeftViewport;
+        const arrowPad = 10;
+        const clampedArrow = clamp(arrowLeftWithinBubble, arrowPad, Math.max(arrowPad, bubbleRect.width - arrowPad));
+        wrap.style.setProperty('--tt-arrow-left', `${clampedArrow}px`);
+        bubble.style.setProperty('--tt-arrow-left', `${clampedArrow}px`);
+        return;
+      }
+
+      // Use normal absolute positioning relative to wrap
+      bubble.style.position = '';
+      bubble.style.left = '';
+      bubble.style.top = '';
+      bubble.style.right = '';
+      bubble.style.bottom = '';
+      bubble.style.transform = '';
+      bubble.style.insetInlineStart = '';
+      bubble.style.insetInlineEnd = '';
+
+      const leftWithinWrap = clampedLeftViewport - wrapRect.left;
+      wrap.style.setProperty('--tt-left', `${leftWithinWrap}px`);
+
+      // Arrow wants to point at the trigger center; keep it within bubble bounds.
+      const triggerCenterViewport = wrapRect.left + wrapRect.width / 2;
+      const arrowLeftWithinBubble = triggerCenterViewport - clampedLeftViewport;
+      const arrowPad = 10;
+      const clampedArrow = clamp(arrowLeftWithinBubble, arrowPad, Math.max(arrowPad, bubbleRect.width - arrowPad));
+      wrap.style.setProperty('--tt-arrow-left', `${clampedArrow}px`);
+      return;
+    }
+
     // Check if tooltip would go off the right edge of the screen
     const wouldOverflowRight = desiredLeftViewport + bubbleRect.width > vw - pad;
-    
+
     let clampedLeftViewport: number;
     let useFixedPosition = false;
-    
+
     if (wouldOverflowRight) {
       // If it would overflow, position at the start of the window with padding
       clampedLeftViewport = pad;
@@ -65,7 +119,7 @@ const Tooltip: React.FC<TooltipProps> = ({ tooltip, children, className }) => {
       bubble.style.insetInlineEnd = 'auto';
       // Clear the CSS variable that might interfere
       wrap.style.setProperty('--tt-left', 'auto');
-      
+
       // Arrow positioning - point towards trigger center
       // Calculate where the button center is relative to the bubble's left edge
       const triggerCenterViewport = wrapRect.left + wrapRect.width / 2;
@@ -86,7 +140,7 @@ const Tooltip: React.FC<TooltipProps> = ({ tooltip, children, className }) => {
       bubble.style.transform = '';
       bubble.style.insetInlineStart = '';
       bubble.style.insetInlineEnd = '';
-      
+
       const leftWithinWrap = clampedLeftViewport - wrapRect.left;
       wrap.style.setProperty('--tt-left', `${leftWithinWrap}px`);
 

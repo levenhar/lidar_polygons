@@ -505,7 +505,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     {getFieldError('outputHeight')}
                   </span>
                 )}
-                <span className="settings-modal__hint">גובה הרזולוציה הרצוי לתוצר הסופי</span>
+                <span className="settings-modal__hint">גובה מקסימלי מנקודה הכי נמוכה באזור הצי"ח</span>
               </div>
             </div>
           )}

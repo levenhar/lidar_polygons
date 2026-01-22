@@ -113,6 +113,63 @@ const VIEWSHED_COLORMAPS: Record<string, { label: string; stops: ColormapStop[] 
   }
 };
 
+// DTM color palettes
+const DTM_COLORMAPS: Record<'gray' | 'jet', { label: string; stops: ColormapStop[] }> = {
+  gray: {
+    label: 'אפור',
+    stops: [
+      { pos: 0, color: '#000000' },
+      { pos: 1, color: '#ffffff' }
+    ]
+  },
+  jet: {
+    label: 'צבעוני',
+    stops: [
+      { pos: 0, color: '#00007f' },
+      { pos: 0.15, color: '#0000ff' },
+      { pos: 0.35, color: '#00ffff' },
+      { pos: 0.5, color: '#00ff00' },
+      { pos: 0.65, color: '#ffff00' },
+      { pos: 0.85, color: '#ff0000' },
+      { pos: 1, color: '#7f0000' }
+    ]
+  }
+};
+
+const getDtmColorForValue = (
+  normalized: number,
+  palette: 'gray' | 'jet',
+  inverted: boolean
+): { r: number; g: number; b: number } => {
+  const value = inverted ? 1 - normalized : normalized;
+  const stops = DTM_COLORMAPS[palette].stops;
+  
+  let lower = stops[0];
+  let upper = stops[stops.length - 1];
+  
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (value >= stops[i].pos && value <= stops[i + 1].pos) {
+      lower = stops[i];
+      upper = stops[i + 1];
+      break;
+    }
+  }
+  
+  const t = (value - lower.pos) / (upper.pos - lower.pos || 1);
+  const c1 = hexToRgb(lower.color);
+  const c2 = hexToRgb(upper.color);
+  
+  return {
+    r: Math.round(lerp(c1.r, c2.r, t)),
+    g: Math.round(lerp(c1.g, c2.g, t)),
+    b: Math.round(lerp(c1.b, c2.b, t))
+  };
+};
+
+const stripDtmTimestamp = (name: string) => {
+  return name.replace(/^\d{10,}-/, '');
+};
+
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const hexToRgb = (hex: string) => {
   const normalized = hex.replace('#', '');
@@ -174,7 +231,8 @@ type IconName =
   | 'vibrate'
   | 'silent'
   | 'checklist'
-  | 'checklist-single';
+  | 'checklist-single'
+  | 'sliders';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
 
@@ -396,6 +454,20 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M5 12h14" />
         </svg>
       );
+    case 'sliders':
+      return (
+        <svg {...common}>
+          <line {...stroke} x1="4" y1="21" x2="4" y2="14" />
+          <line {...stroke} x1="4" y1="10" x2="4" y2="3" />
+          <line {...stroke} x1="12" y1="21" x2="12" y2="12" />
+          <line {...stroke} x1="12" y1="8" x2="12" y2="3" />
+          <line {...stroke} x1="20" y1="21" x2="20" y2="16" />
+          <line {...stroke} x1="20" y1="12" x2="20" y2="3" />
+          <line {...stroke} x1="1" y1="14" x2="7" y2="14" />
+          <line {...stroke} x1="9" y1="8" x2="15" y2="8" />
+          <line {...stroke} x1="17" y1="16" x2="23" y2="16" />
+        </svg>
+      );
     default:
       return (
         <svg {...common}>
@@ -527,6 +599,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [dtmLoaded, setDtmLoaded] = useState(false);
   const [dtmBounds, setDtmBounds] = useState<number[] | null>(null);
   const [dtmOpacity, setDtmOpacity] = useState<number>(0.1); // Default 90% transparency (10% opacity)
+  const [dtmColorPalette, setDtmColorPalette] = useState<'gray' | 'jet'>('gray');
+  const [dtmColorInverted, setDtmColorInverted] = useState<boolean>(false);
+  const [displaySettingsOpen, setDisplaySettingsOpen] = useState<boolean>(false);
+  const displaySettingsButtonRef = useRef<HTMLButtonElement>(null);
+  const displaySettingsPopoverRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<L.Marker[]>([]);
   const climbMarkersRef = useRef<L.Marker[]>([]);
   const flightPathLineRef = useRef<L.Polyline | null>(null);
@@ -538,7 +615,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const viewshedImageOverlayRef = useRef<L.ImageOverlay | null>(null);
-  const dtmTransparencyControlRef = useRef<HTMLDivElement | null>(null);
   const basemapToggleRef = useRef<HTMLButtonElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hoveredElevationMarkerRef = useRef<L.Marker | null>(null);
@@ -626,6 +702,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [dtmOptionsError, setDtmOptionsError] = useState<string | null>(null);
   const [dtmSearchQuery, setDtmSearchQuery] = useState('');
   const [selectedDtmId, setSelectedDtmId] = useState<string | null>(null);
+  const [activeDtmName, setActiveDtmName] = useState<string | null>(null);
   
   // AOI selection state
   const [isAoiSelectionMode, setIsAoiSelectionMode] = useState(false);
@@ -686,8 +763,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
   }, []);
 
   // Select a DTM and enter AOI selection mode
-  const handleSelectDtm = useCallback((dtmId: string) => {
+  const handleSelectDtm = useCallback((dtmId: string, displayName?: string) => {
     setSelectedDtmId(dtmId);
+    // Store the display name for later use when DTM is loaded
+    if (displayName) {
+      setActiveDtmName(displayName);
+    }
     setShowDtmOptionsModal(false);
     setIsAoiSelectionMode(true);
     setAoiSelectionMethod(null); // Show method chooser first
@@ -2544,11 +2625,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [isParallelLineMode, isDrawing, editingPointIndex, externalEditPointIndex]);
 
-  // Prevent map dragging when interacting with DTM transparency slider
+  // Prevent display settings popover clicks from creating points in draw mode
   useEffect(() => {
-    if (!dtmTransparencyControlRef.current || !map.current) return;
+    if (!displaySettingsPopoverRef.current || !map.current) return;
 
-    const element = dtmTransparencyControlRef.current;
+    const element = displaySettingsPopoverRef.current;
 
     // Use Leaflet's built-in methods to prevent map interactions
     L.DomEvent.disableClickPropagation(element);
@@ -2574,7 +2655,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       L.DomEvent.off(element, 'dblclick', L.DomEvent.stopPropagation);
       L.DomEvent.off(element, 'contextmenu', L.DomEvent.stopPropagation);
     };
-  }, [dtmLoaded]);
+  }, [displaySettingsOpen]);
 
   // Prevent basemap toggle clicks from creating points in draw mode
   useEffect(() => {
@@ -2605,6 +2686,37 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, [baseMaps.length]);
 
+  // Handle outside click and ESC to close display settings popover
+  useEffect(() => {
+    if (!displaySettingsOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (
+        displaySettingsPopoverRef.current &&
+        !displaySettingsPopoverRef.current.contains(target) &&
+        displaySettingsButtonRef.current &&
+        !displaySettingsButtonRef.current.contains(target)
+      ) {
+        setDisplaySettingsOpen(false);
+      }
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setDisplaySettingsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [displaySettingsOpen]);
+
   // Handle DTM source changes - load and display DTM
   useEffect(() => {
     if (!map.current || !dtmSource) {
@@ -2625,8 +2737,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
       setDtmLoaded(false);
       setDtmBounds(null);
       setIsDtmProcessing(false);
+      setActiveDtmName(null);
       // Keep opacity setting - don't reset it so user preference persists
       return;
+    }
+
+    if (!activeDtmName) {
+      const sourceName = dtmSource.split('/').pop()?.split('\\').pop();
+      if (sourceName) {
+        setActiveDtmName(stripDtmTimestamp(sourceName));
+      }
     }
 
     const loadDTM = async () => {
@@ -2768,7 +2888,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const imageData = ctx.createImageData(width, height);
         const range = max - min || 1;
 
-        // Convert elevation data to grayscale
+        // Convert elevation data to colored image using current palette settings
         const noDataValue = rasterData.noDataValue;
         for (let i = 0; i < data.length; i++) {
           let elevation = data[i];
@@ -2782,14 +2902,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
             elevation = min;
           }
 
-          const normalized = (elevation - min) / range;
+          const normalized = Math.min(1, Math.max(0, (elevation - min) / range));
 
-          // Grayscale: black (low) -> white (high)
-          // Convert normalized value (0-1) to grayscale (0-255)
-          const gray = Math.floor(normalized * 255);
-          const r = gray;
-          const g = gray;
-          const b = gray;
+          // Use palette color function
+          const { r, g, b } = getDtmColorForValue(normalized, dtmColorPalette, dtmColorInverted);
 
           const idx = i * 4;
           imageData.data[idx] = r;     // R
@@ -2920,6 +3036,87 @@ const MapPanel: React.FC<MapPanelProps> = ({
     loadDTM();
   }, [dtmSource]);
 
+  // Re-render DTM overlay when palette or invert settings change
+  useEffect(() => {
+    if (!map.current || !dtmLoaded || !dtmRasterDataRef.current || !dtmBounds) return;
+
+    const { width, height, data, bounds, noDataValue } = dtmRasterDataRef.current;
+    
+    // Recalculate min/max from cached data
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < data.length; i++) {
+      const val = data[i];
+      if (noDataValue !== null && noDataValue !== undefined && val === noDataValue) continue;
+      if (isNaN(val) || !isFinite(val)) continue;
+      if (val < min) min = val;
+      if (val > max) max = val;
+    }
+    if (!isFinite(min) || !isFinite(max)) return;
+    
+    const range = max - min || 1;
+
+    // Create canvas to render elevation as image
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Create image data
+    const imageData = ctx.createImageData(width, height);
+
+    // Convert elevation data to colored image using current palette settings
+    for (let i = 0; i < data.length; i++) {
+      let elevation = data[i];
+
+      if (noDataValue !== null && noDataValue !== undefined && elevation === noDataValue) {
+        elevation = min;
+      }
+
+      if (isNaN(elevation) || !isFinite(elevation)) {
+        elevation = min;
+      }
+
+      const normalized = Math.min(1, Math.max(0, (elevation - min) / range));
+      const { r, g, b } = getDtmColorForValue(normalized, dtmColorPalette, dtmColorInverted);
+
+      const idx = i * 4;
+      imageData.data[idx] = r;
+      imageData.data[idx + 1] = g;
+      imageData.data[idx + 2] = b;
+      imageData.data[idx + 3] = 255;
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+
+    // Update the image overlay
+    const [minX, minY, maxX, maxY] = bounds;
+    const imageBounds: L.LatLngBoundsExpression = [
+      [minY, minX],
+      [maxY, maxX]
+    ];
+
+    // Remove existing overlay
+    if (dtmImageOverlayRef.current) {
+      map.current.removeLayer(dtmImageOverlayRef.current);
+    }
+
+    // Add new overlay with updated colors
+    const imageUrl = canvas.toDataURL();
+    dtmImageOverlayRef.current = L.imageOverlay(imageUrl, imageBounds, {
+      opacity: dtmOpacity
+    }).addTo(map.current);
+
+    // Ensure the DTM layer is below route lines
+    if (dtmImageOverlayRef.current) {
+      dtmImageOverlayRef.current.bringToBack();
+    }
+    if (dtmBoundaryRef.current) {
+      dtmBoundaryRef.current.bringToBack();
+    }
+  }, [dtmColorPalette, dtmColorInverted, dtmLoaded, dtmBounds, dtmOpacity]);
+
   const resetFileInput = () => {
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -2984,6 +3181,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           try {
             const data = JSON.parse(xhr.responseText);
             if (data.success) {
+              // Extract filename from path for display
+              const uploadedFileName = data.path?.split('/').pop()?.split('\\').pop() || 'Uploaded DTM';
+              setActiveDtmName(stripDtmTimestamp(uploadedFileName));
               onDtmLoad(data.path, data);
             } else {
               throw new Error(data.error || 'Upload failed');
@@ -4457,73 +4657,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
         </div>
 
-        <div className="control-group">
-          <div className="group-title">בקרות תצוגה</div>
-          <div className="group-columns">
-            <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : 'התאם תצוגה ל‑DTM'}>
-                <button
-                  onClick={handleFitToDTM}
-                  className="btn btn-tertiary btn-icon"
-                  disabled={!dtmLoaded}
-                  aria-label="התאם ל‑DTM"
-                  type="button"
-                >
-                  <Icon name="fit" />
-                  <span className="sr-only">התאם ל‑DTM</span>
-                </button>
-              </Tooltip>
-              <Tooltip tooltip="אפס תצוגת מפה לברירת מחדל">
-                <button
-                  onClick={handleResetView}
-                  className="btn btn-tertiary btn-icon"
-                  aria-label="איפוס תצוגה"
-                  type="button"
-                >
-                  <Icon name="home" />
-                  <span className="sr-only">איפוס תצוגה</span>
-                </button>
-              </Tooltip>
-            </div>
-            <div
-              className="group-column group-column-icons"
-              style={{ display: 'flex', flexDirection: 'row', gap: '12px', alignItems: 'center' }}
-            >
-              <Tooltip tooltip="הצג/הסתר נתונים בזמן ריחוף">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const newShowMetadata = !showMetadata;
-                    onShowMetadataChange(newShowMetadata);
-                    if (newShowMetadata) {
-                      // Turn off info mode when turning on route info
-                      setIsInfoMode(false);
-                      setCursorElevation(null);
-                      setMousePos(null);
-                      elevationCacheRef.current.clear();
-                    }
-                  }}
-                  className={showMetadata ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
-                  aria-label={showMetadata ? 'הסתר נתונים' : 'הצג נתונים'}
-                >
-                  <Icon name="info" />
-                  <span className="sr-only">נתונים</span>
-                </button>
-              </Tooltip>
-              <Tooltip tooltip="הצג/הסתר תווית ליד נקודות הגבהה">
-                <button
-                  type="button"
-                  onClick={() => onShowClimbLabelsChange(!showClimbLabels)}
-                  className={showClimbLabels ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
-                  aria-label={showClimbLabels ? 'הסתר תוויות נקודות הגבהה' : 'הצג תוויות נקודות הגבהה'}
-                >
-                  <Icon name="tag" />
-                  <span className="sr-only">נקודות הגבהה</span>
-                </button>
-              </Tooltip>
-            </div>
-          </div>
-        </div>
       </div>
       <div className="map-instruction-banner">
         <div className="map-instruction-text">
@@ -4735,26 +4868,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
             <div className="loading-spinner" />
           </div>
         )}
-        {dtmLoaded && (
-          <div
-            ref={dtmTransparencyControlRef}
-            className="dtm-transparency-control"
-          >
-            <label htmlFor="dtm-opacity-slider" className="dtm-opacity-label">
-              שקיפות {Math.round((1 - dtmOpacity) * 100)}%
-            </label>
-            <input
-              id="dtm-opacity-slider"
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={dtmOpacity}
-              onChange={handleDtmOpacityChange}
-              className="dtm-opacity-slider"
-            />
-          </div>
-        )}
         {viewshedRaster && viewshedVisible && (
           <div className="viewshed-legend">
             <div className="viewshed-legend-title">שדה ראייה</div>
@@ -4781,6 +4894,199 @@ const MapPanel: React.FC<MapPanelProps> = ({
             ></div>
           </button>
         )}
+        
+        {/* Display Settings Button & Popover - positioned near zoom controls */}
+        <div className="display-settings-container">
+          <button
+            type="button"
+            ref={displaySettingsButtonRef}
+            className={`display-settings-trigger ${displaySettingsOpen ? 'active' : ''}`}
+            onClick={() => setDisplaySettingsOpen(!displaySettingsOpen)}
+            aria-label="Display settings"
+            aria-expanded={displaySettingsOpen}
+            aria-haspopup="true"
+          >
+            <Icon name="sliders" />
+          </button>
+          
+          {displaySettingsOpen && (
+            <div
+              ref={displaySettingsPopoverRef}
+              className="display-settings-popover"
+              role="dialog"
+              aria-label="Display Settings"
+            >
+              <div className="display-settings-header">
+                <span className="display-settings-title">הגדרות תצוגה</span>
+                <button
+                  type="button"
+                  className="display-settings-close"
+                  onClick={() => setDisplaySettingsOpen(false)}
+                  aria-label="Close display settings"
+                >
+                  <Icon name="close" />
+                </button>
+              </div>
+              <div className="display-settings-content">
+                {/* View Controls Section */}
+                <div className="display-settings-section">
+                  <div className="display-settings-section-title">זום</div>
+                  <div className="display-settings-row display-settings-row-buttons">
+                    <Tooltip tooltip="התאם תצוגה ל‑DTM">
+                      <button
+                        onClick={() => {
+                          handleFitToDTM();
+                          setDisplaySettingsOpen(false);
+                        }}
+                        className="btn btn-tertiary btn-icon btn-sm"
+                        disabled={!dtmLoaded}
+                        aria-label="התאם ל‑DTM"
+                        type="button"
+                      >
+                        <Icon name="fit" />
+                      </button>
+                    </Tooltip>
+                    <Tooltip tooltip="זום ברירת מחדל">
+                      <button
+                        onClick={() => {
+                          handleResetView();
+                          setDisplaySettingsOpen(false);
+                        }}
+                        className="btn btn-tertiary btn-icon btn-sm"
+                        aria-label="איפוס תצוגה"
+                        type="button"
+                      >
+                        <Icon name="home" />
+                      </button>
+                    </Tooltip>
+                  </div>
+
+                  <div className="display-settings-divider" />
+
+                  <div className="display-settings-subsection-title">נתוני עזר</div>
+
+                  <div className="display-settings-row">
+                    <div className="display-settings-icon-row">
+                      <Tooltip tooltip="הצג נתונים בריחוף">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const newShowMetadata = !showMetadata;
+                            onShowMetadataChange(newShowMetadata);
+                            if (newShowMetadata) {
+                              setIsInfoMode(false);
+                              setCursorElevation(null);
+                              setMousePos(null);
+                              elevationCacheRef.current.clear();
+                            }
+                          }}
+                          className={`display-settings-icon-toggle ${showMetadata ? 'active' : ''}`}
+                          aria-pressed={showMetadata}
+                          aria-label={showMetadata ? 'הסתר נתונים' : 'הצג נתונים'}
+                        >
+                          <Icon name="info" />
+                        </button>
+                      </Tooltip>
+                      <Tooltip tooltip="תוויות נקודות הגבהה">
+                        <button
+                          type="button"
+                          onClick={() => onShowClimbLabelsChange(!showClimbLabels)}
+                          className={`display-settings-icon-toggle ${showClimbLabels ? 'active' : ''}`}
+                          aria-pressed={showClimbLabels}
+                          aria-label={showClimbLabels ? 'הסתר תוויות' : 'הצג תוויות'}
+                        >
+                          <Icon name="tag" />
+                        </button>
+                      </Tooltip>
+                    </div>
+                  </div>
+                </div>
+
+                {/* DTM Section */}
+                <div className="display-settings-section">
+                  <div className="display-settings-section-title">DTM</div>
+
+                  {/* Active DTM Name */}
+                  <div className="display-settings-row">
+                    <div className="display-settings-info-row">
+                      <span className="display-settings-label-secondary">DTM פעיל</span>
+                      <span
+                        className="display-settings-value"
+                      title={activeDtmName || ''}
+                      >
+                      {dtmLoaded && activeDtmName ? activeDtmName : ''}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* DTM Opacity */}
+                  <div className="display-settings-row">
+                    <label htmlFor="ds-dtm-opacity" className="display-settings-label">
+                      שקיפות {Math.round((1 - dtmOpacity) * 100)}%
+                    </label>
+                    <input
+                      id="ds-dtm-opacity"
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={dtmOpacity}
+                      onChange={handleDtmOpacityChange}
+                      className="display-settings-slider"
+                      disabled={!dtmLoaded}
+                    />
+                  </div>
+
+                  {/* DTM Color Palette */}
+                  <div className="display-settings-row display-settings-row-palette">
+                    <span className="display-settings-label">ערכת צבעים</span>
+                    <div className="display-settings-segmented">
+                      <button
+                        type="button"
+                        className={`display-settings-segment ${dtmColorPalette === 'gray' ? 'active' : ''}`}
+                        onClick={() => setDtmColorPalette('gray')}
+                        disabled={!dtmLoaded}
+                        aria-pressed={dtmColorPalette === 'gray'}
+                      >
+                      אפור
+                      </button>
+                      <button
+                        type="button"
+                        className={`display-settings-segment ${dtmColorPalette === 'jet' ? 'active' : ''}`}
+                        onClick={() => setDtmColorPalette('jet')}
+                        disabled={!dtmLoaded}
+                        aria-pressed={dtmColorPalette === 'jet'}
+                      >
+                      צבעוני
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Invert Colors Toggle */}
+                  <div className="display-settings-row">
+                    <div className="display-settings-toggle-row">
+                      <span className="display-settings-label">היפוך צבעים</span>
+                      <button
+                        type="button"
+                        onClick={() => setDtmColorInverted(!dtmColorInverted)}
+                        className={`toggle-btn ${dtmColorInverted ? 'active' : ''}`}
+                        disabled={!dtmLoaded}
+                        aria-pressed={dtmColorInverted}
+                        aria-label={dtmColorInverted ? 'בטל היפוך צבעים' : 'הפעל היפוך צבעים'}
+                      >
+                        <span className="toggle-btn-thumb" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="display-settings-helper">
+                    משפיע על הצגת ה-DTM בלבד
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
       {showMetadata && hoveredElevationPoint && mousePos && hoverSource === 'map' && !contextMenu && (
         <div
@@ -4874,7 +5180,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       key={option.id}
                       type="button"
                       className="dtm-option-item"
-                      onClick={() => handleSelectDtm(option.id)}
+                      onClick={() => handleSelectDtm(option.id, option.displayName)}
                     >
                       <div className="dtm-option-icon">
                         <Icon name="folder" />

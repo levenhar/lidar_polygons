@@ -2324,7 +2324,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 <button
                   onClick={handleRemoveClimb}
                   disabled={climbRequests.length === 0}
-                  className="btn btn-tertiary btn-icon"
+                  className="btn btn-destructive btn-icon"
                   type="button"
                   aria-label="הסר עליות"
                 >

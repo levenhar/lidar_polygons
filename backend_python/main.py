@@ -18,6 +18,8 @@ import pyproj
 from pyproj import Transformer
 import logging
 from dotenv import load_dotenv
+import threading
+import uuid
 
 # Load environment variables from .env file
 load_dotenv()
@@ -30,6 +32,10 @@ logging.basicConfig(
 logger = logging.getLogger("backend_python")
 
 app = FastAPI()
+
+# Viewshed job state
+viewshed_jobs = {}
+viewshed_jobs_lock = threading.Lock()
 
 # Configure CORS
 app.add_middleware(
@@ -69,9 +75,18 @@ else:
     # Default: store subsampled artifacts directly in the cache folder (no "upload" subfolder)
     DTM_SUBSAMPLED_CACHE_DIR = DTM_CACHE_DIR
 
+# Viewshed cache directory - where generated viewshed TIFFs are stored
+VIEWSHED_CACHE_DIR_ENV = os.environ.get("VIEWSHED_CACHE_DIR")
+if VIEWSHED_CACHE_DIR_ENV:
+    VIEWSHED_CACHE_DIR = os.path.abspath(VIEWSHED_CACHE_DIR_ENV)
+else:
+    backend_python_dir = os.path.dirname(os.path.abspath(__file__))
+    VIEWSHED_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, "DTM_TIFF/Viewshed"))
+
 # Ensure cache directories exist
 os.makedirs(DTM_CACHE_DIR, exist_ok=True)
 os.makedirs(DTM_SUBSAMPLED_CACHE_DIR, exist_ok=True)
+os.makedirs(VIEWSHED_CACHE_DIR, exist_ok=True)
 
 # Maximum dimension for subsampled display versions
 MAX_DISPLAY_DIM = 2048
@@ -109,6 +124,19 @@ class ElevationAtPointRequest(BaseModel):
     dtmPath: str
     clippedId: Optional[str] = None
 
+class ViewshedPoint(BaseModel):
+    lng: float
+    lat: float
+    height: Optional[float] = None  # AGL meters
+
+class ViewshedRequest(BaseModel):
+    coordinates: List[ViewshedPoint]
+    dtmPath: str
+    clippedId: Optional[str] = None
+    samplingIntervalMeters: Optional[float] = 50.0
+    maxDistanceMeters: Optional[float] = None
+    useSubsampled: Optional[bool] = True
+
 def haversine(lon1, lat1, lon2, lat2):
     """
     Calculate the great circle distance between two points 
@@ -135,6 +163,254 @@ def interpolate_segment(start, end, interval_meters):
     lats = np.linspace(start[1], end[1], num_points)
     
     return [[float(lon), float(lat)] for lon, lat in zip(lons, lats)]
+
+def interpolate_segment_with_height(start, end, interval_meters):
+    dist = haversine(start["lng"], start["lat"], end["lng"], end["lat"])
+    if dist < interval_meters:
+        return [start, end]
+    num_points = max(2, int(np.ceil(dist / interval_meters)))
+    lons = np.linspace(start["lng"], end["lng"], num_points)
+    lats = np.linspace(start["lat"], end["lat"], num_points)
+    h1 = start.get("height", 0.0) or 0.0
+    h2 = end.get("height", 0.0) or 0.0
+    heights = np.linspace(h1, h2, num_points)
+    return [
+        {"lng": float(lon), "lat": float(lat), "height": float(h)}
+        for lon, lat, h in zip(lons, lats, heights)
+    ]
+
+def bresenham_line(row0, col0, row1, col1):
+    """Return list of (row, col) from start to end using Bresenham's algorithm."""
+    points = []
+    drow = abs(row1 - row0)
+    dcol = abs(col1 - col0)
+    srow = 1 if row0 < row1 else -1
+    scol = 1 if col0 < col1 else -1
+    err = dcol - drow
+    r, c = row0, col0
+    while True:
+        points.append((r, c))
+        if r == row1 and c == col1:
+            break
+        e2 = 2 * err
+        if e2 > -drow:
+            err -= drow
+            c += scol
+        if e2 < dcol:
+            err += dcol
+            r += srow
+    return points
+
+def compute_distance_meters(row, col, row0, col0, res_x, res_y, meters_per_deg_lon, meters_per_deg_lat, is_projected):
+    drow = row - row0
+    dcol = col - col0
+    if is_projected:
+        dx = dcol * res_x
+        dy = drow * res_y
+    else:
+        dx = dcol * res_x * meters_per_deg_lon
+        dy = drow * res_y * meters_per_deg_lat
+    return sqrt(dx * dx + dy * dy)
+
+def is_visible_line(data, row0, col0, row1, col1, obs_elev, res_x, res_y, meters_per_deg_lon, meters_per_deg_lat, is_projected):
+    line = bresenham_line(row0, col0, row1, col1)
+    if len(line) <= 2:
+        return True
+    target_elev = data[row1, col1]
+    if np.isnan(target_elev):
+        return False
+    target_dist = compute_distance_meters(row1, col1, row0, col0, res_x, res_y, meters_per_deg_lon, meters_per_deg_lat, is_projected)
+    if target_dist <= 0:
+        return True
+    target_angle = (target_elev - obs_elev) / target_dist
+    max_angle = -1e9
+    for r, c in line[1:-1]:
+        elev = data[r, c]
+        if np.isnan(elev):
+            continue
+        dist = compute_distance_meters(r, c, row0, col0, res_x, res_y, meters_per_deg_lon, meters_per_deg_lat, is_projected)
+        if dist <= 0:
+            continue
+        angle = (elev - obs_elev) / dist
+        if angle > max_angle:
+            max_angle = angle
+            if max_angle >= target_angle:
+                return False
+    return True
+
+def compute_viewshed(job_id: str, request: ViewshedRequest):
+    start_time = time.time()
+    logger.info(f"[{job_id}] Viewshed compute start")
+    try:
+        if len(request.coordinates) < 2:
+            raise ValueError("At least two points required")
+
+        if request.clippedId:
+            file_path = os.path.join(DTM_CACHE_DIR, f"{request.clippedId}.tif")
+            if not os.path.exists(file_path):
+                if os.path.exists(DTM_CACHE_DIR):
+                    cache_files = os.listdir(DTM_CACHE_DIR)
+                    matching_files = [f for f in cache_files if f.startswith(request.clippedId)]
+                    if matching_files:
+                        file_path = os.path.join(DTM_CACHE_DIR, matching_files[0])
+                    else:
+                        raise FileNotFoundError(f"Clipped DTM not found: {request.clippedId}")
+                else:
+                    raise FileNotFoundError("Clipped DTM cache directory not found")
+        else:
+            filename = os.path.basename(request.dtmPath)
+            file_path = os.path.join(DTM_CACHE_DIR, filename)
+            if not os.path.exists(file_path):
+                file_path = os.path.join(UPLOADS_DIR, filename)
+
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"DTM file not found: {file_path}")
+
+        compute_path = file_path
+        if request.useSubsampled:
+            subsampled_filename = get_subsampled_filename(os.path.basename(file_path))
+            subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
+            if os.path.exists(subsampled_file_path):
+                compute_path = subsampled_file_path
+                logger.info(f"[{job_id}] Using subsampled DTM for viewshed: {compute_path}")
+
+        with rasterio.open(compute_path) as src:
+            src_crs = src.crs
+            if not src_crs:
+                is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
+                src_crs = "EPSG:32636" if is_projected else "EPSG:4326"
+
+            transformer = Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
+            data = src.read(1).astype(np.float32)
+            nodata = src.nodata
+
+            if nodata is not None:
+                data[data == nodata] = np.nan
+            if np.issubdtype(data.dtype, np.floating):
+                data[np.isnan(data)] = np.nan
+
+            res_x = abs(src.transform.a)
+            res_y = abs(src.transform.e)
+            is_projected = src.crs.is_projected if src.crs else (abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90)
+
+            raw_points = [{"lng": p.lng, "lat": p.lat, "height": p.height} for p in request.coordinates]
+            trajectory = []
+            interval = request.samplingIntervalMeters or 0
+            if interval and interval > 0:
+                for i in range(len(raw_points) - 1):
+                    segment_points = interpolate_segment_with_height(raw_points[i], raw_points[i + 1], interval)
+                    if i == 0:
+                        trajectory.extend(segment_points)
+                    else:
+                        trajectory.extend(segment_points[1:])
+            else:
+                trajectory = raw_points
+
+            viewshed = np.zeros((src.height, src.width), dtype=np.int32)
+
+            for idx, point in enumerate(trajectory):
+                with viewshed_jobs_lock:
+                    job = viewshed_jobs.get(job_id)
+                    if not job or job.get("cancel"):
+                        raise RuntimeError("cancelled")
+
+                lon, lat = point["lng"], point["lat"]
+                height_agl = point.get("height", 0.0) or 0.0
+                x, y = transformer.transform(lon, lat)
+                row0, col0 = src.index(x, y)
+                if not (0 <= row0 < src.height and 0 <= col0 < src.width):
+                    continue
+                obs_elev = data[row0, col0]
+                if np.isnan(obs_elev):
+                    continue
+                obs_elev = float(obs_elev) + float(height_agl)
+
+                meters_per_deg_lat = 111320.0
+                meters_per_deg_lon = 111320.0 * cos(radians(lat))
+
+                row_min, row_max = 0, src.height - 1
+                col_min, col_max = 0, src.width - 1
+                if request.maxDistanceMeters:
+                    max_dist = float(request.maxDistanceMeters)
+                    if is_projected:
+                        row_radius = int(np.ceil(max_dist / res_y))
+                        col_radius = int(np.ceil(max_dist / res_x))
+                    else:
+                        row_radius = int(np.ceil(max_dist / (res_y * meters_per_deg_lat)))
+                        col_radius = int(np.ceil(max_dist / (res_x * meters_per_deg_lon)))
+                    row_min = max(0, row0 - row_radius)
+                    row_max = min(src.height - 1, row0 + row_radius)
+                    col_min = max(0, col0 - col_radius)
+                    col_max = min(src.width - 1, col0 + col_radius)
+
+                for row in range(row_min, row_max + 1):
+                    for col in range(col_min, col_max + 1):
+                        if row == row0 and col == col0:
+                            viewshed[row, col] += 1
+                            continue
+                        elev = data[row, col]
+                        if np.isnan(elev):
+                            continue
+                        if request.maxDistanceMeters:
+                            dist = compute_distance_meters(row, col, row0, col0, res_x, res_y, meters_per_deg_lon, meters_per_deg_lat, is_projected)
+                            if dist > max_dist:
+                                continue
+                        if is_visible_line(
+                            data, row0, col0, row, col, obs_elev,
+                            res_x, res_y, meters_per_deg_lon, meters_per_deg_lat, is_projected
+                        ):
+                            viewshed[row, col] += 1
+
+                if idx % 2 == 0:
+                    progress = int((idx + 1) / max(len(trajectory), 1) * 100)
+                    with viewshed_jobs_lock:
+                        if job_id in viewshed_jobs:
+                            viewshed_jobs[job_id]["progress"] = progress
+
+            viewshed[np.isnan(data)] = -1
+
+            out_meta = src.meta.copy()
+            out_meta.update({
+                "driver": "GTiff",
+                "height": viewshed.shape[0],
+                "width": viewshed.shape[1],
+                "count": 1,
+                "dtype": rasterio.int32,
+                "nodata": -1,
+                "compress": "lzw"
+            })
+
+            output_name = f"viewshed_{int(time.time() * 1000)}.tif"
+            output_path = os.path.join(VIEWSHED_CACHE_DIR, output_name)
+            with rasterio.open(output_path, "w", **out_meta) as dest:
+                dest.write(viewshed, 1)
+
+            duration = time.time() - start_time
+            logger.info(f"[{job_id}] Viewshed generated in {duration:.2f}s: {output_name}")
+
+            with viewshed_jobs_lock:
+                if job_id in viewshed_jobs:
+                    viewshed_jobs[job_id]["status"] = "done"
+                    viewshed_jobs[job_id]["progress"] = 100
+                    viewshed_jobs[job_id]["result_path"] = output_path
+    except RuntimeError as e:
+        if str(e) == "cancelled":
+            logger.info(f"[{job_id}] Viewshed cancelled")
+            with viewshed_jobs_lock:
+                if job_id in viewshed_jobs:
+                    viewshed_jobs[job_id]["status"] = "cancelled"
+        else:
+            logger.error(f"[{job_id}] Viewshed error: {e}", exc_info=True)
+            with viewshed_jobs_lock:
+                if job_id in viewshed_jobs:
+                    viewshed_jobs[job_id]["status"] = "error"
+                    viewshed_jobs[job_id]["error"] = str(e)
+    except Exception as e:
+        logger.error(f"[{job_id}] Viewshed error: {e}", exc_info=True)
+        with viewshed_jobs_lock:
+            if job_id in viewshed_jobs:
+                viewshed_jobs[job_id]["status"] = "error"
+                viewshed_jobs[job_id]["error"] = str(e)
 
 @app.post("/elevation-profile")
 async def get_elevation_profile(request: ElevationProfileRequest):
@@ -375,6 +651,56 @@ async def get_elevation_at_point(request: ElevationAtPointRequest):
     except Exception as e:
         logger.error(f"Error getting elevation at point: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/viewshed/start")
+async def start_viewshed(request: ViewshedRequest):
+    job_id = str(uuid.uuid4())
+    with viewshed_jobs_lock:
+        viewshed_jobs[job_id] = {
+            "status": "running",
+            "progress": 0,
+            "result_path": None,
+            "error": None,
+            "cancel": False
+        }
+    thread = threading.Thread(target=compute_viewshed, args=(job_id, request), daemon=True)
+    thread.start()
+    return {"jobId": job_id}
+
+@app.get("/api/viewshed/status/{job_id}")
+async def viewshed_status(job_id: str):
+    with viewshed_jobs_lock:
+        job = viewshed_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {
+            "jobId": job_id,
+            "status": job.get("status"),
+            "progress": job.get("progress", 0),
+            "error": job.get("error")
+        }
+
+@app.post("/api/viewshed/cancel/{job_id}")
+async def cancel_viewshed(job_id: str):
+    with viewshed_jobs_lock:
+        job = viewshed_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        job["cancel"] = True
+    return {"jobId": job_id, "status": "cancelling"}
+
+@app.get("/api/viewshed/result/{job_id}")
+async def viewshed_result(job_id: str):
+    with viewshed_jobs_lock:
+        job = viewshed_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.get("status") != "done" or not job.get("result_path"):
+            raise HTTPException(status_code=409, detail="Result not ready")
+        result_path = job.get("result_path")
+    if not os.path.exists(result_path):
+        raise HTTPException(status_code=404, detail="Result file not found")
+    return FileResponse(result_path, media_type="image/tiff", filename=os.path.basename(result_path))
 
 @app.get("/health")
 async def health_check():

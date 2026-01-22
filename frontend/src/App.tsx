@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import MapPanel from './components/MapPanel';
 import ElevationProfile from './components/ElevationProfile';
 import ExportSettingsModal from './components/ExportSettingsModal';
+import SettingsModal, { GearIcon } from './components/SettingsModal';
 import { useFlightPath } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
 import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
@@ -94,7 +95,7 @@ function App() {
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
   const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
-  const [resolutionSearchRadius, setResolutionSearchRadius] = useState<number>(50);
+  const resolutionSearchRadius = 50;
   const [overlapPercentage, setOverlapPercentage] = useState<number>(50);
   const [fovDegrees, setFovDegrees] = useState<number>(100);
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
@@ -107,6 +108,7 @@ function App() {
   const [selectedClimbPresetId, setSelectedClimbPresetId] = useState<string>(CLIMB_PRESETS[0]?.id ?? 'custom');
   const [climbConfig, setClimbConfig] = useState<ClimbConfig>(presetToConfig(CLIMB_PRESETS[0]));
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
+  const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   
   // Queue system for height profile edits
   type EditOperation = 
@@ -756,7 +758,7 @@ function App() {
   const handleDtmUnload = useCallback(() => {
     // Show warning confirmation dialog
     const confirmed = window.confirm(
-      'האם אתה בטוח שברצונך לפרוק את ה-DTM?\n\nפעולה זו תמחק את כל הנקודות והמסלולים ותנקה את פרופיל הגובה.\n\nלא ניתן לבטל פעולה זו.'
+      'האם אתה בטוח שברצונך להסיר את ה-DTM?\n\nפעולה זו תמחק את כל הנקודות והמסלולים ותנקה את פרופיל הגובה.\n\nלא ניתן לבטל פעולה זו.'
     );
     
     if (!confirmed) {
@@ -830,7 +832,7 @@ function App() {
       // Trigger cleanup before unload
       cleanupDtm();
 
-      const warning = 'רענון ימחק את כל הנקודות ויפרוק את ה‑DTM. להמשיך?';
+      const warning = 'רענון ימחק את כל הנקודות ויסיר את ה‑DTM. להמשיך?';
       event.preventDefault();
       event.returnValue = warning;
       return warning;
@@ -1075,97 +1077,15 @@ function App() {
           <div className="header-title-container">
             <img src="/favicon.png" alt="Logo" className="app-logo" />
             <h1>מתכנן משימות LiDAR</h1>
-          </div>
-          <div className="header-parameters">
-            <div className="header-group">
-              <div className="group-title">פרמטרי טיסה</div>
-              <div className="group-inputs">
-                <label>
-                  <span className="input-label">גובה נומינלי (מ'):</span>
-                  <input
-                    type="number"
-                    value={nominalFlightHeight}
-                    onChange={(e) => setNominalFlightHeight(Number(e.target.value))}
-                    min="0"
-                    step="10"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">גובה בטיחות (מ'):</span>
-                  <input
-                    type="number"
-                    value={safetyHeight}
-                    onChange={(e) => setSafetyHeight(Number(e.target.value))}
-                    min="0"
-                    step="10"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">גובה רזולוציה (מ'):</span>
-                  <input
-                    type="number"
-                    value={resolutionHeight}
-                    onChange={(e) => setResolutionHeight(Number(e.target.value))}
-                    min="0"
-                    step="10"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">רדיוס בטיחות (מ'):</span>
-                  <input
-                    type="number"
-                    value={safetySearchRadius}
-                    onChange={(e) => setSafetySearchRadius(Number(e.target.value))}
-                    min="1"
-                    step="5"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">רדיוס רזולוציה (מ'):</span>
-                  <input
-                    type="number"
-                    value={resolutionSearchRadius}
-                    onChange={(e) => setResolutionSearchRadius(Number(e.target.value))}
-                    min="1"
-                    step="5"
-                    className="modern-input"
-                  />
-                </label>
-              </div>
-            </div>
-            <div className="header-group">
-              <div className="group-title">פרמטרי משימה</div>
-              <div className="group-inputs">
-                <label>
-                  <span className="input-label">חפיפה (%):</span>
-                  <input
-                    type="number"
-                    value={overlapPercentage}
-                    onChange={(e) => setOverlapPercentage(Number(e.target.value))}
-                    min="0"
-                    max="99.9"
-                    step="1"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">שדה ראייה (°):</span>
-                  <input
-                    type="number"
-                    value={fovDegrees}
-                    onChange={(e) => setFovDegrees(Number(e.target.value))}
-                    min="1"
-                    max="179"
-                    step="1"
-                    className="modern-input"
-                  />
-                </label>
-              </div>
-            </div>
+            <button
+              onClick={() => setShowSettingsModal(true)}
+              className="btn btn-secondary btn-icon settings-header-btn"
+              type="button"
+              aria-label="הגדרות"
+              title="הגדרות"
+            >
+              <GearIcon />
+            </button>
           </div>
         </div>
         <div className="header-controls">
@@ -1297,9 +1217,7 @@ function App() {
           hoverSource={hoverSource}
           climbPresets={CLIMB_PRESETS}
           selectedClimbPresetId={selectedClimbPresetId}
-          onSelectClimbPreset={handleSelectClimbPreset}
           climbConfig={climbConfig}
-          setClimbConfig={setClimbConfig}
           climbRequests={climbRequests}
           setClimbRequests={setClimbRequests}
           climbWarnings={fullProfileResult.warnings}
@@ -1316,6 +1234,27 @@ function App() {
           const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
           exportKML(climbRequests, climbRequestsByRoute, selectedRouteIds, nominalFlightHeight, firstTurnPointElevation);
         }}
+      />
+      <SettingsModal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        nominalFlightHeight={nominalFlightHeight}
+        setNominalFlightHeight={setNominalFlightHeight}
+        safetyRadius={safetySearchRadius}
+        setSafetyRadius={setSafetySearchRadius}
+        safetyHeight={safetyHeight}
+        setSafetyHeight={setSafetyHeight}
+        outputHeight={resolutionHeight}
+        setOutputHeight={setResolutionHeight}
+        overlapPercentage={overlapPercentage}
+        setOverlapPercentage={setOverlapPercentage}
+        fovDegrees={fovDegrees}
+        setFovDegrees={setFovDegrees}
+        climbPresets={CLIMB_PRESETS}
+        selectedClimbPresetId={selectedClimbPresetId}
+        onSelectClimbPreset={handleSelectClimbPreset}
+        climbConfig={climbConfig}
+        setClimbConfig={setClimbConfig}
       />
     </div>
   );

@@ -2189,22 +2189,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       <div className="elevation-header">
         <div className="elevation-controls">
           <div className="control-group">
-            <div className="group-title">נקודות הגבהה</div>
-            <div className="group-buttons">
-              <Tooltip tooltip={climbRequests.length ? 'הסר את כל העליות' : 'טרם הוגדרה עלייה'}>
-                <button
-                  onClick={handleRemoveClimb}
-                  disabled={climbRequests.length === 0}
-                  className="btn btn-destructive btn-icon"
-                  type="button"
-                  aria-label="הסר עליות"
-                >
-                  <TrashIcon />
-                </button>
-              </Tooltip>
-            </div>
-          </div>
-          <div className="control-group">
             <div className="group-title">זום</div>
             <div className="group-buttons">
               <Tooltip tooltip="איפוס זום">
@@ -2246,8 +2230,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </div>
           </div>
           <div className="control-group">
-            <div className="group-title">ייצוא</div>
+            <div className="group-title">נקודות הגבהה </div>
             <div className="group-buttons">
+              <Tooltip tooltip={climbRequests.length ? 'הסר את כל העליות' : 'טרם הוגדרה עלייה'}>
+                <button
+                  onClick={handleRemoveClimb}
+                  disabled={climbRequests.length === 0}
+                  className="btn btn-destructive btn-icon"
+                  type="button"
+                  aria-label="הסר עליות"
+                >
+                  <TrashIcon />
+                </button>
+              </Tooltip>
               <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין' : 'ייצא את תרשים הגובה כ-PNG'}>
                 <button
                   onClick={exportPNG}

@@ -402,7 +402,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return;
     }
 
-    console.log(`ElevationProfile: Rendering with ${elevationProfile.length} points, updating min/max and safety/resolution lines`);
 
     const svg = d3.select(svgRef.current);
     // Save zoom transform before clearing (use existing transform if available, otherwise use saved one)
@@ -716,10 +715,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       d => d.minElevation !== undefined && d.maxElevation !== undefined
     );
 
-    console.log(`ElevationProfile render: ${elevationProfile.length} total points, ${pointsWithMinMax.length} with min/max`);
-
     if (pointsWithMinMax.length > 0) {
-      console.log(`Drawing min/max range bars for ${pointsWithMinMax.length} points`);
 
       /*
       // Draw vertical range bars for min/max elevation - make them more visible

@@ -232,6 +232,7 @@ type IconName =
   | 'silent'
   | 'checklist'
   | 'checklist-single'
+  | 'pin'
   | 'sliders';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
@@ -437,6 +438,13 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
         <svg {...common}>
           <path {...stroke} d="M20 12l-8 8-10-10V2h8l10 10z" />
           <circle {...stroke} cx="6" cy="6" r="1.5" />
+        </svg>
+      );
+    case 'pin':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+          <path {...stroke} d="M10 7v6 M10 10a2 2 0 0 1 4 0v3" />
         </svg>
       );
     case 'info':
@@ -4664,7 +4672,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   aria-label={isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}
                   type="button"
                 >
-                  <Icon name="info" />
+                  <Icon name="pin" />
                   <span className="sr-only">{isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}</span>
                 </button>
               </Tooltip>

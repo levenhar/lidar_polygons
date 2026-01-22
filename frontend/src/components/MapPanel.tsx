@@ -521,8 +521,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [viewshedJobId, setViewshedJobId] = useState<string | null>(null);
   const [viewshedProgress, setViewshedProgress] = useState(0);
   const [viewshedStatus, setViewshedStatus] = useState<'idle' | 'running' | 'done' | 'error' | 'cancelled'>('idle');
+  const [isViewshedRouteModalOpen, setIsViewshedRouteModalOpen] = useState(false);
   const viewshedPollRef = useRef<number | null>(null);
   const viewshedSignatureRef = useRef<string | null>(null);
+  const viewshedRouteSnapshotRef = useRef<Coordinate[] | null>(null);
+  const pendingViewshedRouteSnapshotRef = useRef<Coordinate[] | null>(null);
+  const skipViewshedRoutePromptRef = useRef(false);
   const skipViewshedReplaceConfirmRef = useRef(false);
   const passiveRouteLinesRef = useRef<Record<string, L.Polyline>>({});
   const suggestedLinesRef = useRef<L.Polyline[]>([]);
@@ -539,6 +543,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [dialogValues, setDialogValues] = useState<Record<string, string>>({});
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [isViewshedModalOpen, setIsViewshedModalOpen] = useState(false);
+  const [viewshedModalMode, setViewshedModalMode] = useState<'progress' | 'settings' | null>(null);
 
   // New DTM loading flow state
   const [showDtmOptionsModal, setShowDtmOptionsModal] = useState(false);
@@ -831,6 +836,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const gradientStops = stops.map((stop) => `${stop.color} ${stop.pos * 100}%`).join(', ');
     return `linear-gradient(to bottom, ${gradientStops})`;
   }, [viewshedColormap]);
+  const hasViewshedResult = Boolean(viewshedRaster) || viewshedStatus === 'done';
+  const viewshedStatusLabel = useMemo(() => {
+    switch (viewshedStatus) {
+      case 'running':
+        return 'מחשב';
+      case 'done':
+        return 'מוכן';
+      case 'error':
+        return 'שגיאה';
+      case 'cancelled':
+        return 'בוטל';
+      default:
+        return 'ממתין';
+    }
+  }, [viewshedStatus]);
   const hoveredUtm = useMemo(() => {
     if (!hoveredElevationPoint) return null;
     return latLngToUTM(hoveredElevationPoint.latitude, hoveredElevationPoint.longitude);
@@ -3179,6 +3199,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (signature) {
       viewshedSignatureRef.current = signature;
     }
+    if (pendingViewshedRouteSnapshotRef.current) {
+      viewshedRouteSnapshotRef.current = pendingViewshedRouteSnapshotRef.current.map((point) => ({ ...point }));
+      pendingViewshedRouteSnapshotRef.current = null;
+    }
   }, [dtmBounds]);
 
   const handleGenerateViewshed = useCallback(async () => {
@@ -3210,6 +3234,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setIsViewshedProcessing(true);
     setViewshedStatus('running');
     setViewshedProgress(0);
+    pendingViewshedRouteSnapshotRef.current = flightPath.map((point) => ({ ...point }));
     try {
       const trajectory = flightPath.map((point) => ({
         lng: point.lng,
@@ -3292,6 +3317,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [dtmSource, dtmLoaded, flightPath, isViewshedProcessing, nominalFlightHeight, propClippedId, stopViewshedPolling, viewshedStatus, loadViewshedFromArrayBuffer, flightPathSignature]);
 
+  const handleViewshedButtonClick = useCallback(() => {
+    if (hasViewshedResult) {
+      setViewshedModalMode('settings');
+      setIsViewshedModalOpen(true);
+      return;
+    }
+    setViewshedModalMode('progress');
+    setIsViewshedModalOpen(true);
+    handleGenerateViewshed();
+  }, [handleGenerateViewshed, hasViewshedResult]);
+
   const handleCancelViewshed = useCallback(async () => {
     if (!viewshedJobId) return;
     try {
@@ -3305,27 +3341,58 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [viewshedJobId, stopViewshedPolling]);
 
+  const handleViewshedRouteRecalculate = useCallback(() => {
+    setIsViewshedRouteModalOpen(false);
+    skipViewshedReplaceConfirmRef.current = true;
+    setViewshedModalMode('progress');
+    setIsViewshedModalOpen(true);
+    handleGenerateViewshed();
+  }, [handleGenerateViewshed]);
+
+  const handleViewshedRouteDelete = useCallback(() => {
+    setIsViewshedRouteModalOpen(false);
+    clearViewshedOverlay();
+    setViewshedRaster(null);
+    setViewshedVisible(false);
+    setViewshedStatus('idle');
+    setViewshedProgress(0);
+    viewshedSignatureRef.current = null;
+    viewshedRouteSnapshotRef.current = null;
+  }, [clearViewshedOverlay]);
+
+  const handleViewshedRouteCancelEditing = useCallback(() => {
+    setIsViewshedRouteModalOpen(false);
+    const snapshot = viewshedRouteSnapshotRef.current;
+    if (snapshot && snapshot.length > 0) {
+      skipViewshedRoutePromptRef.current = true;
+      onPathChange(snapshot.map((point) => ({ ...point })));
+      return;
+    }
+    if (canUndo) {
+      skipViewshedRoutePromptRef.current = true;
+      onUndo();
+    }
+  }, [onPathChange, onUndo, canUndo]);
+
   useEffect(() => {
     if (!viewshedRaster || viewshedStatus !== 'done') return;
     if (!viewshedSignatureRef.current) {
       viewshedSignatureRef.current = flightPathSignature;
+      viewshedRouteSnapshotRef.current = flightPath.map((point) => ({ ...point }));
       return;
     }
     if (viewshedSignatureRef.current === flightPathSignature) return;
-
-    const shouldUpdate = window.confirm('מסלול הטיסה השתנה. לעדכן את שדה הראייה?');
-    if (shouldUpdate) {
-      skipViewshedReplaceConfirmRef.current = true;
-      handleGenerateViewshed();
-    } else {
-      clearViewshedOverlay();
-      setViewshedRaster(null);
-      setViewshedVisible(false);
-      setViewshedStatus('idle');
-      setViewshedProgress(0);
-      viewshedSignatureRef.current = null;
+    if (skipViewshedRoutePromptRef.current) {
+      skipViewshedRoutePromptRef.current = false;
+      return;
     }
-  }, [flightPathSignature, viewshedRaster, viewshedStatus, handleGenerateViewshed, clearViewshedOverlay]);
+    if (isViewshedRouteModalOpen) return;
+    if (isViewshedModalOpen) {
+      setIsViewshedModalOpen(false);
+      setViewshedModalMode(null);
+    }
+    setIsViewshedRouteModalOpen(true);
+  }, [flightPathSignature, viewshedRaster, viewshedStatus, flightPath, isViewshedRouteModalOpen, isViewshedModalOpen]);
 
   useEffect(() => {
     return () => {
@@ -3338,10 +3405,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
   }, [renderViewshedOverlay]);
 
   useEffect(() => {
-    if (viewshedStatus === 'done' && isViewshedModalOpen) {
+    if (viewshedStatus === 'done' && isViewshedModalOpen && viewshedModalMode === 'progress') {
       setIsViewshedModalOpen(false);
+      setViewshedModalMode(null);
     }
-  }, [viewshedStatus, isViewshedModalOpen]);
+  }, [viewshedStatus, isViewshedModalOpen, viewshedModalMode]);
 
   useEffect(() => {
     if (!dtmSource || !dtmLoaded) {
@@ -3802,103 +3870,186 @@ const MapPanel: React.FC<MapPanelProps> = ({
           className="quick-modal__backdrop"
           role="dialog"
           aria-modal="true"
-          onClick={() => setIsViewshedModalOpen(false)}
+          onClick={() => {
+            setIsViewshedModalOpen(false);
+            setViewshedModalMode(null);
+          }}
         >
           <div className="quick-modal__card" onClick={(e) => e.stopPropagation()}>
             <div className="quick-modal__header">
-              <div className="quick-modal__title">הגדרות שדה ראייה</div>
+              <div className="quick-modal__title">{hasViewshedResult ? 'הגדרות שדה ראייה' : 'חישוב שדה ראייה'}</div>
               <button
                 type="button"
                 className="quick-modal__close"
-                onClick={() => setIsViewshedModalOpen(false)}
+                onClick={() => {
+                  setIsViewshedModalOpen(false);
+                  setViewshedModalMode(null);
+                }}
                 aria-label="סגירת חלון שדה ראייה"
               >
                 ×
               </button>
             </div>
             <div className="quick-modal__body viewshed-modal__body">
-              <label className="quick-modal__label" htmlFor="viewshed-visible-toggle">
-                תצוגה
-              </label>
-              <label className="switch viewshed-modal__toggle">
-                <input
-                  id="viewshed-visible-toggle"
-                  type="checkbox"
-                  checked={viewshedVisible}
-                  onChange={(e) => setViewshedVisible(e.target.checked)}
-                  disabled={!viewshedRaster}
-                />
-                <span className="switch-slider" />
-                <span className="viewshed-modal__toggle-text">{viewshedVisible ? 'מוצג' : 'מוסתר'}</span>
-              </label>
-
-              <label className="quick-modal__label" htmlFor="viewshed-colormap">
-                צבע
-              </label>
-              <select
-                id="viewshed-colormap"
-                className="viewshed-select"
-                value={viewshedColormap}
-                onChange={(e) => setViewshedColormap(e.target.value)}
-                disabled={!viewshedRaster}
-              >
-                {Object.entries(VIEWSHED_COLORMAPS).map(([key, item]) => (
-                  <option key={key} value={key}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-
-              <label className="quick-modal__label" htmlFor="viewshed-opacity-slider">
-                אטימות {Math.round(viewshedOpacity * 100)}%
-              </label>
-              <input
-                id="viewshed-opacity-slider"
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                value={viewshedOpacity}
-                onChange={handleViewshedOpacityChange}
-                className="viewshed-opacity-slider"
-                disabled={!viewshedRaster}
-              />
-
-              <div className="viewshed-modal__status">
-                סטטוס: {viewshedStatus === 'running' ? 'מחשב' : viewshedStatus === 'done' ? 'מוכן' : viewshedStatus === 'error' ? 'שגיאה' : viewshedStatus === 'cancelled' ? 'בוטל' : 'ממתין'}
-              </div>
-
-              {isViewshedProcessing && (
-                <div className="viewshed-progress">
-                  <div className="viewshed-progress-bar">
-                    <div
-                      className="viewshed-progress-fill"
-                      style={{ width: `${viewshedProgress}%` }}
+              {hasViewshedResult ? (
+                <>
+                  <label className="quick-modal__label" htmlFor="viewshed-visible-toggle">
+                    תצוגה
+                  </label>
+                  <label className="switch viewshed-modal__toggle">
+                    <input
+                      id="viewshed-visible-toggle"
+                      type="checkbox"
+                      checked={viewshedVisible}
+                      onChange={(e) => setViewshedVisible(e.target.checked)}
+                      disabled={!viewshedRaster}
                     />
+                    <span className="switch-slider" />
+                    <span className="viewshed-modal__toggle-text">{viewshedVisible ? 'מוצג' : 'מוסתר'}</span>
+                  </label>
+
+                  <label className="quick-modal__label" htmlFor="viewshed-colormap">
+                    צבע
+                  </label>
+                  <select
+                    id="viewshed-colormap"
+                    className="viewshed-select"
+                    value={viewshedColormap}
+                    onChange={(e) => setViewshedColormap(e.target.value)}
+                    disabled={!viewshedRaster}
+                  >
+                    {Object.entries(VIEWSHED_COLORMAPS).map(([key, item]) => (
+                      <option key={key} value={key}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+
+                  <label className="quick-modal__label" htmlFor="viewshed-opacity-slider">
+                    אטימות {Math.round(viewshedOpacity * 100)}%
+                  </label>
+                  <input
+                    id="viewshed-opacity-slider"
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={viewshedOpacity}
+                    onChange={handleViewshedOpacityChange}
+                    className="viewshed-opacity-slider"
+                    disabled={!viewshedRaster}
+                  />
+
+                  <div className="viewshed-modal__status">
+                    סטטוס: {viewshedStatusLabel}
                   </div>
-                  <span className="viewshed-progress-text">{viewshedProgress}%</span>
-                </div>
+
+                  {isViewshedProcessing && (
+                    <div className="viewshed-progress">
+                      <div className="viewshed-progress-bar">
+                        <div
+                          className="viewshed-progress-fill"
+                          style={{ width: `${viewshedProgress}%` }}
+                        />
+                      </div>
+                      <span className="viewshed-progress-text">{viewshedProgress}%</span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="viewshed-modal__status">
+                    סטטוס: {viewshedStatusLabel}
+                  </div>
+                  <div className="viewshed-progress">
+                    <div className="viewshed-progress-bar">
+                      <div
+                        className="viewshed-progress-fill"
+                        style={{ width: `${viewshedProgress}%` }}
+                      />
+                    </div>
+                    <span className="viewshed-progress-text">{viewshedProgress}%</span>
+                  </div>
+                </>
               )}
             </div>
             <div className="quick-modal__actions">
-              <button type="button" className="btn btn-tertiary" onClick={() => setIsViewshedModalOpen(false)}>
+              <button
+                type="button"
+                className="btn btn-tertiary"
+                onClick={() => {
+                  setIsViewshedModalOpen(false);
+                  setViewshedModalMode(null);
+                }}
+              >
                 סגור
               </button>
+              {hasViewshedResult ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-destructive"
+                    onClick={handleCancelViewshed}
+                    disabled={!viewshedJobId || !isViewshedProcessing}
+                  >
+                    בטל חישוב
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleGenerateViewshed}
+                    disabled={!dtmLoaded || flightPath.length < 2 || isViewshedProcessing}
+                  >
+                    חשב שדה ראייה
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-destructive"
+                  onClick={handleCancelViewshed}
+                  disabled={!viewshedJobId || !isViewshedProcessing}
+                >
+                  בטל חישוב
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {isViewshedRouteModalOpen && (
+        <div
+          className="quick-modal__backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setIsViewshedRouteModalOpen(false)}
+        >
+          <div className="quick-modal__card" onClick={(e) => e.stopPropagation()}>
+            <div className="quick-modal__header">
+              <div className="quick-modal__title">מסלול עודכן</div>
               <button
                 type="button"
-                className="btn btn-destructive"
-                onClick={handleCancelViewshed}
-                disabled={!viewshedJobId || !isViewshedProcessing}
+                className="quick-modal__close"
+                onClick={() => setIsViewshedRouteModalOpen(false)}
+                aria-label="סגירת חלון שינוי מסלול"
               >
-                בטל חישוב
+                ×
               </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleGenerateViewshed}
-                disabled={!dtmLoaded || flightPath.length < 2 || isViewshedProcessing}
-              >
-                חשב שדה ראייה
+            </div>
+            <div className="quick-modal__body">
+              <div className="quick-modal__text">
+                מסלול הטיסה השתנה ויש שדה ראייה קיים.
+              </div>
+            </div>
+            <div className="quick-modal__actions quick-modal__actions--stack">
+              <button type="button" className="btn btn-primary" onClick={handleViewshedRouteRecalculate}>
+                עריכת מסלול וחישוב שדה ראייה חדש
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleViewshedRouteDelete}>
+                עריכת מסלול ומחיקת שדה ראייה
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleViewshedRouteCancelEditing}>
+                ביטול עריכת מסלול
               </button>
             </div>
           </div>
@@ -4281,16 +4432,26 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">מתקדם</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : flightPath.length < 2 ? 'הוסף לפחות שתי נקודות תחילה' : 'פתח הגדרות שדה ראייה'}>
+              <Tooltip
+                tooltip={
+                  !dtmLoaded
+                    ? 'טען DTM תחילה'
+                    : flightPath.length < 2
+                      ? 'הוסף לפחות שתי נקודות תחילה'
+                    : hasViewshedResult
+                        ? 'פתח הגדרות שדה ראייה'
+                        : 'חשב שדה ראייה'
+                }
+              >
                 <button
-                  onClick={() => setIsViewshedModalOpen(true)}
+                  onClick={handleViewshedButtonClick}
                   className="btn btn-tertiary btn-icon"
-                  aria-label="פתח הגדרות שדה ראייה"
+                  aria-label={hasViewshedResult ? 'פתח הגדרות שדה ראייה' : 'חשב שדה ראייה'}
                   type="button"
                   disabled={!dtmLoaded || flightPath.length < 2}
                 >
                   <Icon name="eye" />
-                  <span className="sr-only">הגדרות שדה ראייה</span>
+                  <span className="sr-only">{hasViewshedResult ? 'הגדרות שדה ראייה' : 'חשב שדה ראייה'}</span>
                 </button>
               </Tooltip>
               <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע במיקום העכבר'}>

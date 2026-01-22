@@ -44,26 +44,6 @@ const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   );
 };
 
-const ClimbIcon: React.FC = () => {
-  const common = {
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    xmlns: 'http://www.w3.org/2000/svg'
-  };
-  const stroke = {
-    stroke: 'currentColor',
-    strokeWidth: 2,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const
-  };
-  return (
-    <svg {...common}>
-      <path {...stroke} d="M4 18l6-10 4 7 3-5" />
-      <path {...stroke} d="M17 10h3v-3" />
-    </svg>
-  );
-};
-
 const TrashIcon: React.FC = () => {
   const common = {
     viewBox: '0 0 24 24',
@@ -150,16 +130,6 @@ const ZoomOutIcon: React.FC = () => {
   );
 };
 
-const toDraft = (config: ClimbConfig) => ({
-  climbRatio: config.climbRatio.toString(),
-  descentRatio: config.descentRatio.toString(),
-  allowTurnsDuringClimb: config.allowTurnsDuringClimb,
-  linkRatios: config.linkRatios,
-  vertexProximityMeters: config.vertexProximityMeters.toString(),
-  minClimb: config.minClimb.toString(),
-  maxClimb: config.maxClimb.toString()
-});
-
 interface ElevationProfileProps {
   elevationProfile: ElevationPoint[];
   loading: boolean;
@@ -177,9 +147,7 @@ interface ElevationProfileProps {
   hoverSource?: 'map' | 'profile' | null;
   climbPresets: ClimbPreset[];
   selectedClimbPresetId: string;
-  onSelectClimbPreset: (presetId: string) => void;
   climbConfig: ClimbConfig;
-  setClimbConfig: React.Dispatch<React.SetStateAction<ClimbConfig>>;
   climbRequests: { endDistance: number; climbAmount: number }[];
   setClimbRequests: React.Dispatch<React.SetStateAction<{ endDistance: number; climbAmount: number }[]>>;
   climbWarnings: string[];
@@ -203,9 +171,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   hoverSource,
   climbPresets,
   selectedClimbPresetId,
-  onSelectClimbPreset,
   climbConfig,
-  setClimbConfig,
   climbRequests,
   setClimbRequests,
   climbWarnings,
@@ -219,21 +185,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGRectElement, unknown> | null>(null);
   const overlayRef = useRef<d3.Selection<SVGRectElement, unknown, null, undefined> | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
-  const [isClimbConfigOpen, setIsClimbConfigOpen] = useState(false);
   const [isClimbAmountOpen, setIsClimbAmountOpen] = useState(false);
   const [pendingClimbEnd, setPendingClimbEnd] = useState<number | null>(null);
   const [climbAmountInput, setClimbAmountInput] = useState<string>('');
   const [climbAmountError, setClimbAmountError] = useState<string | null>(null);
-  const [climbConfigDraft, setClimbConfigDraft] = useState<{
-    climbRatio: string;
-    descentRatio: string;
-    allowTurnsDuringClimb: boolean;
-    linkRatios: boolean;
-    vertexProximityMeters: string;
-    minClimb: string;
-    maxClimb: string;
-  }>(() => toDraft(climbConfig));
-  const [climbConfigError, setClimbConfigError] = useState<string | null>(null);
   const [climbValidationPopup, setClimbValidationPopup] = useState<string | null>(null);
   const [showDeleteAllConfirmation, setShowDeleteAllConfirmation] = useState(false);
   const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number } | null>(null);
@@ -361,32 +316,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     
     return { maxClimbUp, maxDescend };
   }, [pendingClimbEnd, totalRouteLength, vertexDistances, climbConfig, climbRequests]);
-
-  const markCustomPreset = useCallback(() => {
-    onSelectClimbPreset('custom');
-  }, [onSelectClimbPreset]);
-
-  const handlePresetChange = useCallback(
-    (presetId: string) => {
-      onSelectClimbPreset(presetId);
-      const preset = climbPresets.find((p) => p.id === presetId);
-      if (preset) {
-        setClimbConfigDraft(toDraft(preset));
-        setClimbConfigError(null);
-      } else {
-        setClimbConfigDraft(toDraft(climbConfig));
-      }
-    },
-    [climbPresets, climbConfig, onSelectClimbPreset]
-  );
-
-  const handleAllowTurnsChange = useCallback(
-    (checked: boolean) => {
-      markCustomPreset();
-      setClimbConfigDraft((prev) => ({ ...prev, allowTurnsDuringClimb: checked }));
-    },
-    [markCustomPreset]
-  );
 
   // Calculate tooltip position to keep it on screen
   useLayoutEffect(() => {
@@ -1982,50 +1911,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     });
   }, [setClimbRequests]);
 
-  const openClimbConfig = useCallback(() => {
-    setClimbConfigDraft(toDraft(climbConfig));
-    setClimbConfigError(null);
-    setIsClimbConfigOpen(true);
-  }, [climbConfig]);
-
-  const handleSaveClimbConfig = useCallback(() => {
-    const climb = parseFloat(climbConfigDraft.climbRatio);
-    // If linked, use climb ratio for descent as well
-    const descent = climbConfigDraft.linkRatios ? climb : parseFloat(climbConfigDraft.descentRatio);
-    const proximity = parseFloat(climbConfigDraft.vertexProximityMeters);
-    const minClimb = parseFloat(climbConfigDraft.minClimb);
-    const maxClimb = parseFloat(climbConfigDraft.maxClimb);
-
-    if (!Number.isFinite(climb) || climb <= 0 || !Number.isFinite(descent) || descent <= 0) {
-      setClimbConfigError('Ratios must be greater than 0.');
-      return;
-    }
-    if (!Number.isFinite(proximity) || proximity < 0) {
-      setClimbConfigError('Vertex proximity must be >= 0.');
-      return;
-    }
-    if (!Number.isFinite(minClimb) || !Number.isFinite(maxClimb)) {
-      setClimbConfigError('Min and max climb must be valid numbers.');
-      return;
-    }
-    if (minClimb >= maxClimb) {
-      setClimbConfigError('Min climb must be less than max climb.');
-      return;
-    }
-    setClimbConfig({
-      climbRatio: climb,
-      descentRatio: descent,
-      allowTurnsDuringClimb: climbConfigDraft.allowTurnsDuringClimb,
-      linkRatios: climbConfigDraft.linkRatios,
-      vertexProximityMeters: proximity,
-      minClimb: minClimb,
-      maxClimb: maxClimb
-    });
-    onSelectClimbPreset('custom');
-    setIsClimbConfigOpen(false);
-    setClimbConfigError(null);
-  }, [climbConfigDraft, onSelectClimbPreset]);
-
   const resetZoom = useCallback(() => {
     if (!zoomBehaviorRef.current || !overlayRef.current) return;
     const identity = d3.zoomIdentity;
@@ -2310,16 +2195,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           <div className="control-group">
             <div className="group-title">נקודות הגבהה</div>
             <div className="group-buttons">
-              <Tooltip tooltip="הגדרות עלייה">
-                <button
-                  onClick={openClimbConfig}
-                  className="btn btn-secondary btn-icon"
-                  type="button"
-                  aria-label="הגדרות עלייה"
-                >
-                  <ClimbIcon />
-                </button>
-              </Tooltip>
               <Tooltip tooltip={climbRequests.length ? 'הסר את כל העליות' : 'טרם הוגדרה עלייה'}>
                 <button
                   onClick={handleRemoveClimb}
@@ -2536,145 +2411,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             <div className="climb-modal__actions">
               <button className="btn btn-tertiary" type="button" onClick={handleCancelDeleteAll}>ביטול</button>
               <button className="btn btn-primary" type="button" onClick={handleConfirmDeleteAll}>מחק הכל</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {isClimbConfigOpen && (
-        <div className="climb-modal__backdrop" role="dialog" aria-modal="true">
-          <div className="climb-modal__card">
-            <div className="climb-modal__header">
-              <div className="climb-modal__title">הגדרות עלייה</div>
-              <button className="climb-modal__close" onClick={() => setIsClimbConfigOpen(false)}>×</button>
-            </div>
-            <div className="climb-modal__body">
-              <label className="climb-modal__label" htmlFor="climb-preset-select">תבנית מוגדרת</label>
-              <select
-                id="climb-preset-select"
-                value={selectedClimbPresetId}
-                onChange={(e) => handlePresetChange(e.target.value)}
-                className="climb-modal__input"
-              >
-                <option value="custom">מותאם אישית (ערוך למטה)</option>
-                {climbPresets.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.name}
-                  </option>
-                ))}
-              </select>
-              <div className="climb-modal__hint">
-                {selectedClimbPresetId === 'custom'
-                  ? 'ערוך את השדות למטה כדי להגדיר את התנהגות העלייה שלך.'
-                  : selectedPreset?.description || 'תבנית נטענה מ-climbPresets.json.'}
-              </div>
-              <label className="climb-modal__toggle">
-                <input
-                  type="checkbox"
-                  checked={climbConfigDraft.linkRatios}
-                  onChange={(e) => {
-                    const linked = e.target.checked;
-                    markCustomPreset();
-                    setClimbConfigDraft((prev) => ({
-                      ...prev,
-                      linkRatios: linked,
-                      // When linking, sync descent to current climb ratio immediately
-                      descentRatio: linked ? prev.climbRatio : prev.descentRatio
-                    }));
-                  }}
-                />
-                קשר יחסים (השתמש באותו ערך לעלייה וירידה)
-              </label>
-
-              <label className="climb-modal__label" htmlFor="climb-ratio-input">יחס עלייה (מ' אופקי / 1מ' למעלה)</label>
-              <input
-                id="climb-ratio-input"
-                type="number"
-                step="0.1"
-                min="0.1"
-                value={climbConfigDraft.climbRatio}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({
-                    ...prev,
-                    climbRatio: e.target.value,
-                    // If linked, update descent ratio as well
-                    descentRatio: prev.linkRatios ? e.target.value : prev.descentRatio
-                  }));
-                }}
-                className="climb-modal__input"
-              />
-
-              <label className="climb-modal__label" htmlFor="descent-ratio-input">יחס ירידה (מ' אופקי / 1מ' למטה)</label>
-              <input
-                id="descent-ratio-input"
-                type="number"
-                step="0.1"
-                min="0.1"
-                value={climbConfigDraft.descentRatio}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({ ...prev, descentRatio: e.target.value }));
-                }}
-                className="climb-modal__input"
-                disabled={climbConfigDraft.linkRatios}
-              />
-
-              <label className="climb-modal__label" htmlFor="vertex-proximity-input">קרבת קודקוד (מטרים)</label>
-              <input
-                id="vertex-proximity-input"
-                type="number"
-                step="1"
-                min="0"
-                value={climbConfigDraft.vertexProximityMeters}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({ ...prev, vertexProximityMeters: e.target.value }));
-                }}
-                className="climb-modal__input"
-              />
-
-              <label className="climb-modal__label" htmlFor="min-climb-input">עלייה מינימלית (מטרים)</label>
-              <input
-                id="min-climb-input"
-                type="number"
-                step="1"
-                value={climbConfigDraft.minClimb}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({ ...prev, minClimb: e.target.value }));
-                }}
-                className="climb-modal__input"
-              />
-
-              <label className="climb-modal__label" htmlFor="max-climb-input">עלייה מקסימלית (מטרים)</label>
-              <input
-                id="max-climb-input"
-                type="number"
-                step="1"
-                value={climbConfigDraft.maxClimb}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({ ...prev, maxClimb: e.target.value }));
-                }}
-                className="climb-modal__input"
-              />
-
-              <label className="climb-modal__toggle">
-                <input
-                  type="checkbox"
-                  checked={climbConfigDraft.allowTurnsDuringClimb}
-                  onChange={(e) => handleAllowTurnsChange(e.target.checked)}
-                />
-                אפשר עלייה דרך פניות (אחרת, העלייה נעצרת עד סוף הפנייה)
-              </label>
-              <div className="climb-modal__hint">
-                שינויים חלים מיד על עליות חדשות. עליות קיימות מחושבות מחדש עם המדיניות החדשה.
-              </div>
-              {climbConfigError && <div className="climb-modal__error">{climbConfigError}</div>}
-            </div>
-            <div className="climb-modal__actions">
-              <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbConfigOpen(false)}>ביטול</button>
-              <button className="btn btn-primary" type="button" onClick={handleSaveClimbConfig}>שמור</button>
             </div>
           </div>
         </div>

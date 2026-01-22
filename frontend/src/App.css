@@ -38,6 +38,25 @@
   gap: 1rem;
 }
 
+.settings-header-btn {
+  margin-right: 0.5rem;
+  width: 40px;
+  height: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  border-radius: 10px;
+  transition: all 0.2s ease;
+}
+
+.settings-header-btn svg {
+  width: 22px;
+  height: 22px;
+}
+
+.settings-header-btn:hover:not(:disabled) {
+  transform: rotate(30deg);
+}
+
 .header-parameters {
   display: flex;
   align-items: flex-start;

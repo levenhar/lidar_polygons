@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, rmSync } from 'fs';
 import { fromFile } from 'geotiff';
 import proj4 from 'proj4';
 import dotenv from 'dotenv';
+import { Agent } from 'undici';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -268,11 +269,16 @@ app.get('/api/dtm/:filename/test', async (req, res) => {
 
 // Python backend URL
 const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
+// Long-running Python tasks (e.g., viewshed) can exceed default Undici timeouts.
+const pythonDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 
 // Proxy helper
 const proxyToPython = async (endpoint, options = {}) => {
   try {
-    const response = await fetch(`${PYTHON_BACKEND_URL}${endpoint}`, options);
+    const response = await fetch(`${PYTHON_BACKEND_URL}${endpoint}`, {
+      ...options,
+      dispatcher: pythonDispatcher
+    });
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(`Python backend error: ${response.status} ${response.statusText} - ${errorText}`);
@@ -863,6 +869,90 @@ app.post('/api/elevation-profile', async (req, res) => {
       error: 'Could not calculate elevation profile',
       details: error.message
     });
+  }
+});
+
+// Viewshed job endpoints (proxy to Python backend)
+app.post('/api/viewshed/start', async (req, res) => {
+  try {
+    console.log('Proxying viewshed start to Python backend...');
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/viewshed/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body),
+      dispatcher: pythonDispatcher
+    });
+    if (response.status === 404) {
+      console.warn('Python /api/viewshed/start not found; falling back to legacy /api/viewshed');
+      const legacyResponse = await fetch(`${PYTHON_BACKEND_URL}/api/viewshed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body),
+        dispatcher: pythonDispatcher
+      });
+      if (!legacyResponse.ok) {
+        const errorText = await legacyResponse.text();
+        return res.status(legacyResponse.status).send(errorText);
+      }
+      const contentType = legacyResponse.headers.get('content-type') || 'image/tiff';
+      res.setHeader('Content-Type', contentType);
+      const arrayBuffer = await legacyResponse.arrayBuffer();
+      return res.send(Buffer.from(arrayBuffer));
+    }
+    const body = await response.text();
+    res.status(response.status).send(body);
+  } catch (error) {
+    console.error('Error proxying viewshed start to Python:', error);
+    res.status(500).json({ error: 'Could not start viewshed' });
+  }
+});
+
+app.get('/api/viewshed/status/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/viewshed/status/${jobId}`, {
+      dispatcher: pythonDispatcher
+    });
+    const body = await response.text();
+    res.status(response.status).send(body);
+  } catch (error) {
+    console.error('Error proxying viewshed status to Python:', error);
+    res.status(500).json({ error: 'Could not fetch viewshed status' });
+  }
+});
+
+app.post('/api/viewshed/cancel/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/viewshed/cancel/${jobId}`, {
+      method: 'POST',
+      dispatcher: pythonDispatcher
+    });
+    const body = await response.text();
+    res.status(response.status).send(body);
+  } catch (error) {
+    console.error('Error proxying viewshed cancel to Python:', error);
+    res.status(500).json({ error: 'Could not cancel viewshed' });
+  }
+});
+
+app.get('/api/viewshed/result/:jobId', async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/viewshed/result/${jobId}`, {
+      dispatcher: pythonDispatcher
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).send(errorText);
+    }
+    const contentType = response.headers.get('content-type') || 'image/tiff';
+    res.setHeader('Content-Type', contentType);
+    const arrayBuffer = await response.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
+  } catch (error) {
+    console.error('Error proxying viewshed result to Python:', error);
+    res.status(500).json({ error: 'Could not fetch viewshed result' });
   }
 });
 

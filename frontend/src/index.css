@@ -51,17 +51,18 @@ code {
 
 /* Icon Button - Compact, icon-only */
 .btn-icon {
-  width: auto;
+  width: 36px;
+  min-width: 36px;
   min-height: 34px;
   height: 34px;
-  padding: 0.5rem;
+  padding: 0;
   border-radius: 10px;
   line-height: 1;
 }
 
 .btn-icon svg {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   display: block;
 }
 
@@ -229,6 +230,15 @@ code {
   background: #fee2e2;
   border-color: #ef4444;
   color: #991b1b;
+}
+
+/* Ensure icon buttons keep compact sizing across variants */
+.btn.btn-icon {
+  width: 36px;
+  min-width: 36px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
 }
 
 

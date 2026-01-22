@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 // @ts-ignore - proj4 types may not be perfect
 import proj4 from 'proj4';
+import { fromArrayBuffer } from 'geotiff';
 import { Coordinate, ElevationPoint } from '../App';
 import { FlightRoute } from '../hooks/useFlightPath';
 import ContextMenu from './ContextMenu';
@@ -51,6 +52,101 @@ interface AOIPolygon {
   coordinates: [number, number][]; // [lon, lat] pairs
 }
 
+interface ViewshedRasterData {
+  width: number;
+  height: number;
+  data: ArrayLike<number>;
+  bounds: number[];
+  min: number;
+  max: number;
+  noDataValue: number | null;
+  isProjected: boolean;
+  crs: string | null;
+}
+
+type ColormapStop = { pos: number; color: string };
+
+const VIEWSHED_COLORMAPS: Record<string, { label: string; stops: ColormapStop[] }> = {
+  jet: {
+    label: 'Jet',
+    stops: [
+      { pos: 0, color: '#00007f' },
+      { pos: 0.35, color: '#00ffff' },
+      { pos: 0.5, color: '#ffff00' },
+      { pos: 0.65, color: '#ff7f00' },
+      { pos: 1, color: '#7f0000' }
+    ]
+  },
+  viridis: {
+    label: 'Viridis',
+    stops: [
+      { pos: 0, color: '#440154' },
+      { pos: 0.35, color: '#31688e' },
+      { pos: 0.6, color: '#35b779' },
+      { pos: 1, color: '#fde725' }
+    ]
+  },
+  plasma: {
+    label: 'Plasma',
+    stops: [
+      { pos: 0, color: '#0d0887' },
+      { pos: 0.4, color: '#7e03a8' },
+      { pos: 0.7, color: '#f89441' },
+      { pos: 1, color: '#f0f921' }
+    ]
+  },
+  inferno: {
+    label: 'Inferno',
+    stops: [
+      { pos: 0, color: '#000004' },
+      { pos: 0.35, color: '#420a68' },
+      { pos: 0.7, color: '#f1605d' },
+      { pos: 1, color: '#fcffa4' }
+    ]
+  },
+  gray: {
+    label: 'Gray',
+    stops: [
+      { pos: 0, color: '#000000' },
+      { pos: 1, color: '#ffffff' }
+    ]
+  }
+};
+
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+const hexToRgb = (hex: string) => {
+  const normalized = hex.replace('#', '');
+  const bigint = parseInt(normalized, 16);
+  return {
+    r: (bigint >> 16) & 255,
+    g: (bigint >> 8) & 255,
+    b: bigint & 255
+  };
+};
+
+const getColorForValue = (value: number, min: number, max: number, colormap: string) => {
+  const stops = VIEWSHED_COLORMAPS[colormap]?.stops ?? VIEWSHED_COLORMAPS.jet.stops;
+  const range = max - min || 1;
+  const normalized = Math.min(1, Math.max(0, (value - min) / range));
+  let lower = stops[0];
+  let upper = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (normalized >= stops[i].pos && normalized <= stops[i + 1].pos) {
+      lower = stops[i];
+      upper = stops[i + 1];
+      break;
+    }
+  }
+  const t = (normalized - lower.pos) / (upper.pos - lower.pos || 1);
+  const c1 = hexToRgb(lower.color);
+  const c2 = hexToRgb(upper.color);
+  return {
+    r: Math.round(lerp(c1.r, c2.r, t)),
+    g: Math.round(lerp(c1.g, c2.g, t)),
+    b: Math.round(lerp(c1.b, c2.b, t))
+  };
+};
+
 type IconName =
   | 'upload'
   | 'eject'
@@ -71,7 +167,9 @@ type IconName =
   | 'rectangle'
   | 'polygon'
   | 'file'
-  | 'info';
+  | 'info'
+  | 'eye'
+  | 'tag';
 
 const Icon: React.FC<{ name: IconName }> = ({ name }) => {
   const common = {
@@ -226,6 +324,20 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M14 2v6h6" />
         </svg>
       );
+    case 'eye':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z" />
+          <circle {...stroke} cx="12" cy="12" r="3" />
+        </svg>
+      );
+    case 'tag':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M20 12l-8 8-10-10V2h8l10 10z" />
+          <circle {...stroke} cx="6" cy="6" r="1.5" />
+        </svg>
+      );
     case 'info':
       return (
         <svg {...common}>
@@ -375,6 +487,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const justFinishedDraggingRef = useRef<boolean>(false);
   const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
+  const viewshedImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmTransparencyControlRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hoveredElevationMarkerRef = useRef<L.Marker | null>(null);
@@ -400,6 +513,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
     crs: string | null;
     noDataValue: number | null;
   } | null>(null);
+  const [viewshedRaster, setViewshedRaster] = useState<ViewshedRasterData | null>(null);
+  const [viewshedVisible, setViewshedVisible] = useState(true);
+  const [viewshedColormap, setViewshedColormap] = useState('jet');
+  const [viewshedOpacity, setViewshedOpacity] = useState(0.75);
+  const [isViewshedProcessing, setIsViewshedProcessing] = useState(false);
+  const [viewshedJobId, setViewshedJobId] = useState<string | null>(null);
+  const [viewshedProgress, setViewshedProgress] = useState(0);
+  const [viewshedStatus, setViewshedStatus] = useState<'idle' | 'running' | 'done' | 'error' | 'cancelled'>('idle');
+  const viewshedPollRef = useRef<number | null>(null);
+  const viewshedSignatureRef = useRef<string | null>(null);
+  const skipViewshedReplaceConfirmRef = useRef(false);
   const passiveRouteLinesRef = useRef<Record<string, L.Polyline>>({});
   const suggestedLinesRef = useRef<L.Polyline[]>([]);
   const [isRoutesPanelOpen, setIsRoutesPanelOpen] = useState<boolean>(false);
@@ -414,6 +538,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   } | null>(null);
   const [dialogValues, setDialogValues] = useState<Record<string, string>>({});
   const [dialogError, setDialogError] = useState<string | null>(null);
+  const [isViewshedModalOpen, setIsViewshedModalOpen] = useState(false);
 
   // New DTM loading flow state
   const [showDtmOptionsModal, setShowDtmOptionsModal] = useState(false);
@@ -693,6 +818,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const activeRoute = routes.find((route) => route.id === activeRouteId) || routes[0];
   const activeRouteColor = activeRoute?.color || '#ff0000';
+  const flightPathSignature = useMemo(() => {
+    return flightPath
+      .map((point) => {
+        const height = point.height ?? nominalFlightHeight;
+        return `${point.lng.toFixed(7)},${point.lat.toFixed(7)},${height}`;
+      })
+      .join('|');
+  }, [flightPath, nominalFlightHeight]);
+  const viewshedGradient = useMemo(() => {
+    const stops = VIEWSHED_COLORMAPS[viewshedColormap]?.stops ?? VIEWSHED_COLORMAPS.jet.stops;
+    const gradientStops = stops.map((stop) => `${stop.color} ${stop.pos * 100}%`).join(', ');
+    return `linear-gradient(to bottom, ${gradientStops})`;
+  }, [viewshedColormap]);
   const hoveredUtm = useMemo(() => {
     if (!hoveredElevationPoint) return null;
     return latLngToUTM(hoveredElevationPoint.latitude, hoveredElevationPoint.longitude);
@@ -2702,6 +2840,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     loadDTM();
   }, [dtmSource]);
+
   const resetFileInput = () => {
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
@@ -2936,6 +3075,328 @@ const MapPanel: React.FC<MapPanelProps> = ({
       dtmImageOverlayRef.current.setOpacity(newOpacity);
     }
   };
+
+  const handleViewshedOpacityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newOpacity = parseFloat(e.target.value);
+    setViewshedOpacity(newOpacity);
+
+    if (viewshedImageOverlayRef.current) {
+      viewshedImageOverlayRef.current.setOpacity(newOpacity);
+    }
+  };
+
+  const clearViewshedOverlay = useCallback(() => {
+    if (viewshedImageOverlayRef.current && map.current) {
+      map.current.removeLayer(viewshedImageOverlayRef.current);
+      viewshedImageOverlayRef.current = null;
+    }
+  }, []);
+
+  const stopViewshedPolling = useCallback(() => {
+    if (viewshedPollRef.current !== null) {
+      window.clearInterval(viewshedPollRef.current);
+      viewshedPollRef.current = null;
+    }
+  }, []);
+
+  const renderViewshedOverlay = useCallback(() => {
+    if (!map.current || !viewshedRaster || !viewshedVisible) {
+      clearViewshedOverlay();
+      return;
+    }
+
+    const { width, height, data, bounds, min, max, noDataValue } = viewshedRaster;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const imageData = ctx.createImageData(width, height);
+    const alpha = 220;
+    for (let i = 0; i < data.length; i++) {
+      let value = Number(data[i]);
+      if (noDataValue !== null && noDataValue !== undefined && value === noDataValue) {
+        const idx = i * 4;
+        imageData.data[idx] = 0;
+        imageData.data[idx + 1] = 0;
+        imageData.data[idx + 2] = 0;
+        imageData.data[idx + 3] = 0;
+        continue;
+      }
+      if (!Number.isFinite(value)) {
+        value = min;
+      }
+      const { r, g, b } = getColorForValue(value, min, max, viewshedColormap);
+      const idx = i * 4;
+      imageData.data[idx] = r;
+      imageData.data[idx + 1] = g;
+      imageData.data[idx + 2] = b;
+      imageData.data[idx + 3] = alpha;
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    const imageUrl = canvas.toDataURL();
+
+    const [minX, minY, maxX, maxY] = bounds;
+    const imageBounds: L.LatLngBoundsExpression = [
+      [minY, minX],
+      [maxY, maxX]
+    ];
+
+    clearViewshedOverlay();
+    viewshedImageOverlayRef.current = L.imageOverlay(imageUrl, imageBounds, {
+      opacity: viewshedOpacity
+    }).addTo(map.current);
+  }, [clearViewshedOverlay, viewshedRaster, viewshedVisible, viewshedColormap, viewshedOpacity]);
+
+  const loadViewshedFromArrayBuffer = useCallback(async (arrayBuffer: ArrayBuffer, signature?: string) => {
+    const tiff = await fromArrayBuffer(arrayBuffer);
+    const image = await tiff.getImage();
+
+    const width = image.getWidth();
+    const height = image.getHeight();
+    const raster = await image.readRasters({ interleave: true });
+    const rasterData = Array.isArray(raster) ? raster[0] : raster;
+    const noDataValue = image.getGDALNoData();
+
+    let min = Infinity;
+    let max = -Infinity;
+    for (let i = 0; i < rasterData.length; i++) {
+      const value = Number(rasterData[i]);
+      if (noDataValue !== null && noDataValue !== undefined && value === noDataValue) {
+        continue;
+      }
+      if (!Number.isFinite(value)) continue;
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      min = 0;
+      max = 1;
+    }
+
+    const geoKeys = image.getGeoKeys?.() ?? {};
+    const epsg = geoKeys.ProjectedCSTypeGeoKey || geoKeys.GeographicTypeGeoKey;
+    const sourceProj = epsg ? `EPSG:${epsg}` : null;
+    const isProjected = Boolean(geoKeys.ProjectedCSTypeGeoKey);
+    const bbox = image.getBoundingBox();
+
+    let bounds = bbox;
+    if (!sourceProj) {
+      const fallbackBounds = dtmRasterDataRef.current?.bounds ?? dtmBounds ?? null;
+      if (fallbackBounds && fallbackBounds.length === 4) {
+        bounds = fallbackBounds;
+      }
+    } else if (sourceProj !== 'EPSG:4326') {
+      try {
+        const [minX, minY, maxX, maxY] = bbox;
+        const topLeft = proj4(sourceProj, 'EPSG:4326', [minX, maxY]);
+        const topRight = proj4(sourceProj, 'EPSG:4326', [maxX, maxY]);
+        const bottomRight = proj4(sourceProj, 'EPSG:4326', [maxX, minY]);
+        const bottomLeft = proj4(sourceProj, 'EPSG:4326', [minX, minY]);
+        const transformedMinX = Math.min(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
+        const transformedMinY = Math.min(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
+        const transformedMaxX = Math.max(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
+        const transformedMaxY = Math.max(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
+        bounds = [transformedMinX, transformedMinY, transformedMaxX, transformedMaxY];
+      } catch (transformError) {
+        console.error('Error transforming viewshed bounds:', transformError);
+        const fallbackBounds = dtmRasterDataRef.current?.bounds ?? dtmBounds ?? null;
+        if (fallbackBounds && fallbackBounds.length === 4) {
+          bounds = fallbackBounds;
+        } else {
+          alert('כשל בהמרת תחומי שדה ראייה. מוצג עם תחום לא מומר.');
+        }
+      }
+    }
+
+    setViewshedRaster({
+      width,
+      height,
+      data: rasterData as ArrayLike<number>,
+      bounds,
+      min,
+      max,
+      noDataValue: noDataValue ?? null,
+      isProjected,
+      crs: sourceProj
+    });
+    setViewshedVisible(true);
+    if (signature) {
+      viewshedSignatureRef.current = signature;
+    }
+  }, [dtmBounds]);
+
+  const handleGenerateViewshed = useCallback(async () => {
+    if (!dtmSource || !dtmLoaded) {
+      alert('טען DTM תחילה.');
+      return;
+    }
+    if (flightPath.length < 2) {
+      alert('הוסף לפחות שתי נקודות תחילה.');
+      return;
+    }
+    if (isViewshedProcessing) return;
+
+    if ((viewshedRaster || viewshedStatus === 'done') && !skipViewshedReplaceConfirmRef.current) {
+      const shouldReplace = window.confirm('שדה ראייה קיים כבר. למחוק אותו ולחשב חדש?');
+      if (!shouldReplace) return;
+      if (viewshedJobId && isViewshedProcessing) {
+        await handleCancelViewshed();
+      }
+      clearViewshedOverlay();
+      setViewshedRaster(null);
+      setViewshedVisible(false);
+      setViewshedStatus('idle');
+      setViewshedProgress(0);
+    }
+    skipViewshedReplaceConfirmRef.current = false;
+
+    stopViewshedPolling();
+    setIsViewshedProcessing(true);
+    setViewshedStatus('running');
+    setViewshedProgress(0);
+    try {
+      const trajectory = flightPath.map((point) => ({
+        lng: point.lng,
+        lat: point.lat,
+        height: point.height ?? nominalFlightHeight
+      }));
+
+      const response = await fetch('/api/viewshed/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          dtmPath: dtmSource,
+          clippedId: propClippedId ?? undefined,
+          coordinates: trajectory,
+          samplingIntervalMeters: 50
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || 'Viewshed generation failed');
+      }
+
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('image/tiff')) {
+        const arrayBuffer = await response.arrayBuffer();
+        await loadViewshedFromArrayBuffer(arrayBuffer, flightPathSignature);
+        setViewshedStatus('done');
+        setViewshedProgress(100);
+        setViewshedJobId(null);
+        return;
+      }
+
+      const startPayload = await response.json();
+      const jobId = startPayload.jobId as string;
+      setViewshedJobId(jobId);
+
+      viewshedPollRef.current = window.setInterval(async () => {
+        try {
+          const statusRes = await fetch(`/api/viewshed/status/${jobId}`);
+          if (!statusRes.ok) {
+            throw new Error('Failed to read status');
+          }
+          const statusJson = await statusRes.json();
+          const status = statusJson.status as typeof viewshedStatus;
+          setViewshedProgress(statusJson.progress ?? 0);
+          setViewshedStatus(status);
+          if (status === 'done') {
+            stopViewshedPolling();
+            const resultRes = await fetch(`/api/viewshed/result/${jobId}`);
+            if (!resultRes.ok) {
+              const errorText = await resultRes.text();
+              throw new Error(errorText || 'Failed to fetch viewshed result');
+            }
+            const arrayBuffer = await resultRes.arrayBuffer();
+            await loadViewshedFromArrayBuffer(arrayBuffer, flightPathSignature);
+            setIsViewshedProcessing(false);
+          } else if (status === 'error' || status === 'cancelled') {
+            stopViewshedPolling();
+            setIsViewshedProcessing(false);
+            if (status === 'error') {
+              alert(`שגיאה ביצירת שדה ראייה: ${statusJson.error || 'שגיאה לא ידועה'}`);
+            }
+          }
+        } catch (pollError) {
+          console.error('Viewshed status polling failed:', pollError);
+          stopViewshedPolling();
+          setIsViewshedProcessing(false);
+          setViewshedStatus('error');
+        }
+      }, 1500);
+    } catch (error) {
+      console.error('Error generating viewshed:', error);
+      alert(`שגיאה ביצירת שדה ראייה: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
+      setViewshedStatus('error');
+    } finally {
+      if (!viewshedPollRef.current) {
+        setIsViewshedProcessing(false);
+      }
+    }
+  }, [dtmSource, dtmLoaded, flightPath, isViewshedProcessing, nominalFlightHeight, propClippedId, stopViewshedPolling, viewshedStatus, loadViewshedFromArrayBuffer, flightPathSignature]);
+
+  const handleCancelViewshed = useCallback(async () => {
+    if (!viewshedJobId) return;
+    try {
+      await fetch(`/api/viewshed/cancel/${viewshedJobId}`, { method: 'POST' });
+      setViewshedStatus('cancelled');
+    } catch (error) {
+      console.error('Cancel viewshed failed:', error);
+    } finally {
+      stopViewshedPolling();
+      setIsViewshedProcessing(false);
+    }
+  }, [viewshedJobId, stopViewshedPolling]);
+
+  useEffect(() => {
+    if (!viewshedRaster || viewshedStatus !== 'done') return;
+    if (!viewshedSignatureRef.current) {
+      viewshedSignatureRef.current = flightPathSignature;
+      return;
+    }
+    if (viewshedSignatureRef.current === flightPathSignature) return;
+
+    const shouldUpdate = window.confirm('מסלול הטיסה השתנה. לעדכן את שדה הראייה?');
+    if (shouldUpdate) {
+      skipViewshedReplaceConfirmRef.current = true;
+      handleGenerateViewshed();
+    } else {
+      clearViewshedOverlay();
+      setViewshedRaster(null);
+      setViewshedVisible(false);
+      setViewshedStatus('idle');
+      setViewshedProgress(0);
+      viewshedSignatureRef.current = null;
+    }
+  }, [flightPathSignature, viewshedRaster, viewshedStatus, handleGenerateViewshed, clearViewshedOverlay]);
+
+  useEffect(() => {
+    return () => {
+      stopViewshedPolling();
+    };
+  }, [stopViewshedPolling]);
+
+  useEffect(() => {
+    renderViewshedOverlay();
+  }, [renderViewshedOverlay]);
+
+  useEffect(() => {
+    if (viewshedStatus === 'done' && isViewshedModalOpen) {
+      setIsViewshedModalOpen(false);
+    }
+  }, [viewshedStatus, isViewshedModalOpen]);
+
+  useEffect(() => {
+    if (!dtmSource || !dtmLoaded) {
+      setViewshedRaster(null);
+      setViewshedVisible(false);
+      clearViewshedOverlay();
+    }
+  }, [dtmSource, dtmLoaded, clearViewshedOverlay]);
 
   const handleCreatePointFromCoordinates = () => {
     if (!dtmLoaded) {
@@ -3383,6 +3844,113 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
         </div>
       )}
+      {isViewshedModalOpen && (
+        <div
+          className="quick-modal__backdrop"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setIsViewshedModalOpen(false)}
+        >
+          <div className="quick-modal__card" onClick={(e) => e.stopPropagation()}>
+            <div className="quick-modal__header">
+              <div className="quick-modal__title">הגדרות שדה ראייה</div>
+              <button
+                type="button"
+                className="quick-modal__close"
+                onClick={() => setIsViewshedModalOpen(false)}
+                aria-label="סגירת חלון שדה ראייה"
+              >
+                ×
+              </button>
+            </div>
+            <div className="quick-modal__body viewshed-modal__body">
+              <label className="quick-modal__label" htmlFor="viewshed-visible-toggle">
+                תצוגה
+              </label>
+              <label className="switch viewshed-modal__toggle">
+                <input
+                  id="viewshed-visible-toggle"
+                  type="checkbox"
+                  checked={viewshedVisible}
+                  onChange={(e) => setViewshedVisible(e.target.checked)}
+                  disabled={!viewshedRaster}
+                />
+                <span className="switch-slider" />
+                <span className="viewshed-modal__toggle-text">{viewshedVisible ? 'מוצג' : 'מוסתר'}</span>
+              </label>
+
+              <label className="quick-modal__label" htmlFor="viewshed-colormap">
+                צבע
+              </label>
+              <select
+                id="viewshed-colormap"
+                className="viewshed-select"
+                value={viewshedColormap}
+                onChange={(e) => setViewshedColormap(e.target.value)}
+                disabled={!viewshedRaster}
+              >
+                {Object.entries(VIEWSHED_COLORMAPS).map(([key, item]) => (
+                  <option key={key} value={key}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+
+              <label className="quick-modal__label" htmlFor="viewshed-opacity-slider">
+                אטימות {Math.round(viewshedOpacity * 100)}%
+              </label>
+              <input
+                id="viewshed-opacity-slider"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={viewshedOpacity}
+                onChange={handleViewshedOpacityChange}
+                className="viewshed-opacity-slider"
+                disabled={!viewshedRaster}
+              />
+
+              <div className="viewshed-modal__status">
+                סטטוס: {viewshedStatus === 'running' ? 'מחשב' : viewshedStatus === 'done' ? 'מוכן' : viewshedStatus === 'error' ? 'שגיאה' : viewshedStatus === 'cancelled' ? 'בוטל' : 'ממתין'}
+              </div>
+
+              {isViewshedProcessing && (
+                <div className="viewshed-progress">
+                  <div className="viewshed-progress-bar">
+                    <div
+                      className="viewshed-progress-fill"
+                      style={{ width: `${viewshedProgress}%` }}
+                    />
+                  </div>
+                  <span className="viewshed-progress-text">{viewshedProgress}%</span>
+                </div>
+              )}
+            </div>
+            <div className="quick-modal__actions">
+              <button type="button" className="btn btn-tertiary" onClick={() => setIsViewshedModalOpen(false)}>
+                סגור
+              </button>
+              <button
+                type="button"
+                className="btn btn-destructive"
+                onClick={handleCancelViewshed}
+                disabled={!viewshedJobId || !isViewshedProcessing}
+              >
+                בטל חישוב
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleGenerateViewshed}
+                disabled={!dtmLoaded || flightPath.length < 2 || isViewshedProcessing}
+              >
+                חשב שדה ראייה
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {contextMenu && (
         <ContextMenu
           x={contextMenu.x}
@@ -3589,7 +4157,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip tooltip={dtmLoaded ? 'פרוק תחילה את ה‑DTM הנוכחי' : 'בחר DTM מהשרת'}>
                 <button
                   onClick={handleOpenDtmOptionsModal}
-                  className={`btn btn-primary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
+                  className={`btn btn-tertiary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
                   disabled={dtmLoaded || isAoiSelectionMode}
                   aria-label="טעינת DTM מהשרת"
                   type="button"
@@ -3660,7 +4228,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     }
                     setIsParallelLineMode(false);
                   }}
-                  className={`btn btn-primary btn-icon ${isDrawing ? 'active' : ''}`}
+                  className={isDrawing ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
                   disabled={!dtmLoaded}
                   aria-label={isDrawing ? 'עצירת שרטוט' : 'שרטט מסלול'}
                   type="button"
@@ -3757,6 +4325,50 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
 
         <div className="control-group">
+          <div className="group-title">מתקדם</div>
+          <div className="group-columns">
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : flightPath.length < 2 ? 'הוסף לפחות שתי נקודות תחילה' : 'פתח הגדרות שדה ראייה'}>
+                <button
+                  onClick={() => setIsViewshedModalOpen(true)}
+                  className="btn btn-tertiary btn-icon"
+                  aria-label="פתח הגדרות שדה ראייה"
+                  type="button"
+                  disabled={!dtmLoaded || flightPath.length < 2}
+                >
+                  <Icon name="eye" />
+                  <span className="sr-only">הגדרות שדה ראייה</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע במיקום העכבר'}>
+                <button
+                  onClick={() => {
+                    const newInfoMode = !isInfoMode;
+                    setIsInfoMode(newInfoMode);
+                    if (newInfoMode) {
+                      // Turn off route info when turning on info mode
+                      onShowMetadataChange(false);
+                      setCursorElevation(null);
+                    } else {
+                      setCursorElevation(null);
+                      setMousePos(null);
+                      elevationCacheRef.current.clear();
+                    }
+                  }}
+                  className={isInfoMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  disabled={!dtmLoaded}
+                  aria-label={isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}
+                  type="button"
+                >
+                  <Icon name="info" />
+                  <span className="sr-only">{isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}</span>
+                </button>
+              </Tooltip>
+            </div>
+          </div>
+        </div>
+
+        <div className="control-group">
           <div className="group-title">היסטוריה</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
@@ -3815,72 +4427,42 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">איפוס תצוגה</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע במיקום העכבר'}>
-                <button
-                  onClick={() => {
-                    const newInfoMode = !isInfoMode;
-                    setIsInfoMode(newInfoMode);
-                    if (newInfoMode) {
-                      // Turn off route info when turning on info mode
-                      onShowMetadataChange(false);
-                      setCursorElevation(null);
-                    } else {
-                      setCursorElevation(null);
-                      setMousePos(null);
-                      elevationCacheRef.current.clear();
-                    }
-                  }}
-                  className={isInfoMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
-                  disabled={!dtmLoaded}
-                  aria-label={isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}
-                  type="button"
-                >
-                  <Icon name="info" />
-                  <span className="sr-only">{isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}</span>
-                </button>
-              </Tooltip>
             </div>
             <div
               className="group-column group-column-icons"
               style={{ display: 'flex', flexDirection: 'row', gap: '12px', alignItems: 'center' }}
             >
               <Tooltip tooltip="הצג/הסתר נתונים בזמן ריחוף">
-                <label
-                  className="switch"
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newShowMetadata = !showMetadata;
+                    onShowMetadataChange(newShowMetadata);
+                    if (newShowMetadata) {
+                      // Turn off info mode when turning on route info
+                      setIsInfoMode(false);
+                      setCursorElevation(null);
+                      setMousePos(null);
+                      elevationCacheRef.current.clear();
+                    }
+                  }}
+                  className={showMetadata ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  aria-label={showMetadata ? 'הסתר נתונים' : 'הצג נתונים'}
                 >
-                  <input
-                    type="checkbox"
-                    checked={showMetadata}
-                    onChange={(e) => {
-                      const newShowMetadata = e.target.checked;
-                      onShowMetadataChange(newShowMetadata);
-                      if (newShowMetadata) {
-                        // Turn off info mode when turning on route info
-                        setIsInfoMode(false);
-                        setCursorElevation(null);
-                        setMousePos(null);
-                        elevationCacheRef.current.clear();
-                      }
-                    }}
-                  />
-                  <span className="switch-slider" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>נתונים</span>
-                </label>
+                  <Icon name="info" />
+                  <span className="sr-only">נתונים</span>
+                </button>
               </Tooltip>
               <Tooltip tooltip="הצג/הסתר תווית ליד נקודות הגבהה">
-                <label
-                  className="switch"
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', transform: 'scale(0.95)', transformOrigin: 'left center' }}
+                <button
+                  type="button"
+                  onClick={() => onShowClimbLabelsChange(!showClimbLabels)}
+                  className={showClimbLabels ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  aria-label={showClimbLabels ? 'הסתר תוויות נקודות הגבהה' : 'הצג תוויות נקודות הגבהה'}
                 >
-                  <input
-                    type="checkbox"
-                    checked={showClimbLabels}
-                    onChange={(e) => onShowClimbLabelsChange(e.target.checked)}
-                  />
-                  <span className="switch-slider" />
-                  <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#475569', whiteSpace: 'nowrap' }}>נקודות הגבהה</span>
-                </label>
+                  <Icon name="tag" />
+                  <span className="sr-only">נקודות הגבהה</span>
+                </button>
               </Tooltip>
             </div>
           </div>
@@ -3946,6 +4528,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
               onChange={handleDtmOpacityChange}
               className="dtm-opacity-slider"
             />
+          </div>
+        )}
+        {viewshedRaster && viewshedVisible && (
+          <div className="viewshed-legend">
+            <div className="viewshed-legend-title">שדה ראייה</div>
+            <div className="viewshed-legend-label viewshed-legend-label-top">0</div>
+            <div className="viewshed-legend-bar" style={{ background: viewshedGradient }} />
+            <div className="viewshed-legend-label viewshed-legend-label-bottom">
+              {Number.isFinite(viewshedRaster.max) ? Math.round(viewshedRaster.max) : '—'}
+            </div>
           </div>
         )}
         {baseMaps.length > 1 && nextBaseMap && (

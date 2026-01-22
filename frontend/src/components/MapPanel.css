@@ -709,6 +709,157 @@
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
+.viewshed-select-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #000000;
+}
+
+.viewshed-select {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  font-size: 0.9rem;
+  min-width: 140px;
+  color: #000000;
+}
+
+.viewshed-select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.viewshed-modal__body {
+  gap: 10px;
+}
+
+.viewshed-modal__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.viewshed-modal__toggle-text {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.viewshed-opacity-slider {
+  width: 100%;
+  margin-top: 2px;
+}
+
+.viewshed-opacity-slider:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.viewshed-opacity-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #0ea5e9;
+  cursor: pointer;
+  border: 2px solid #ffffff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.viewshed-opacity-slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #0ea5e9;
+  cursor: pointer;
+  border: 2px solid #ffffff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.viewshed-modal__status {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #334155;
+  margin-top: 2px;
+}
+
+.viewshed-legend {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 1200;
+  min-width: 0;
+  align-items: center;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.15);
+}
+
+.viewshed-legend-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.viewshed-legend-bar {
+  width: 12px;
+  height: 100px;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+}
+
+.viewshed-legend-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.viewshed-legend-label-top {
+  margin-bottom: 4px;
+}
+
+.viewshed-legend-label-bottom {
+  margin-top: 4px;
+}
+
+.viewshed-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.viewshed-progress-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  overflow: hidden;
+}
+
+.viewshed-progress-fill {
+  height: 100%;
+  background: #0ea5e9;
+  transition: width 0.2s ease;
+}
+
+.viewshed-progress-text {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #000000;
+  min-width: 36px;
+  text-align: right;
+}
+
 .upload-progress-overlay {
   position: absolute;
   top: 0;

@@ -810,62 +810,6 @@
   pointer-events: none;
 }
 
-.dtm-transparency-control {
-  position: absolute;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: 0.75rem 1.25rem;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
-  z-index: 1000;
-  min-width: 300px;
-}
-
-.dtm-opacity-label {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: #374151;
-  min-width: 150px;
-}
-
-.dtm-opacity-slider {
-  flex: 1;
-  height: 6px;
-  border-radius: 3px;
-  background: #e5e7eb;
-  outline: none;
-  -webkit-appearance: none;
-  appearance: none;
-}
-
-.dtm-opacity-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #0369A1;
-  cursor: pointer;
-  border: 2px solid #ffffff;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-}
-
-.dtm-opacity-slider::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #0369A1;
-  cursor: pointer;
-  border: 2px solid #ffffff;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
-}
-
 .viewshed-select-label {
   font-size: 0.8rem;
   font-weight: 600;
@@ -1565,4 +1509,466 @@
 .map-instruction-text {
   font-size: 0.95rem;
   color: #0f172a;
+}
+
+/* ============================================================================
+   DISPLAY SETTINGS POPOVER
+   ============================================================================ */
+
+.display-settings-container {
+  position: absolute;
+  top: 16px;
+  right: 52px;
+  bottom: 16px;
+  z-index: 4000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.display-settings-trigger {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: all 0.15s ease;
+  pointer-events: auto;
+}
+
+.display-settings-trigger:hover {
+  background: #f1f5f9;
+  color: #0369a1;
+}
+
+.display-settings-trigger:focus-visible {
+  outline: 2px solid #0369a1;
+  outline-offset: 2px;
+}
+
+.display-settings-trigger.active {
+  background: #0369a1;
+  color: #ffffff;
+}
+
+.display-settings-trigger svg {
+  width: 18px;
+  height: 18px;
+}
+
+.display-settings-popover {
+  position: static;
+  width: 280px;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  overflow: visible;
+  animation: display-settings-fadein 0.15s ease;
+  z-index: 4001;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  max-height: 100%;
+  pointer-events: auto;
+}
+
+.display-settings-content {
+  max-height: calc(100% - 56px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@keyframes display-settings-fadein {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.display-settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: linear-gradient(135deg, #0369a1 0%, #0284c7 100%);
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+.display-settings-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.display-settings-close {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+
+.display-settings-close:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.display-settings-close:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}
+
+.display-settings-close svg {
+  width: 14px;
+  height: 14px;
+}
+
+.display-settings-section {
+  padding: 14px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.display-settings-section:last-child {
+  border-bottom: none;
+}
+
+.display-settings-section-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin-bottom: 10px;
+}
+
+.display-settings-row {
+  margin-bottom: 10px;
+}
+
+.display-settings-row:last-child {
+  margin-bottom: 0;
+}
+
+.display-settings-row-buttons {
+  display: flex;
+  gap: 12px;
+}
+
+.display-settings-icon-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.display-settings-row-palette {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.display-settings-row-palette .display-settings-label {
+  text-align: right;
+  flex: 1;
+}
+
+.display-settings-row-palette .display-settings-segmented {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.display-settings-info-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.display-settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.display-settings-label {
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: #1e293b;
+}
+
+.display-settings-label-secondary {
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: #64748b;
+}
+
+.display-settings-value {
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: #0f172a;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  direction: ltr;
+}
+
+.display-settings-divider {
+  height: 1px;
+  background: #f1f5f9;
+  margin: 10px 0;
+}
+
+.display-settings-subsection-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  margin: 6px 0 10px;
+}
+
+.display-settings-slider {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: #e2e8f0;
+  outline: none;
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: 6px;
+  cursor: pointer;
+}
+
+.display-settings-slider:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.display-settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #0369a1;
+  cursor: pointer;
+  border: 2px solid #ffffff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+  transition: transform 0.1s ease;
+}
+
+.display-settings-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
+
+.display-settings-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #0369a1;
+  cursor: pointer;
+  border: 2px solid #ffffff;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+
+.display-settings-segmented {
+  display: inline-flex;
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+  margin-left: 0;
+  margin-right: auto;
+}
+
+.display-settings-segment {
+  border: none;
+  background: transparent;
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  font-weight: 400;
+  color: #64748b;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.display-settings-segment:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.display-settings-segment:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.5);
+  color: #334155;
+}
+
+.display-settings-segment.active {
+  background: #ffffff;
+  color: #0369a1;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.display-settings-helper {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  margin-top: 10px;
+  font-style: italic;
+}
+
+/* Toggle button - iOS style switch */
+.toggle-btn {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  border: none;
+  background: #cbd5e1;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.toggle-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toggle-btn:focus-visible {
+  outline: 2px solid #0369a1;
+  outline-offset: 2px;
+}
+
+.toggle-btn.active {
+  background: #0369a1;
+}
+
+.toggle-btn-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease;
+}
+
+.toggle-btn.active .toggle-btn-thumb {
+  transform: translateX(20px);
+}
+
+/* Icon toggle button for helper data */
+.display-settings-icon-toggle {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #475569;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.display-settings-icon-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.display-settings-icon-toggle:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.display-settings-icon-toggle:focus-visible {
+  outline: 2px solid #0369a1;
+  outline-offset: 2px;
+}
+
+.display-settings-icon-toggle.active {
+  background: #0ea5e9;
+  border-color: #0ea5e9;
+  color: #ffffff;
+}
+
+.display-settings-icon-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Buttons row in popover */
+.display-settings-row > .btn {
+  padding: 6px 10px;
+}
+
+.display-settings-row > .btn-sm {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.display-settings-row > div:first-child {
+  display: flex;
+  gap: 8px;
+}
+
+/* Responsive adjustments */
+@media (max-height: 600px) {
+  .display-settings-container {
+    top: 8px;
+    right: 44px;
+    bottom: 8px;
+  }
+
+  .display-settings-popover {
+    max-height: 100%;
+  }
+
+  .display-settings-content {
+    max-height: calc(100% - 56px);
+  }
+}
+
+/* RTL support for display settings */
+[dir="rtl"] .display-settings-container,
+.map-panel[dir="rtl"] .display-settings-container {
+  right: auto;
+  left: 52px;
+}
+
+@media (max-height: 600px) {
+  [dir="rtl"] .display-settings-container,
+  .map-panel[dir="rtl"] .display-settings-container {
+    left: 44px;
+  }
+}
+
+[dir="rtl"] .display-settings-popover,
+.map-panel[dir="rtl"] .display-settings-popover {
+  right: auto;
+  left: 0;
 }

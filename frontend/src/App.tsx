@@ -1049,72 +1049,6 @@ function App() {
             </button>
           </div>
         </div>
-        <div className="header-controls">
-          <div className="header-group">
-            <div className="group-title">ייצוא/ייבוא מסלולים</div>
-            <div className="group-columns export-controls-row">
-              <button
-                onClick={() => {
-                  const routesWithPoints = routes.filter(route => route.points.length >= 2);
-                  if (routesWithPoints.length > 1) {
-                    setShowExportModal(true);
-                  } else {
-                    // Get elevation at first point (index 0) from elevation profile
-                    const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
-                    exportKML(climbRequests, climbRequestsByRoute, undefined, nominalFlightHeight, firstTurnPointElevation);
-                  }
-                }}
-                className={`btn btn-secondary btn-icon ${flightPath.length < 2 ? 'disabled' : ''}`}
-                disabled={flightPath.length < 2}
-                style={{
-                  ...(flightPath.length < 2 ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
-                  fontSize: '1rem',
-                  fontWeight: 400,
-                  fontFamily: 'inherit'
-                }}
-                title={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
-                data-tooltip={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
-              >
-                <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M10 12.5L6 8.5H9V2H11V8.5H14L10 12.5ZM5 15H15V13H17V15C17 16.1 16.1 17 15 17H5C3.9 17 3 16.1 3 15V13H5V15Z" fill="currentColor"/>
-                </svg>
-              </button>
-              <input
-                type="file"
-                accept=".kml"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    await importKML(file, dtmSource);
-                    // Note: climbRequestsByRoute is now set inside importKML's setState to avoid race conditions
-                    // No need to call setClimbRequestsByRoute here anymore
-                    // Reset input so same file can be imported again
-                    e.target.value = '';
-                  }
-                }}
-                style={{ display: 'none' }}
-                id="import-kml"
-                disabled={!dtmSource}
-              />
-              <label
-                htmlFor="import-kml"
-                className={`btn btn-secondary btn-icon ${!dtmSource ? 'disabled' : ''}`}
-                style={{
-                  ...(!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
-                  fontSize: '1rem',
-                  fontWeight: 400,
-                  fontFamily: 'inherit'
-                }}
-                title={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
-                data-tooltip={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
-              >
-                <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M10 7.5L14 11.5H11V18H9V11.5H6L10 7.5ZM5 5H15V7H17V5C17 3.9 16.1 3 15 3H5C3.9 3 3 3.9 3 5V7H5V5Z" fill="currentColor"/>
-                </svg>
-              </label>
-            </div>
-          </div>
-        </div>
       </div>
       <div className="app-panels">
         <MapPanel
@@ -1160,6 +1094,19 @@ function App() {
           showMetadata={showMetadata}
           onShowMetadataChange={setShowMetadata}
           climbRequests={climbRequests}
+          onExportClick={() => {
+            const routesWithPoints = routes.filter(route => route.points.length >= 2);
+            if (routesWithPoints.length > 1) {
+              setShowExportModal(true);
+            } else {
+              const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
+              exportKML(climbRequests, climbRequestsByRoute, undefined, nominalFlightHeight, firstTurnPointElevation);
+            }
+          }}
+          onImportKML={async (file: File) => {
+            await importKML(file, dtmSource);
+          }}
+          canExport={flightPath.length >= 2}
         />
         <ElevationProfile
           elevationProfile={fullProfileResult.points}

@@ -52,6 +52,15 @@ interface AOIPolygon {
   coordinates: [number, number][]; // [lon, lat] pairs
 }
 
+// Unified DTM Loader types
+type DtmLoaderStep = 
+  | 'source-choice'    // Step 0: Choose between local or server
+  | 'local-picker'     // Step 1A: Local file selection
+  | 'server-area'      // Step 1B: Server area selection (method + draw)
+  | 'server-results';  // Step 2B: List of overlapping DTMs
+
+type DtmSourceType = 'local' | 'server' | null;
+
 interface ViewshedRasterData {
   width: number;
   height: number;
@@ -206,6 +215,7 @@ const getColorForValue = (value: number, min: number, max: number, colormap: str
 
 type IconName =
   | 'upload'
+  | 'download'
   | 'eject'
   | 'trash'
   | 'pencil'
@@ -256,6 +266,14 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
         <svg {...common}>
           <path {...stroke} d="M12 16V4" />
           <path {...stroke} d="M7 8l5-4 5 4" />
+          <path {...stroke} d="M4 20h16" />
+        </svg>
+      );
+    case 'download':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 4v12" />
+          <path {...stroke} d="M7 12l5 4 5-4" />
           <path {...stroke} d="M4 20h16" />
         </svg>
       );
@@ -554,6 +572,10 @@ interface MapPanelProps {
   showMetadata: boolean;
   onShowMetadataChange: (show: boolean) => void;
   climbRequests?: { endDistance: number; climbAmount: number }[];
+  // Export/Import props
+  onExportClick: () => void;
+  onImportKML: (file: File) => Promise<void>;
+  canExport: boolean;
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
@@ -595,7 +617,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
   hoverSource,
   showMetadata,
   onShowMetadataChange,
-  climbRequests = []
+  climbRequests = [],
+  onExportClick,
+  onImportKML,
+  canExport
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -703,8 +728,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [isViewshedModalOpen, setIsViewshedModalOpen] = useState(false);
   const [viewshedModalMode, setViewshedModalMode] = useState<'progress' | 'settings' | null>(null);
 
-  // New DTM loading flow state
-  const [showDtmOptionsModal, setShowDtmOptionsModal] = useState(false);
+  // ============================================================================
+  // UNIFIED DTM LOADER STATE
+  // ============================================================================
+  const [dtmLoaderOpen, setDtmLoaderOpen] = useState(false);
+  const [dtmLoaderStep, setDtmLoaderStep] = useState<DtmLoaderStep>('source-choice');
+  // @ts-ignore - dtmSourceType is used for tracking selected source
+  const [dtmSourceType, setDtmSourceType] = useState<DtmSourceType>(null);
+  
+  // Local file picker state
+  const [localFileError, setLocalFileError] = useState<string | null>(null);
+  const [isLocalUploading, setIsLocalUploading] = useState(false);
+  const [localUploadProgress, setLocalUploadProgress] = useState(0);
+  const localFileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Server DTM options state
   const [dtmOptions, setDtmOptions] = useState<DTMOption[]>([]);
   const [dtmOptionsLoading, setDtmOptionsLoading] = useState(false);
   const [dtmOptionsError, setDtmOptionsError] = useState<string | null>(null);
@@ -712,7 +750,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [selectedDtmId, setSelectedDtmId] = useState<string | null>(null);
   const [activeDtmName, setActiveDtmName] = useState<string | null>(null);
   
-  // AOI selection state
+  // AOI selection state (for server flow)
   const [isAoiSelectionMode, setIsAoiSelectionMode] = useState(false);
   const [aoiSelectionMethod, setAoiSelectionMethod] = useState<AOISelectionMethod | null>(null);
   const [aoiBounds, setAoiBounds] = useState<AOIBounds | null>(null);
@@ -725,6 +763,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const kmlInputRef = useRef<HTMLInputElement | null>(null);
   const [isClipping, setIsClipping] = useState(false);
   const [activeClippedId, setActiveClippedId] = useState<string | null>(propClippedId || null);
+  
+  // Legacy modal state (to be removed after migration)
+  const [showDtmOptionsModal, setShowDtmOptionsModal] = useState(false);
 
   const resetDialog = () => {
     setDialog(null);
@@ -733,8 +774,209 @@ const MapPanel: React.FC<MapPanelProps> = ({
   };
 
   // ============================================================================
-  // NEW DTM LOADING FLOW FUNCTIONS
+  // UNIFIED DTM LOADER FUNCTIONS
   // ============================================================================
+
+  // Open the unified DTM loader dialog
+  const handleOpenDtmLoader = useCallback(() => {
+    setDtmLoaderOpen(true);
+    setDtmLoaderStep('source-choice');
+    setDtmSourceType(null);
+    setLocalFileError(null);
+    setDtmSearchQuery('');
+    setSelectedDtmId(null);
+    setDtmOptionsError(null);
+  }, []);
+
+  // Close the unified DTM loader and reset state
+  const handleCloseDtmLoader = useCallback(() => {
+    setDtmLoaderOpen(false);
+    setDtmLoaderStep('source-choice');
+    setDtmSourceType(null);
+    setLocalFileError(null);
+    setLocalUploadProgress(0);
+    setIsLocalUploading(false);
+    setDtmSearchQuery('');
+    setSelectedDtmId(null);
+    setAoiSelectionMethod(null);
+    setAoiBounds(null);
+    setAoiPolygon(null);
+    aoiPolygonPointsRef.current = [];
+    aoiFirstClickRef.current = null;
+    
+    // Clear any AOI shapes on map
+    if (aoiRectRef.current && map.current) {
+      map.current.removeLayer(aoiRectRef.current);
+      aoiRectRef.current = null;
+    }
+    if (aoiPolygonRef.current && map.current) {
+      map.current.removeLayer(aoiPolygonRef.current);
+      aoiPolygonRef.current = null;
+    }
+    aoiMarkersRef.current.forEach(marker => {
+      if (map.current) map.current.removeLayer(marker);
+    });
+    aoiMarkersRef.current = [];
+    
+    // Exit AOI selection mode if active
+    if (isAoiSelectionMode) {
+      setIsAoiSelectionMode(false);
+    }
+  }, [isAoiSelectionMode]);
+
+  // Handle source choice
+  const handleSelectSource = useCallback((source: DtmSourceType) => {
+    setDtmSourceType(source);
+    if (source === 'local') {
+      setDtmLoaderStep('local-picker');
+    } else if (source === 'server') {
+      setDtmLoaderStep('server-area');
+    }
+  }, []);
+
+  // Go back to source choice
+  const handleBackToSourceChoice = useCallback(() => {
+    setDtmLoaderStep('source-choice');
+    setDtmSourceType(null);
+    setLocalFileError(null);
+    setDtmSearchQuery('');
+    setSelectedDtmId(null);
+    setAoiSelectionMethod(null);
+    setAoiBounds(null);
+    setAoiPolygon(null);
+    aoiPolygonPointsRef.current = [];
+    aoiFirstClickRef.current = null;
+    
+    // Clear any AOI shapes on map
+    if (aoiRectRef.current && map.current) {
+      map.current.removeLayer(aoiRectRef.current);
+      aoiRectRef.current = null;
+    }
+    if (aoiPolygonRef.current && map.current) {
+      map.current.removeLayer(aoiPolygonRef.current);
+      aoiPolygonRef.current = null;
+    }
+    aoiMarkersRef.current.forEach(marker => {
+      if (map.current) map.current.removeLayer(marker);
+    });
+    aoiMarkersRef.current = [];
+    
+    // Exit AOI selection mode if active
+    if (isAoiSelectionMode) {
+      setIsAoiSelectionMode(false);
+    }
+  }, [isAoiSelectionMode]);
+
+  // Validate local file (TIF only, <2GB)
+  const validateLocalFile = useCallback((file: File): { valid: boolean; error?: string } => {
+    const allowedExtensions = ['.tif', '.tiff'];
+    const lowerName = file.name.toLowerCase();
+    const hasValidExtension = allowedExtensions.some((ext) => lowerName.endsWith(ext));
+    
+    if (!hasValidExtension) {
+      return { valid: false, error: 'You can select TIF files only (.tif, .tiff)' };
+    }
+    
+    const maxSizeBytes = 2 * 1024 * 1024 * 1024; // 2GB
+    if (file.size > maxSizeBytes) {
+      const fileSizeGB = (file.size / (1024 * 1024 * 1024)).toFixed(2);
+      return { valid: false, error: `File is ${fileSizeGB}GB. Maximum allowed size is 2GB.` };
+    }
+    
+    return { valid: true };
+  }, []);
+
+  // Handle local file selection
+  const handleLocalFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setLocalFileError(null);
+    
+    const validation = validateLocalFile(file);
+    if (!validation.valid) {
+      setLocalFileError(validation.error || 'Invalid file');
+      if (localFileInputRef.current) {
+        localFileInputRef.current.value = '';
+      }
+      return;
+    }
+    
+    // Upload the file
+    handleUploadLocalFile(file);
+  }, [validateLocalFile]);
+
+  // Upload local DTM file
+  const handleUploadLocalFile = useCallback(async (file: File) => {
+    setIsLocalUploading(true);
+    setLocalUploadProgress(0);
+    setLocalFileError(null);
+    
+    const formData = new FormData();
+    formData.append('dtm', file);
+    
+    try {
+      const xhr = new XMLHttpRequest();
+      
+      xhr.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) {
+          const percentComplete = Math.round((event.loaded / event.total) * 100);
+          setLocalUploadProgress(percentComplete);
+        }
+      });
+      
+      xhr.addEventListener('load', () => {
+        if (xhr.status === 200) {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            if (data.success) {
+              const uploadedFileName = data.path?.split('/').pop()?.split('\\').pop() || 'Uploaded DTM';
+              setActiveDtmName(stripDtmTimestamp(uploadedFileName));
+              onDtmLoad(data.path, data);
+              handleCloseDtmLoader();
+            } else {
+              throw new Error(data.error || 'Upload failed');
+            }
+          } catch (parseError) {
+            console.error('Error parsing response:', parseError);
+            setLocalFileError('Failed to parse server response');
+          }
+        } else {
+          try {
+            const errorData = JSON.parse(xhr.responseText);
+            setLocalFileError(errorData.error || `Upload failed with status ${xhr.status}`);
+          } catch {
+            setLocalFileError(`Upload failed with status ${xhr.status}`);
+          }
+        }
+        setIsLocalUploading(false);
+        setLocalUploadProgress(0);
+        if (localFileInputRef.current) {
+          localFileInputRef.current.value = '';
+        }
+      });
+      
+      xhr.addEventListener('error', () => {
+        console.error('Error uploading DTM:', xhr.statusText);
+        setLocalFileError('Failed to upload DTM file. Please try again.');
+        setIsLocalUploading(false);
+        setLocalUploadProgress(0);
+      });
+      
+      xhr.addEventListener('abort', () => {
+        setIsLocalUploading(false);
+        setLocalUploadProgress(0);
+      });
+      
+      xhr.open('POST', '/api/upload-dtm');
+      xhr.send(formData);
+    } catch (error) {
+      console.error('Error uploading DTM:', error);
+      setLocalFileError('Failed to upload DTM file. Please try again.');
+      setIsLocalUploading(false);
+      setLocalUploadProgress(0);
+    }
+  }, [onDtmLoad, handleCloseDtmLoader]);
 
   // Fetch available DTM options from the server
   const fetchDtmOptions = useCallback(async () => {
@@ -749,34 +991,29 @@ const MapPanel: React.FC<MapPanelProps> = ({
       setDtmOptions(data.options || []);
     } catch (error) {
       console.error('Error fetching DTM options:', error);
-      setDtmOptionsError(error instanceof Error ? error.message : 'שגיאה בטעינת רשימת DTM');
+      setDtmOptionsError(error instanceof Error ? error.message : 'Error loading DTM list');
     } finally {
       setDtmOptionsLoading(false);
     }
   }, []);
 
-  // Open DTM options modal
-  const handleOpenDtmOptionsModal = useCallback(() => {
-    setShowDtmOptionsModal(true);
-    setDtmSearchQuery('');
-    setSelectedDtmId(null);
-    fetchDtmOptions();
-  }, [fetchDtmOptions]);
-
-  // Close DTM options modal
+  // Close DTM options modal (legacy - used by legacy modal rendering)
   const handleCloseDtmOptionsModal = useCallback(() => {
     setShowDtmOptionsModal(false);
     setSelectedDtmId(null);
     setDtmSearchQuery('');
   }, []);
 
-  // Select a DTM and enter AOI selection mode
+  // Select a DTM and enter AOI selection mode (used in server flow)
   const handleSelectDtm = useCallback((dtmId: string, displayName?: string) => {
     setSelectedDtmId(dtmId);
     // Store the display name for later use when DTM is loaded
     if (displayName) {
       setActiveDtmName(displayName);
     }
+    
+    // Close the unified loader dialog and enter AOI selection mode
+    setDtmLoaderOpen(false);
     setShowDtmOptionsModal(false);
     setIsAoiSelectionMode(true);
     setAoiSelectionMethod(null); // Show method chooser first
@@ -801,7 +1038,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     aoiMarkersRef.current = [];
   }, []);
 
-  // Cancel AOI selection
+  // Cancel AOI selection - returns to unified loader source choice
   const handleCancelAoiSelection = useCallback(() => {
     setIsAoiSelectionMode(false);
     setSelectedDtmId(null);
@@ -825,6 +1062,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (map.current) map.current.removeLayer(marker);
     });
     aoiMarkersRef.current = [];
+    
+    // Re-open the unified loader at source choice
+    setDtmLoaderOpen(true);
+    setDtmLoaderStep('source-choice');
+    setDtmSourceType(null);
   }, []);
 
   // Clip the DTM to the selected AOI
@@ -983,6 +1225,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
       opt.id.toLowerCase().includes(query)
     );
   }, [dtmOptions, dtmSearchQuery]);
+
+  // Fetch DTM options when entering server-area step
+  useEffect(() => {
+    if (dtmLoaderStep === 'server-area' && dtmOptions.length === 0 && !dtmOptionsLoading) {
+      fetchDtmOptions();
+    }
+  }, [dtmLoaderStep, dtmOptions.length, dtmOptionsLoading, fetchDtmOptions]);
 
   const activeRoute = routes.find((route) => route.id === activeRouteId) || routes[0];
   const activeRouteColor = activeRoute?.color || '#ff0000';
@@ -3244,12 +3493,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    uploadDtmFile(file);
-  };
-
   const handleDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -4399,40 +4642,61 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">ניהול נתונים</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".tif,.tiff,.geotiff"
-                onChange={handleFileUpload}
-                id="dtm-upload"
-                style={{ display: 'none' }}
-                disabled={dtmLoaded}
-              />
-              {/* New: Load DTM from server options */}
-              <Tooltip tooltip={dtmLoaded ? 'הסר תחילה את ה‑DTM הנוכחי' : 'בחר DTM מהשרת'}>
+              {/* Unified DTM Loader Button */}
+              <Tooltip tooltip={dtmLoaded ? 'הסר תחילה את ה‑DTM הנוכחי' : 'טען DTM (מקומי או מהשרת)'}>
                 <button
-                  onClick={handleOpenDtmOptionsModal}
+                  onClick={handleOpenDtmLoader}
                   className={`btn btn-tertiary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
                   disabled={dtmLoaded || isAoiSelectionMode}
-                  aria-label="טעינת DTM מהשרת"
+                  aria-label="טעינת DTM"
                   type="button"
                 >
                   <Icon name="folder" />
-                  <span className="sr-only">טעינת DTM מהשרת</span>
+                  <span className="sr-only">טעינת DTM</span>
                 </button>
               </Tooltip>
-              {/* Legacy: Upload DTM file */}
-              <Tooltip tooltip={dtmLoaded ? 'הסר תחילה את ה‑DTM הנוכחי' : 'העלאת קובץ DTM (GeoTIFF)'}>
+              <input
+                type="file"
+                accept=".kml"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (file) {
+                    await onImportKML(file);
+                    e.target.value = '';
+                  }
+                }}
+                style={{ display: 'none' }}
+                id="import-kml-map"
+              />
+              <Tooltip tooltip={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}>
                 <label
-                  htmlFor="dtm-upload"
-                  className={`btn btn-secondary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
-                  style={dtmLoaded ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}}
-                  aria-label="העלאת DTM"
+                  htmlFor="import-kml-map"
+                  className={`btn btn-secondary btn-icon ${!dtmSource ? 'disabled' : ''}`}
+                  style={!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : undefined}
+                  aria-label="העלאת מסלול טיסה"
                 >
-                  <Icon name="upload" />
-                  <span className="sr-only">העלאת DTM</span>
+                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 12.5L6 8.5H9V2H11V8.5H14L10 12.5ZM5 15H15V13H17V15C17 16.1 16.1 17 15 17H5C3.9 17 3 16.1 3 15V13H5V15Z" fill="currentColor"/>
+                  </svg>
+                  <span className="sr-only">העלאת מסלול טיסה</span>
                 </label>
               </Tooltip>
+              <Tooltip tooltip={!canExport ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}>
+                <button
+                  onClick={onExportClick}
+                  className={`btn btn-secondary btn-icon ${!canExport ? 'disabled' : ''}`}
+                  disabled={!canExport}
+                  aria-label="ייצוא מסלול טיסה"
+                  type="button"
+                >
+                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 7.5L14 11.5H11V18H9V11.5H6L10 7.5ZM5 5H15V7H17V5C17 3.9 16.1 3 15 3H5C3.9 3 3 3.9 3 5V7H5V5Z" fill="currentColor"/>
+                  </svg>
+                  <span className="sr-only">ייצוא מסלול טיסה</span>
+                </button>
+              </Tooltip>
+            </div>
+            <div className="group-column group-column-icons">
               <Tooltip
                 tooltip={
                   !dtmSource || !dtmLoaded
@@ -4451,8 +4715,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">פריקת DTM וניקוי מסלולים</span>
                 </button>
               </Tooltip>
-            </div>
-            <div className="group-column group-column-icons">
               <Tooltip tooltip={flightPath.length === 0 ? 'אין נקודות למחיקה' : 'נקה את כל הנקודות'}>
                 <button
                   onClick={handleDeleteAllPoints}
@@ -5123,8 +5385,234 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
       )}
 
-      {/* DTM Options Modal */}
-      {showDtmOptionsModal && (
+      {/* Unified DTM Loader Dialog */}
+      {dtmLoaderOpen && (
+        <div 
+          className="dtm-loader-overlay" 
+          onClick={handleCloseDtmLoader}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="dtm-loader-title"
+        >
+          <div 
+            className="dtm-loader-dialog" 
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                handleCloseDtmLoader();
+              }
+            }}
+          >
+            {/* Header */}
+            <div className="dtm-loader-header">
+              <h2 id="dtm-loader-title">
+                {dtmLoaderStep === 'source-choice' && 'טען DTM'}
+                {dtmLoaderStep === 'local-picker' && 'טען קובץ מקומי'}
+                {dtmLoaderStep === 'server-area' && 'בחר DTM מהשרת'}
+                {dtmLoaderStep === 'server-results' && 'בחר תשתית'}
+              </h2>
+              <button
+                type="button"
+                className="btn btn-icon btn-tertiary dtm-loader-close"
+                onClick={handleCloseDtmLoader}
+                aria-label="סגור"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+
+            {/* Step: Source Choice */}
+            {dtmLoaderStep === 'source-choice' && (
+              <div className="dtm-loader-content">
+                <p className="dtm-loader-subtitle">בחר מקור DTM לטעינה:</p>
+                <div className="dtm-source-options">
+                  <button
+                    type="button"
+                    className="dtm-source-card"
+                    onClick={() => handleSelectSource('server')}
+                  >
+                    <div className="dtm-source-icon dtm-source-icon-server">
+                      <Icon name="folder" />
+                    </div>
+                    <div className="dtm-source-info">
+                      <span className="dtm-source-title">טען מהשרת</span>
+                      <span className="dtm-source-desc">בחר תשתית קיימת מהשרת</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="dtm-source-card"
+                    onClick={() => handleSelectSource('local')}
+                  >
+                    <div className="dtm-source-icon dtm-source-icon-local">
+                      <Icon name="download" />
+                    </div>
+                    <div className="dtm-source-info">
+                      <span className="dtm-source-title">טען מקומי</span>
+                      <span className="dtm-source-desc">העלה קובץ GeoTIFF מהמחשב</span>
+                    </div>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step: Local File Picker */}
+            {dtmLoaderStep === 'local-picker' && (
+              <div className="dtm-loader-content">
+                <button
+                  type="button"
+                  className="dtm-loader-back"
+                  onClick={handleBackToSourceChoice}
+                  disabled={isLocalUploading}
+                >
+                  <Icon name="undo" />
+                  חזרה
+                </button>
+                
+                <div className="dtm-local-picker">
+                  <input
+                    ref={localFileInputRef}
+                    type="file"
+                    accept=".tif,.tiff"
+                    onChange={handleLocalFileSelect}
+                    id="dtm-local-upload"
+                    style={{ display: 'none' }}
+                    disabled={isLocalUploading}
+                  />
+                  
+                  {!isLocalUploading ? (
+                    <>
+                      <label
+                        htmlFor="dtm-local-upload"
+                        className="dtm-local-dropzone"
+                      >
+                        <Icon name="upload" />
+                        <span className="dtm-local-title">לחץ לבחירת קובץ</span>
+                        <span className="dtm-local-hint">ניתן לבחור קבצי TIF בלבד, עד 2GB</span>
+                      </label>
+                      
+                      {localFileError && (
+                        <div className="dtm-local-error">
+                          <span>⚠️ {localFileError}</span>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            onClick={() => setLocalFileError(null)}
+                          >
+                            נסה שוב
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="dtm-local-progress">
+                      <div className="loading-spinner" />
+                      <span>מעלה קובץ... {localUploadProgress}%</span>
+                      <div className="dtm-progress-bar">
+                        <div 
+                          className="dtm-progress-fill"
+                          style={{ width: `${localUploadProgress}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Step: Server Area Selection */}
+            {dtmLoaderStep === 'server-area' && (
+              <div className="dtm-loader-content">
+                <button
+                  type="button"
+                  className="dtm-loader-back"
+                  onClick={handleBackToSourceChoice}
+                >
+                  <Icon name="undo" />
+                  חזרה
+                </button>
+
+                <div className="dtm-modal-search">
+                  <Icon name="search" />
+                  <input
+                    type="text"
+                    placeholder="חיפוש קובץ DTM..."
+                    value={dtmSearchQuery}
+                    onChange={(e) => setDtmSearchQuery(e.target.value)}
+                    autoFocus
+                  />
+                </div>
+
+                <div className="dtm-server-content">
+                  {dtmOptionsLoading && (
+                    <div className="dtm-modal-loading">
+                      <div className="loading-spinner" />
+                      <span>טוען רשימת DTM...</span>
+                    </div>
+                  )}
+                  
+                  {dtmOptionsError && (
+                    <div className="dtm-modal-error">
+                      <span>⚠️ {dtmOptionsError}</span>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={fetchDtmOptions}
+                      >
+                        נסה שוב
+                      </button>
+                    </div>
+                  )}
+                  
+                  {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length === 0 && (
+                    <div className="dtm-modal-empty">
+                      {dtmSearchQuery ? (
+                        <span>לא נמצאו קבצים התואמים לחיפוש "{dtmSearchQuery}"</span>
+                      ) : (
+                        <span>לא נמצאו קבצי DTM בתיקייה.</span>
+                      )}
+                    </div>
+                  )}
+                  
+                  {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length > 0 && (
+                    <div className="dtm-options-list">
+                      {filteredDtmOptions.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className="dtm-option-item"
+                          onClick={() => handleSelectDtm(option.id, option.displayName)}
+                        >
+                          <div className="dtm-option-icon">
+                            <Icon name="folder" />
+                          </div>
+                          <div className="dtm-option-info">
+                            <div className="dtm-option-name">{option.displayName}</div>
+                            <div className="dtm-option-meta">
+                              <span>{formatFileSize(option.sizeBytes)}</span>
+                              <span>•</span>
+                              <span>{formatDate(option.modifiedAt)}</span>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="dtm-modal-footer">
+                  <span className="dtm-modal-count">
+                    {dtmOptions.length} קבצים זמינים
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Legacy DTM Options Modal - keeping for backward compatibility during migration */}
+      {showDtmOptionsModal && !dtmLoaderOpen && (
         <div className="dtm-modal-overlay" onClick={handleCloseDtmOptionsModal}>
           <div className="dtm-modal" onClick={(e) => e.stopPropagation()}>
             <div className="dtm-modal-header">

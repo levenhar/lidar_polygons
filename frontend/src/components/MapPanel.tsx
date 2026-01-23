@@ -4690,7 +4690,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-columns">
             <div className="group-column group-column-icons">
               {/* Unified DTM Loader Button */}
-              <Tooltip tooltip={dtmLoaded ? 'הסר תחילה את ה‑DTM הנוכחי' : 'טען DTM (מקומי או מהשרת)'}>
+              <Tooltip tooltip="טען DTM (מקומי או מהשרת)">
                 <button
                   onClick={handleOpenDtmLoader}
                   className={`btn btn-tertiary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
@@ -4715,7 +4715,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 style={{ display: 'none' }}
                 id="import-kml-map"
               />
-              <Tooltip tooltip={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}>
+              <Tooltip tooltip="העלאת מסלול טיסה (KML)">
                 <label
                   htmlFor="import-kml-map"
                   className={`btn btn-secondary btn-icon ${!dtmSource ? 'disabled' : ''}`}
@@ -4728,7 +4728,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">העלאת מסלול טיסה</span>
                 </label>
               </Tooltip>
-              <Tooltip tooltip={!canExport ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}>
+              <Tooltip tooltip="ייצוא מסלול טיסה (KML)">
                 <button
                   onClick={onExportClick}
                   className={`btn btn-secondary btn-icon ${!canExport ? 'disabled' : ''}`}
@@ -4744,13 +4744,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               </Tooltip>
             </div>
             <div className="group-column group-column-icons">
-              <Tooltip
-                tooltip={
-                  !dtmSource || !dtmLoaded
-                    ? 'לא נטען DTM'
-                    : 'הסר DTM ונקה מסלולים'
-                }
-              >
+              <Tooltip tooltip="הסר DTM ונקה מסלולים">
                 <button
                   onClick={onDtmUnload}
                   className="btn btn-destructive btn-icon"
@@ -4762,7 +4756,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">פריקת DTM וניקוי מסלולים</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={flightPath.length === 0 ? 'אין נקודות למחיקה' : 'נקה את כל הנקודות'}>
+              <Tooltip tooltip="נקה את כל הנקודות מהמסלול">
                 <button
                   onClick={handleDeleteAllPoints}
                   className="btn btn-destructive btn-icon"
@@ -4782,7 +4776,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">אפשרויות תכנון</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : isDrawing ? 'עצור שרטוט' : 'צייר מסלול (קליק על המפה)'}>
+              <Tooltip tooltip={isDrawing ? 'עצור שרטוט' : 'צייר מסלול (קליק על המפה)'}>
                 <button
                   onClick={() => {
                     setIsDrawing(!isDrawing);
@@ -4801,17 +4795,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">{isDrawing ? 'עצירת שרטוט' : 'שרטט מסלול'}</span>
                 </button>
               </Tooltip>
-              <Tooltip
-                tooltip={
-                  !dtmLoaded
-                    ? 'טען DTM תחילה'
-                    : flightPath.length < 2
-                      ? 'הוסף לפחות שתי נקודות תחילה'
-                      : isParallelLineMode
-                        ? 'עצור מצב קו מקביל'
-                        : 'קו מקביל: לחץ על מקטע, קבע היסט'
-                }
-              >
+              <Tooltip tooltip={isParallelLineMode ? 'עצור מצב קו מקביל' : 'קו מקביל: לחץ על מקטע, קבע היסט'}>
                 <button
                   onClick={() => {
                     setIsParallelLineMode(!isParallelLineMode);
@@ -4832,15 +4816,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               </Tooltip>
             </div>
             <div className="group-column group-column-icons">
-              <Tooltip
-                tooltip={
-                  !dtmLoaded
-                    ? 'טען DTM תחילה'
-                    : flightPath.length === 0
-                      ? 'הוסף נקודה תחילה'
-                      : 'הוסף נקודה לפי אזימוט + מרחק'
-                }
-              >
+              <Tooltip tooltip="הוסף נקודה לפי אזימוט ומרחק">
                 <button
                   onClick={handleCreatePointFromAzimuthDistance}
                   className="btn btn-secondary btn-icon"
@@ -4852,7 +4828,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">אזימוט + מרחק</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : 'הוסף נקודה לפי קואורדינטות'}>
+              <Tooltip tooltip="הוסף נקודה לפי קואורדינטות">
                 <button
                   onClick={handleCreatePointFromCoordinates}
                   className="btn btn-secondary btn-icon"
@@ -4864,15 +4840,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">נקודה לפי קואורדינטות</span>
                 </button>
               </Tooltip>
-              <Tooltip
-                tooltip={
-                  !dtmLoaded
-                    ? 'טען DTM תחילה'
-                    : flightPath.length < 2
-                      ? 'הוסף לפחות שתי נקודות תחילה'
-                      : 'הוסף פרסה עם רדיוס + מרחק'
-                }
-              >
+              <Tooltip tooltip="הוסף פרסה עם רדיוס ומרחק">
                 <button
                   onClick={handleAddUTurn}
                   className="btn btn-secondary btn-icon"
@@ -4892,17 +4860,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">מתקדם</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip
-                tooltip={
-                  !dtmLoaded
-                    ? 'טען DTM תחילה'
-                    : flightPath.length < 2
-                      ? 'הוסף לפחות שתי נקודות תחילה'
-                    : hasViewshedResult
-                        ? 'פתח הגדרות שדה ראייה'
-                        : 'חשב שדה ראייה'
-                }
-              >
+              <Tooltip tooltip={hasViewshedResult ? 'פתח הגדרות שדה ראייה' : 'חשב שדה ראייה (visibility analysis)'}>
                 <button
                   onClick={handleViewshedButtonClick}
                   className="btn btn-tertiary btn-icon"
@@ -4914,7 +4872,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">{hasViewshedResult ? 'הגדרות שדה ראייה' : 'חשב שדה ראייה'}</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={!dtmLoaded ? 'טען DTM תחילה' : isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע במיקום העכבר'}>
+              <Tooltip tooltip={isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע במיקום העכבר'}>
                 <button
                   onClick={() => {
                     const newInfoMode = !isInfoMode;
@@ -4946,7 +4904,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">היסטוריה</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
-              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה' : 'בטל (Ctrl+Z)'}>
+              <Tooltip tooltip="בטל פעולה אחרונה (Ctrl+Z)">
                 <button
                   onClick={onUndo}
                   disabled={!canUndo || flightPath.length === 0}
@@ -4958,7 +4916,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">בטל</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={flightPath.length === 0 ? 'צייר נקודות תחילה' : 'בצע שוב (Ctrl+Y או Ctrl+Shift+Z)'}>
+              <Tooltip tooltip="בצע שוב (Ctrl+Y או Ctrl+Shift+Z)">
                 <button
                   onClick={onRedo}
                   disabled={!canRedo || flightPath.length === 0}

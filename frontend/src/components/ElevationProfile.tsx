@@ -2232,7 +2232,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           <div className="control-group">
             <div className="group-title">נקודות הגבהה </div>
             <div className="group-buttons">
-              <Tooltip tooltip={climbRequests.length ? 'הסר את כל העליות' : 'טרם הוגדרה עלייה'}>
+              <Tooltip tooltip="הסר את כל נקודות ההגבהה">
                 <button
                   onClick={handleRemoveClimb}
                   disabled={climbRequests.length === 0}
@@ -2243,7 +2243,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   <TrashIcon />
                 </button>
               </Tooltip>
-              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין' : 'ייצא את תרשים הגובה כ-PNG'}>
+              <Tooltip tooltip="ייצא את תרשים הגובה כ-PNG">
                 <button
                   onClick={exportPNG}
                   disabled={elevationProfile.length === 0}
@@ -2255,7 +2255,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   <span className="sr-only">ייצוא PNG</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין' : 'ייצא את נתוני הגובה כ-CSV'}>
+              <Tooltip tooltip="ייצא את נתוני הגובה כ-CSV">
                 <button
                   onClick={exportCSV}
                   disabled={elevationProfile.length === 0}

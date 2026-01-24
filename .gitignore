@@ -17,6 +17,10 @@ package-lock.json
 .venv/
 __pycache__/
 venv/
+backend_python/dtm_leases.db
+backend_python/dtm_leases.db-shm
+backend_python/dtm_leases.db-wal
+
 
 frontend/ssl/RITM0229799.cer
 frontend/ssl/private.key

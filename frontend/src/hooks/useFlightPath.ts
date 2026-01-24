@@ -3,6 +3,7 @@ import { Coordinate } from '../App';
 import { useUndoRedo, UndoRedoOptions } from './useUndoRedo';
 import { computeCumulativeDistances } from '../utils/constraints';
 import { ActionType } from '../contexts/GlobalUndoRedoContext';
+import { ensurePointId } from '../utils/climbAnchors';
 
 export interface GeoJSONFeature {
   type: 'Feature';
@@ -78,7 +79,7 @@ export interface FlightRoute {
 interface FlightRoutesState {
   routes: FlightRoute[];
   activeRouteId: string;
-  climbRequestsByRoute: Record<string, { endDistance: number; climbAmount: number }[]>;
+  climbRequestsByRoute: Record<string, ClimbRequest[]>;
 }
 
 const colorPalette = ['#ff4d4f', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
@@ -97,7 +98,7 @@ function createRoute(index: number, nominalFlightHeight: number = DEFAULT_NOMINA
 }
 
 export interface UseFlightPathOptions {
-  initialClimbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>;
+  initialClimbRequestsByRoute?: Record<string, ClimbRequest[]>;
   // Callback to register actions with the global undo/redo manager
   registerGlobalAction?: (
     type: ActionType,
@@ -302,14 +303,14 @@ export function useFlightPath(
 
   const addPoint = useCallback(
     (point: Coordinate) => {
-      updateActiveRoute((route) => ({ ...route, points: [...route.points, point] }));
+      updateActiveRoute((route) => ({ ...route, points: [...route.points, ensurePointId(point)] }));
     },
     [updateActiveRoute]
   );
 
   const addPoints = useCallback(
     (points: Coordinate[]) => {
-      updateActiveRoute((route) => ({ ...route, points: [...route.points, ...points] }));
+      updateActiveRoute((route) => ({ ...route, points: [...route.points, ...points.map(ensurePointId)] }));
     },
     [updateActiveRoute]
   );
@@ -318,7 +319,9 @@ export function useFlightPath(
     (index: number, point: Coordinate) => {
       updateActiveRoute((route) => {
         const newPath = [...route.points];
-        newPath[index] = point;
+        const oldPoint = newPath[index];
+        // Preserve ID when updating
+        newPath[index] = ensurePointId({ ...point, id: oldPoint?.id || point.id });
         return { ...route, points: newPath };
       });
     },
@@ -339,7 +342,7 @@ export function useFlightPath(
     (index: number, points: Coordinate[]) => {
       updateActiveRoute((route) => {
         const newPath = [...route.points];
-        newPath.splice(index, 0, ...points);
+        newPath.splice(index, 0, ...points.map(ensurePointId));
         return { ...route, points: newPath };
       });
     },

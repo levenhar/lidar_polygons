@@ -10,6 +10,7 @@ import './ClimbConstraints1DGraph.css';
 import { ClimbConfig, computeClimbProfile, BaseAltitudeSample, ClimbPreset } from '../utils/climb';
 import { latLngToUTM } from '../utils/coordinates';
 import { computeCumulativeDistances, getNearestConstraints } from '../utils/constraints';
+import { findAnchorPointsForClimb, ClimbRequest } from '../utils/climbAnchors';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   const common = {
@@ -148,8 +149,8 @@ interface ElevationProfileProps {
   climbPresets: ClimbPreset[];
   selectedClimbPresetId: string;
   climbConfig: ClimbConfig;
-  climbRequests: { endDistance: number; climbAmount: number }[];
-  setClimbRequests: React.Dispatch<React.SetStateAction<{ endDistance: number; climbAmount: number }[]>>;
+  climbRequests: ClimbRequest[];
+  setClimbRequests: React.Dispatch<React.SetStateAction<ClimbRequest[]>>;
   climbWarnings: string[];
   showMetadata: boolean;
 }
@@ -1776,6 +1777,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return;
     }
 
+    // Find anchor points for this climb
+    const anchors = findAnchorPointsForClimb(pendingClimbEnd, flightPath);
+    
     setClimbRequests((prev) => {
       // If editing, remove the specific climb being edited; otherwise remove any climb at the same endDistance
       const filtered = editingClimb
@@ -1785,7 +1789,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 Math.abs(c.climbAmount - editingClimb.climbAmount) < 0.01)
           )
         : prev.filter((c) => Math.abs(c.endDistance - pendingClimbEnd) > 0.01);
-      return [...filtered, { endDistance: pendingClimbEnd, climbAmount: parsed }].sort((a, b) => a.endDistance - b.endDistance);
+      
+      // Create new climb request with anchor IDs
+      const newClimb: ClimbRequest = {
+        endDistance: pendingClimbEnd,
+        climbAmount: parsed,
+        ...(anchors && {
+          anchorPointIdA: anchors.anchorPointIdA,
+          anchorPointIdB: anchors.anchorPointIdB
+        })
+      };
+      
+      return [...filtered, newClimb].sort((a, b) => a.endDistance - b.endDistance);
     });
     setIsClimbAmountOpen(false);
     setPendingClimbEnd(null);

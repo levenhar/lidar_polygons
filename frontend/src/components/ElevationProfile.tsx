@@ -1779,6 +1779,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Find anchor points for this climb
     const anchors = findAnchorPointsForClimb(pendingClimbEnd, flightPath);
+    console.log('[CLIMB_CREATE] Creating climb point:', {
+      endDistance: pendingClimbEnd,
+      climbAmount: parsed,
+      anchors,
+      flightPathLength: flightPath.length,
+      flightPathIds: flightPath.map(p => ({ id: p.id, lng: p.lng, lat: p.lat }))
+    });
     
     setClimbRequests((prev) => {
       // If editing, remove the specific climb being edited; otherwise remove any climb at the same endDistance
@@ -1790,15 +1797,22 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           )
         : prev.filter((c) => Math.abs(c.endDistance - pendingClimbEnd) > 0.01);
       
-      // Create new climb request with anchor IDs
+      // Create new climb request with anchor IDs and segment ratio
       const newClimb: ClimbRequest = {
         endDistance: pendingClimbEnd,
         climbAmount: parsed,
         ...(anchors && {
           anchorPointIdA: anchors.anchorPointIdA,
-          anchorPointIdB: anchors.anchorPointIdB
+          anchorPointIdB: anchors.anchorPointIdB,
+          segmentRatio: anchors.segmentRatio
         })
       };
+      
+      console.log('[CLIMB_CREATE] New climb created:', {
+        ...newClimb,
+        hasAnchors: !!(newClimb.anchorPointIdA && newClimb.anchorPointIdB),
+        hasRatio: newClimb.segmentRatio !== undefined
+      });
       
       return [...filtered, newClimb].sort((a, b) => a.endDistance - b.endDistance);
     });

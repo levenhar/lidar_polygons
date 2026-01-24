@@ -317,15 +317,28 @@ export function useFlightPath(
 
   const updatePoint = useCallback(
     (index: number, point: Coordinate) => {
+      console.log('[UPDATE_POINT] Called in useFlightPath:', {
+        index,
+        oldPoint: state.routes.find(r => r.id === state.activeRouteId)?.points[index],
+        newPoint: point,
+        routeId: state.activeRouteId
+      });
       updateActiveRoute((route) => {
         const newPath = [...route.points];
         const oldPoint = newPath[index];
         // Preserve ID when updating
-        newPath[index] = ensurePointId({ ...point, id: oldPoint?.id || point.id });
+        const updatedPoint = ensurePointId({ ...point, id: oldPoint?.id || point.id });
+        console.log('[UPDATE_POINT] Updating point:', {
+          index,
+          oldPoint: { id: oldPoint?.id, lng: oldPoint?.lng, lat: oldPoint?.lat },
+          newPoint: { id: updatedPoint.id, lng: updatedPoint.lng, lat: updatedPoint.lat },
+          idPreserved: oldPoint?.id === updatedPoint.id
+        });
+        newPath[index] = updatedPoint;
         return { ...route, points: newPath };
       });
     },
-    [updateActiveRoute]
+    [updateActiveRoute, state]
   );
 
   const deletePoint = useCallback(

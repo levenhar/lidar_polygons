@@ -9,7 +9,8 @@ import { useElevationProfile } from './hooks/useElevationProfile';
 import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
 import climbPresetData from './config/climbPresets.json';
 import { GlobalUndoRedoProvider, useGlobalUndoRedo } from './contexts/GlobalUndoRedoContext';
-import { findClimbsAnchoredToPoint, ClimbRequest } from './utils/climbAnchors';
+import { findClimbsAnchoredToPoint, ClimbRequest, getClimbPositionFromAnchors, findAnchorPointsForClimb } from './utils/climbAnchors';
+import { computeCumulativeDistances } from './utils/constraints';
 import './App.css';
 
 export interface Coordinate {
@@ -118,8 +119,6 @@ function AppContent() {
     return {};
   }, []);
   
-  // Track previous geometry per route ID to detect geometry changes for each route independently
-  const prevGeometryByRouteRef = React.useRef<Record<string, { lat: number; lng: number }[]>>({});
   // Track operation type to distinguish inserts from edits/deletes
   const isInsertOperationRef = React.useRef<boolean>(false);
   
@@ -187,10 +186,67 @@ function AppContent() {
     addPoints(points);
   }, [addPoints]);
 
-  // Get climb requests for the active route
+  // Get climb requests for the active route and ensure they have anchor IDs
   const climbRequests = React.useMemo(() => {
-    return climbRequestsByRoute[activeRouteId] || [];
-  }, [climbRequestsByRoute, activeRouteId]);
+    const requests = climbRequestsByRoute[activeRouteId] || [];
+    
+    console.log('[CLIMB_REQUESTS] Processing requests:', {
+      activeRouteId,
+      requestsCount: requests.length,
+      flightPathLength: flightPath.length,
+      requests: requests.map((r: any) => ({
+        endDistance: r.endDistance,
+        climbAmount: r.climbAmount,
+        anchorPointIdA: r.anchorPointIdA,
+        anchorPointIdB: r.anchorPointIdB,
+        segmentRatio: r.segmentRatio
+      })),
+      flightPathIds: flightPath.map(p => p.id)
+    });
+    
+    // Assign anchor IDs to climb points that don't have them (for backward compatibility)
+    if (flightPath.length >= 2 && requests.length > 0) {
+      const updated = requests.map((climb: ClimbRequest, index: number) => {
+        // If climb already has anchor IDs, keep it as is
+        if (climb.anchorPointIdA && climb.anchorPointIdB) {
+          console.log(`[CLIMB_REQUESTS] Climb ${index} already has anchors:`, {
+            anchorPointIdA: climb.anchorPointIdA,
+            anchorPointIdB: climb.anchorPointIdB,
+            segmentRatio: climb.segmentRatio
+          });
+          return climb;
+        }
+        
+        // Otherwise, try to find and assign anchor IDs and ratio
+        console.log(`[CLIMB_REQUESTS] Climb ${index} missing anchors, finding them...`);
+        const anchors = findAnchorPointsForClimb(climb.endDistance, flightPath);
+        if (anchors) {
+          console.log(`[CLIMB_REQUESTS] Climb ${index} assigned anchors:`, anchors);
+          return {
+            ...climb,
+            anchorPointIdA: anchors.anchorPointIdA,
+            anchorPointIdB: anchors.anchorPointIdB,
+            segmentRatio: anchors.segmentRatio
+          };
+        }
+        
+        // If we can't find anchors (points don't have IDs), return as is
+        console.log(`[CLIMB_REQUESTS] Climb ${index} cannot find anchors (points may not have IDs)`);
+        return climb;
+      });
+      
+      console.log('[CLIMB_REQUESTS] Final processed requests:', updated.map((r: ClimbRequest) => ({
+        endDistance: r.endDistance,
+        anchorPointIdA: r.anchorPointIdA,
+        anchorPointIdB: r.anchorPointIdB,
+        segmentRatio: r.segmentRatio
+      })));
+      
+      return updated;
+    }
+    
+    return requests;
+  }, [climbRequestsByRoute, activeRouteId, flightPath]);
   
   // Set climb requests for the active route (now goes through undo/redo)
   const setClimbRequests = React.useCallback((updater: React.SetStateAction<ClimbRequest[]>) => {
@@ -213,6 +269,20 @@ function AppContent() {
   });
 
   const { elevationProfile, loading, profileReady, calculateProfile, clearProfile } = useElevationProfile();
+
+  // Log flight path changes
+  React.useEffect(() => {
+    console.log('[FLIGHT_PATH_CHANGE] Flight path updated:', {
+      length: flightPath.length,
+      points: flightPath.map((p, i) => ({
+        index: i,
+        id: p.id,
+        lng: p.lng,
+        lat: p.lat,
+        height: p.height
+      }))
+    });
+  }, [flightPath]);
 
   // Track last inputs so we can avoid expensive recalculation when only nominal height changes
   const lastProfileParamsRef = React.useRef<{
@@ -431,60 +501,238 @@ function AppContent() {
   const fullProfileResult = stableProfileResult;
 
   const climbMarkers = React.useMemo(() => {
+    console.log('[CLIMB_MARKERS] Calculating markers:', {
+      profilePointsCount: fullProfileResult.points.length,
+      climbRequestsCount: climbRequests.length,
+      flightPathLength: flightPath.length,
+      climbRequests: climbRequests.map(c => ({
+        endDistance: c.endDistance,
+        climbAmount: c.climbAmount,
+        anchorPointIdA: c.anchorPointIdA,
+        anchorPointIdB: c.anchorPointIdB,
+        segmentRatio: c.segmentRatio
+      }))
+    });
+
     if (!fullProfileResult.points.length || climbRequests.length === 0) return [];
 
     const markers: { lat: number; lng: number; label: string; type: 'start' | 'end' }[] = [];
+    
+    // Helper to convert distance to coordinate
+    const distanceToCoordinate = (distance: number, route: Coordinate[], cumulativeDistances: number[]): Coordinate | null => {
+      if (route.length === 0 || cumulativeDistances.length === 0) return null;
+      if (distance <= 0) return route[0];
+      if (distance >= cumulativeDistances[cumulativeDistances.length - 1]) {
+        return route[route.length - 1];
+      }
 
-    climbRequests.forEach((climb) => {
-      // Calculate start distance
-      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
-      const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
-      const startDistance = Math.max(0, climb.endDistance - requiredHorizontal);
+      // Find the segment containing this distance
+      for (let i = 1; i < cumulativeDistances.length; i++) {
+        if (distance <= cumulativeDistances[i]) {
+          const prevDist = cumulativeDistances[i - 1];
+          const segmentDist = cumulativeDistances[i] - prevDist;
+          const t = segmentDist > 0 ? (distance - prevDist) / segmentDist : 0;
 
-      // Find the closest profile point to the climb start distance
-      let closestStart = fullProfileResult.points[0];
-      let minDeltaStart = Math.abs(closestStart.distance - startDistance);
-      for (const p of fullProfileResult.points) {
-        const delta = Math.abs(p.distance - startDistance);
-        if (delta < minDeltaStart) {
-          minDeltaStart = delta;
-          closestStart = p;
+          const p1 = route[i - 1];
+          const p2 = route[i];
+
+          // Interpolate between points
+          return {
+            lng: p1.lng + (p2.lng - p1.lng) * t,
+            lat: p1.lat + (p2.lat - p1.lat) * t
+          };
         }
       }
 
-      // Find the closest profile point to the climb end distance
-      let closestEnd = fullProfileResult.points[0];
-      let minDeltaEnd = Math.abs(closestEnd.distance - climb.endDistance);
-      for (const p of fullProfileResult.points) {
-        const delta = Math.abs(p.distance - climb.endDistance);
-        if (delta < minDeltaEnd) {
-          minDeltaEnd = delta;
-          closestEnd = p;
+      return route[route.length - 1];
+    };
+
+    climbRequests.forEach((climb, index) => {
+      console.log(`[CLIMB_MARKERS] Processing climb ${index}:`, {
+        endDistance: climb.endDistance,
+        climbAmount: climb.climbAmount,
+        anchorPointIdA: climb.anchorPointIdA,
+        anchorPointIdB: climb.anchorPointIdB,
+        segmentRatio: climb.segmentRatio,
+        hasAnchors: !!(climb.anchorPointIdA && climb.anchorPointIdB)
+      });
+
+      // Calculate required horizontal distance for the climb
+      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
+
+      // Try to get position from anchor points first (for anchored climbs)
+      let endCoord: Coordinate | null = null;
+      let endCoordMethod = 'none';
+      if (climb.anchorPointIdA && climb.anchorPointIdB) {
+        console.log(`[CLIMB_MARKERS] Climb ${index}: Attempting anchor-based positioning for end`);
+        endCoord = getClimbPositionFromAnchors(climb, flightPath, climb.endDistance);
+        if (endCoord) {
+          endCoordMethod = 'anchors';
+          console.log(`[CLIMB_MARKERS] Climb ${index}: End position from anchors:`, {
+            lat: endCoord.lat,
+            lng: endCoord.lng,
+            anchorPointIdA: climb.anchorPointIdA,
+            anchorPointIdB: climb.anchorPointIdB,
+            segmentRatio: climb.segmentRatio
+          });
+        } else {
+          console.log(`[CLIMB_MARKERS] Climb ${index}: Anchor-based positioning failed, falling back to distance`);
         }
+      }
+      
+      // Fallback to distance-based calculation if no anchors or anchors not found
+      if (!endCoord) {
+        endCoordMethod = 'distance';
+        const cumulativeDistances = computeCumulativeDistances(flightPath);
+        endCoord = distanceToCoordinate(climb.endDistance, flightPath, cumulativeDistances);
+        console.log(`[CLIMB_MARKERS] Climb ${index}: End position from distance:`, {
+          lat: endCoord?.lat,
+          lng: endCoord?.lng,
+          endDistance: climb.endDistance,
+          cumulativeDistances: cumulativeDistances
+        });
+      }
+      
+      if (!endCoord) {
+        console.warn(`[CLIMB_MARKERS] Climb ${index}: Cannot calculate end position, skipping`);
+        return;
+      }
+
+      // For start position, calculate based on segment ratio (not global distance)
+      // This ensures the start position stays fixed relative to the anchor points
+      let startCoord: Coordinate | null = null;
+      let startCoordMethod = 'none';
+      if (climb.anchorPointIdA && climb.anchorPointIdB && climb.segmentRatio !== undefined) {
+        console.log(`[CLIMB_MARKERS] Climb ${index}: Attempting anchor-based positioning for start`);
+        // Find anchor points
+        const pointA = flightPath.find(p => p.id === climb.anchorPointIdA);
+        const pointB = flightPath.find(p => p.id === climb.anchorPointIdB);
+        
+        console.log(`[CLIMB_MARKERS] Climb ${index}: Anchor points found:`, {
+          pointA: pointA ? { id: pointA.id, lng: pointA.lng, lat: pointA.lat } : null,
+          pointB: pointB ? { id: pointB.id, lng: pointB.lng, lat: pointB.lat } : null
+        });
+        
+        if (pointA && pointB) {
+          // Find segment indices to calculate segment length
+          let segmentStartIdx = -1;
+          let segmentEndIdx = -1;
+          
+          for (let i = 0; i < flightPath.length; i++) {
+            if (flightPath[i].id === climb.anchorPointIdA) segmentStartIdx = i;
+            if (flightPath[i].id === climb.anchorPointIdB) segmentEndIdx = i;
+          }
+          
+          console.log(`[CLIMB_MARKERS] Climb ${index}: Segment indices:`, {
+            segmentStartIdx,
+            segmentEndIdx,
+            consecutive: segmentEndIdx === segmentStartIdx + 1
+          });
+          
+          if (segmentStartIdx !== -1 && segmentEndIdx !== -1 && segmentEndIdx === segmentStartIdx + 1) {
+            // Calculate segment length using haversine distance between the two anchor points
+            // This ensures the segment length is always relative to the current anchor positions
+            const EARTH_RADIUS_M = 6371000;
+            const dLat = ((pointB.lat - pointA.lat) * Math.PI) / 180;
+            const dLon = ((pointB.lng - pointA.lng) * Math.PI) / 180;
+            const lat1 = (pointA.lat * Math.PI) / 180;
+            const lat2 = (pointB.lat * Math.PI) / 180;
+            const a =
+              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const segmentLength = EARTH_RADIUS_M * c;
+            
+            console.log(`[CLIMB_MARKERS] Climb ${index}: Segment info:`, {
+              segmentLength,
+              requiredHorizontal,
+              endSegmentRatio: climb.segmentRatio
+            });
+            
+            if (segmentLength > 0) {
+              // Calculate start ratio: go back requiredHorizontal meters from the end position
+              // The end is at segmentRatio, so we need to calculate how much ratio to go back
+              const ratioToGoBack = requiredHorizontal / segmentLength;
+              const startRatio = Math.max(0, Math.min(1, climb.segmentRatio - ratioToGoBack));
+              
+              startCoord = {
+                lng: pointA.lng + (pointB.lng - pointA.lng) * startRatio,
+                lat: pointA.lat + (pointB.lat - pointA.lat) * startRatio
+              };
+              startCoordMethod = 'anchors';
+              console.log(`[CLIMB_MARKERS] Climb ${index}: Start position from anchors:`, {
+                lat: startCoord.lat,
+                lng: startCoord.lng,
+                startRatio,
+                ratioToGoBack,
+                endSegmentRatio: climb.segmentRatio
+              });
+            } else {
+              console.log(`[CLIMB_MARKERS] Climb ${index}: Segment length is zero, using end position for start`);
+              startCoord = { ...endCoord };
+              startCoordMethod = 'anchors';
+            }
+          } else {
+            console.log(`[CLIMB_MARKERS] Climb ${index}: Anchors not consecutive, cannot use anchor-based positioning for start`);
+          }
+        } else {
+          console.log(`[CLIMB_MARKERS] Climb ${index}: Anchor points not found in flightPath`);
+        }
+      }
+      
+      // Fallback to distance-based calculation if anchor-based failed
+      if (!startCoord) {
+        startCoordMethod = 'distance';
+        const cumulativeDistances = computeCumulativeDistances(flightPath);
+        const startDistance = Math.max(0, climb.endDistance - requiredHorizontal);
+        startCoord = distanceToCoordinate(startDistance, flightPath, cumulativeDistances);
+        console.log(`[CLIMB_MARKERS] Climb ${index}: Start position from distance:`, {
+          lat: startCoord?.lat,
+          lng: startCoord?.lng,
+          startDistance
+        });
+      }
+
+      if (!startCoord) {
+        return;
       }
 
       const sign = climb.climbAmount >= 0 ? '+' : '';
       const label = `${sign}${climb.climbAmount.toFixed(0)}m`;
 
+      console.log(`[CLIMB_MARKERS] Climb ${index}: Final positions:`, {
+        start: { lat: startCoord.lat, lng: startCoord.lng, method: startCoordMethod },
+        end: { lat: endCoord.lat, lng: endCoord.lng, method: endCoordMethod },
+        climbData: {
+          endDistance: climb.endDistance,
+          climbAmount: climb.climbAmount,
+          anchorPointIdA: climb.anchorPointIdA,
+          anchorPointIdB: climb.anchorPointIdB,
+          segmentRatio: climb.segmentRatio
+        }
+      });
+
       // Add start marker
       markers.push({
-        lat: closestStart.latitude,
-        lng: closestStart.longitude,
+        lat: startCoord.lat,
+        lng: startCoord.lng,
         label: '',
         type: 'start'
       });
 
       // Add end marker
       markers.push({
-        lat: closestEnd.latitude,
-        lng: closestEnd.longitude,
+        lat: endCoord.lat,
+        lng: endCoord.lng,
         label: label,
         type: 'end'
       });
     });
 
+    console.log('[CLIMB_MARKERS] Final markers:', markers);
     return markers;
-  }, [climbRequests, fullProfileResult.points, climbConfig]);
+  }, [climbRequests, fullProfileResult.points, climbConfig, flightPath]);
 
   const deleteDtmOnServer = useCallback(async (pathToDelete?: string, clippedIdToDelete?: string, keepalive: boolean = false) => {
     const targetPath = pathToDelete || dtmSource;
@@ -836,28 +1084,54 @@ function AppContent() {
     pointId: string | undefined,
     action: () => void
   ): boolean => {
+    console.log('[CHECK_ANCHOR] Checking point:', {
+      pointId,
+      climbRequestsCount: climbRequests.length,
+      climbRequests: climbRequests.map(c => ({
+        endDistance: c.endDistance,
+        anchorPointIdA: c.anchorPointIdA,
+        anchorPointIdB: c.anchorPointIdB
+      }))
+    });
+
     if (!pointId) {
       // If point has no ID, proceed (old points without IDs)
+      console.log('[CHECK_ANCHOR] Point has no ID, proceeding');
       action();
       return true;
     }
     
     const affectedClimbs = findClimbsAnchoredToPoint(pointId, climbRequests);
     
+    console.log('[CHECK_ANCHOR] Affected climbs:', {
+      pointId,
+      affectedCount: affectedClimbs.length,
+      affectedClimbs: affectedClimbs.map(c => ({
+        endDistance: c.endDistance,
+        climbAmount: c.climbAmount,
+        anchorPointIdA: c.anchorPointIdA,
+        anchorPointIdB: c.anchorPointIdB
+      }))
+    });
+    
     if (affectedClimbs.length > 0) {
       // Show warning modal
+      console.log('[CHECK_ANCHOR] Showing warning modal for', affectedClimbs.length, 'climb(s)');
       setAnchorWarningModal({
         isOpen: true,
         affectedClimbsCount: affectedClimbs.length,
         pendingAction: () => {
+          console.log('[CHECK_ANCHOR] User confirmed, deleting affected climbs and executing action');
           // Delete affected climb points and then execute the action
           setClimbRequests((prev) => {
             const affectedIds = new Set(affectedClimbs.map(c => 
               `${c.endDistance}-${c.climbAmount}`
             ));
-            return prev.filter(c => 
+            const filtered = prev.filter(c => 
               !affectedIds.has(`${c.endDistance}-${c.climbAmount}`)
             );
+            console.log('[CHECK_ANCHOR] Deleted climbs, remaining:', filtered.length);
+            return filtered;
           });
           action();
         }
@@ -866,6 +1140,7 @@ function AppContent() {
     }
     
     // No affected climbs, proceed immediately
+    console.log('[CHECK_ANCHOR] No affected climbs, proceeding immediately');
     action();
     return true;
   }, [climbRequests, setClimbRequests]);
@@ -875,7 +1150,7 @@ function AppContent() {
     const point = flightPath[index];
     if (!point?.id) {
       // Old point without ID, proceed normally
-      setEditQueue((prev) => [...prev, { type: 'delete', index }]);
+    setEditQueue((prev) => [...prev, { type: 'delete', index }]);
       return;
     }
     
@@ -888,7 +1163,7 @@ function AppContent() {
     const oldPoint = flightPath[index];
     if (!oldPoint?.id) {
       // Old point without ID, proceed normally
-      setEditQueue((prev) => [...prev, { type: 'update', index, point }]);
+    setEditQueue((prev) => [...prev, { type: 'update', index, point }]);
       return;
     }
     

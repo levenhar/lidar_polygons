@@ -1,6 +1,6 @@
 import os
-from fastapi import FastAPI, HTTPException, File, UploadFile, Request
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, File, UploadFile, Request, Header, Query
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import rasterio
 import rasterio.features
@@ -8,7 +8,7 @@ import rasterio.warp
 import rasterio.mask
 from affine import Affine
 import numpy as np
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import json
 import shutil
 import time
@@ -20,6 +20,15 @@ import logging
 from dotenv import load_dotenv
 import threading
 import uuid
+import atexit
+
+# Import DTM lease manager for protection
+from dtm_lease_manager import (
+    get_lease_manager, 
+    shutdown_lease_manager,
+    DtmLeaseManager,
+    DEFAULT_LEASE_DURATION_SECONDS
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -136,6 +145,102 @@ class ViewshedRequest(BaseModel):
     samplingIntervalMeters: Optional[float] = 50.0
     maxDistanceMeters: Optional[float] = None
     useSubsampled: Optional[bool] = True
+
+# ============================================================================
+# DTM LEASE API MODELS
+# ============================================================================
+
+class LeaseAcquireRequest(BaseModel):
+    """Request to acquire a lease for a DTM."""
+    dtmId: str
+    clientId: str
+    sessionId: Optional[str] = None
+    durationSeconds: Optional[int] = DEFAULT_LEASE_DURATION_SECONDS
+
+class LeaseRenewRequest(BaseModel):
+    """Request to renew an existing lease."""
+    leaseId: str
+    durationSeconds: Optional[int] = DEFAULT_LEASE_DURATION_SECONDS
+
+class LeaseReleaseRequest(BaseModel):
+    """Request to release a lease."""
+    leaseId: str
+
+
+# ============================================================================
+# LIFECYCLE HOOKS
+# ============================================================================
+
+@atexit.register
+def cleanup_on_shutdown():
+    """Clean up lease manager on shutdown."""
+    logger.info("Shutting down DTM lease manager...")
+    shutdown_lease_manager()
+    logger.info("DTM lease manager shutdown complete")
+
+
+# ============================================================================
+# IMPLICIT LEASE MANAGEMENT FOR BACKWARD COMPATIBILITY
+# ============================================================================
+
+# Duration for implicit leases (shorter than explicit - 2 minutes)
+IMPLICIT_LEASE_DURATION_SECONDS = 120
+
+
+def implicitly_acquire_or_renew_lease(
+    dtm_id: str,
+    client_ip: Optional[str] = None,
+    session_id: Optional[str] = None
+) -> Optional[str]:
+    """
+    Implicitly acquire or renew a lease when a client accesses DTM data.
+    
+    This provides backward compatibility for clients that don't explicitly
+    manage leases. The lease is short-lived and should be renewed on each
+    data access.
+    
+    Args:
+        dtm_id: The DTM identifier being accessed
+        client_ip: Client IP address (used as client_id if no session)
+        session_id: Optional session identifier from header
+        
+    Returns:
+        The lease ID if acquired/renewed, None if failed
+    """
+    try:
+        lease_mgr = get_lease_manager()
+        client_id = session_id or client_ip or "anonymous"
+        
+        lease, was_renewed = lease_mgr.acquire_lease(
+            dtm_id=dtm_id,
+            client_id=f"implicit:{client_id}",
+            session_id=session_id,
+            duration_seconds=IMPLICIT_LEASE_DURATION_SECONDS
+        )
+        
+        logger.debug(
+            f"Implicit lease {'renewed' if was_renewed else 'acquired'} for "
+            f"dtm_id={dtm_id}, client={client_id}, lease_id={lease.lease_id}"
+        )
+        
+        return lease.lease_id
+    except Exception as e:
+        logger.warning(f"Failed to acquire implicit lease for {dtm_id}: {e}")
+        return None
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP from request, handling proxies."""
+    # Check for forwarded header (behind proxy)
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    
+    # Fall back to direct client
+    if request.client:
+        return request.client.host
+    
+    return "unknown"
 
 def haversine(lon1, lat1, lon2, lat2):
     """
@@ -413,12 +518,24 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                 viewshed_jobs[job_id]["error"] = str(e)
 
 @app.post("/elevation-profile")
-async def get_elevation_profile(request: ElevationProfileRequest):
+async def get_elevation_profile(
+    request: ElevationProfileRequest,
+    raw_request: Request,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
+):
     start_time = time.time()
     logger.info(f"Calculating elevation profile for {request.dtmPath} with {len(request.coordinates)} points")
     
     if len(request.coordinates) < 2:
         raise HTTPException(status_code=400, detail="At least two points required")
+    
+    # Implicitly acquire/renew lease for the DTM being accessed
+    dtm_id = request.clippedId or os.path.basename(request.dtmPath)
+    implicitly_acquire_or_renew_lease(
+        dtm_id=dtm_id,
+        client_ip=get_client_ip(raw_request),
+        session_id=x_session_id
+    )
     
     # Determine file path based on whether it's a clipped DTM or regular DTM
     if request.clippedId:
@@ -586,9 +703,21 @@ async def get_elevation_profile(request: ElevationProfileRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/elevation-at-point")
-async def get_elevation_at_point(request: ElevationAtPointRequest):
+async def get_elevation_at_point(
+    request: ElevationAtPointRequest,
+    raw_request: Request,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
+):
     """Get elevation at a specific point from DTM"""
     try:
+        # Implicitly acquire/renew lease for the DTM being accessed
+        dtm_id = request.clippedId or os.path.basename(request.dtmPath)
+        implicitly_acquire_or_renew_lease(
+            dtm_id=dtm_id,
+            client_ip=get_client_ip(raw_request),
+            session_id=x_session_id
+        )
+        
         # Determine file path based on whether it's a clipped DTM or regular DTM
         if request.clippedId:
             # Use clipped DTM from cache directory
@@ -1138,6 +1267,19 @@ async def upload_dtm(dtm: UploadFile = File(...)):
         
         duration = time.time() - start_time
         logger.info(f"DTM uploaded successfully: {filename} in {duration:.3f}s")
+        
+        # Register DTM in lease manager for tracking
+        try:
+            lease_mgr = get_lease_manager()
+            trace_id = str(uuid.uuid4())[:8]
+            lease_mgr.register_dtm(
+                dtm_id=filename,
+                storage_path=cache_file_path,
+                trace_id=trace_id
+            )
+            logger.info(f"[{trace_id}] DTM registered in lease manager: {filename}")
+        except Exception as e:
+            logger.warning(f"Failed to register DTM in lease manager: {e}")
                
         return {
             "success": True,
@@ -1169,12 +1311,273 @@ async def upload_dtm(dtm: UploadFile = File(...)):
                 pass
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ============================================================================
+# DTM LEASE API ENDPOINTS
+# ============================================================================
+
+@app.post("/api/dtm/lease/acquire")
+async def acquire_dtm_lease(
+    request: LeaseAcquireRequest,
+    x_trace_id: Optional[str] = Header(None, alias="X-Trace-ID")
+):
+    """
+    Acquire a lease for a DTM.
+    
+    Clients should call this when they start using a DTM (viewing, planning, processing).
+    If the client already has an active lease, it will be renewed instead.
+    """
+    try:
+        trace_id = x_trace_id or str(uuid.uuid4())[:8]
+        logger.info(f"[{trace_id}] Lease acquire request: dtm_id={request.dtmId}, client_id={request.clientId}")
+        
+        lease_mgr = get_lease_manager()
+        lease, was_renewed = lease_mgr.acquire_lease(
+            dtm_id=request.dtmId,
+            client_id=request.clientId,
+            session_id=request.sessionId,
+            duration_seconds=request.durationSeconds or DEFAULT_LEASE_DURATION_SECONDS,
+            trace_id=trace_id
+        )
+        
+        return {
+            "success": True,
+            "lease": lease.to_dict(),
+            "renewed": was_renewed
+        }
+    except Exception as e:
+        logger.error(f"Error acquiring lease: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/dtm/lease/renew")
+async def renew_dtm_lease(
+    request: LeaseRenewRequest,
+    x_trace_id: Optional[str] = Header(None, alias="X-Trace-ID")
+):
+    """
+    Renew an existing lease.
+    
+    Clients should call this periodically (every 30-60s) while using a DTM.
+    """
+    try:
+        trace_id = x_trace_id or str(uuid.uuid4())[:8]
+        logger.info(f"[{trace_id}] Lease renew request: lease_id={request.leaseId}")
+        
+        lease_mgr = get_lease_manager()
+        lease = lease_mgr.renew_lease(
+            lease_id=request.leaseId,
+            duration_seconds=request.durationSeconds or DEFAULT_LEASE_DURATION_SECONDS,
+            trace_id=trace_id
+        )
+        
+        if lease is None:
+            raise HTTPException(status_code=404, detail="Lease not found or expired")
+        
+        return {
+            "success": True,
+            "lease": lease.to_dict()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error renewing lease: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/dtm/lease/release")
+async def release_dtm_lease(
+    request: LeaseReleaseRequest,
+    x_trace_id: Optional[str] = Header(None, alias="X-Trace-ID")
+):
+    """
+    Release a lease (best-effort cleanup).
+    
+    Clients should call this when they stop using a DTM.
+    """
+    try:
+        trace_id = x_trace_id or str(uuid.uuid4())[:8]
+        logger.info(f"[{trace_id}] Lease release request: lease_id={request.leaseId}")
+        
+        lease_mgr = get_lease_manager()
+        released = lease_mgr.release_lease(
+            lease_id=request.leaseId,
+            trace_id=trace_id
+        )
+        
+        return {
+            "success": True,
+            "released": released
+        }
+    except Exception as e:
+        logger.error(f"Error releasing lease: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dtm/lease/{lease_id}")
+async def get_dtm_lease(lease_id: str):
+    """Get details of a specific lease."""
+    try:
+        lease_mgr = get_lease_manager()
+        lease = lease_mgr.get_lease(lease_id)
+        
+        if lease is None:
+            raise HTTPException(status_code=404, detail="Lease not found")
+        
+        return {
+            "success": True,
+            "lease": lease.to_dict()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting lease: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dtm/{dtm_id}/leases")
+async def get_dtm_leases(dtm_id: str):
+    """Get all active leases for a DTM."""
+    try:
+        lease_mgr = get_lease_manager()
+        leases = lease_mgr.get_active_leases_for_dtm(dtm_id)
+        
+        return {
+            "success": True,
+            "dtmId": dtm_id,
+            "leases": [lease.to_dict() for lease in leases],
+            "activeLeaseCount": len(leases),
+            "isProtected": len(leases) > 0
+        }
+    except Exception as e:
+        logger.error(f"Error getting DTM leases: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dtm/{dtm_id}/protection")
+async def check_dtm_protection(dtm_id: str):
+    """
+    Check if a DTM is protected by active leases.
+    
+    Returns protection status and active lease count.
+    """
+    try:
+        lease_mgr = get_lease_manager()
+        is_protected, lease_count = lease_mgr.is_dtm_protected(dtm_id)
+        
+        return {
+            "success": True,
+            "dtmId": dtm_id,
+            "isProtected": is_protected,
+            "activeLeaseCount": lease_count
+        }
+    except Exception as e:
+        logger.error(f"Error checking DTM protection: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dtm/leases/metrics")
+async def get_lease_metrics():
+    """Get metrics about lease system for monitoring."""
+    try:
+        lease_mgr = get_lease_manager()
+        metrics = lease_mgr.get_metrics()
+        
+        return {
+            "success": True,
+            "metrics": metrics
+        }
+    except Exception as e:
+        logger.error(f"Error getting lease metrics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dtm/leases/audit")
+async def get_lease_audit_log(
+    dtm_id: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    since_hours: Optional[float] = Query(None, ge=0)
+):
+    """Get audit log entries for observability."""
+    try:
+        lease_mgr = get_lease_manager()
+        since_timestamp = None
+        if since_hours:
+            since_timestamp = time.time() - (since_hours * 3600)
+        
+        entries = lease_mgr.get_audit_log(
+            dtm_id=dtm_id,
+            limit=limit,
+            since_timestamp=since_timestamp
+        )
+        
+        return {
+            "success": True,
+            "entries": entries,
+            "count": len(entries)
+        }
+    except Exception as e:
+        logger.error(f"Error getting audit log: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# PROTECTED DELETE ENDPOINTS
+# ============================================================================
+
+def check_dtm_protection_for_delete(
+    dtm_id: str,
+    caller: str,
+    reason: str,
+    trace_id: Optional[str] = None
+) -> None:
+    """
+    Check if DTM is protected and raise 409 Conflict if it cannot be deleted.
+    
+    This is called by all delete endpoints to ensure consistent protection.
+    """
+    lease_mgr = get_lease_manager()
+    can_delete, message, lease_count = lease_mgr.can_delete_dtm(
+        dtm_id=dtm_id,
+        trace_id=trace_id,
+        caller=caller,
+        reason=reason
+    )
+    
+    if not can_delete:
+        logger.warning(f"[{trace_id}] Delete blocked: {message}")
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "DTM is currently in use",
+                "message": message,
+                "dtmId": dtm_id,
+                "activeLeaseCount": lease_count,
+                "code": "DTM_PROTECTED"
+            }
+        )
+
+
 @app.delete("/api/dtm/{filename}")
 @app.delete("/dtm/{filename}")
-async def delete_uploaded_dtm(filename: str):
+async def delete_uploaded_dtm(
+    filename: str,
+    x_trace_id: Optional[str] = Header(None, alias="X-Trace-ID"),
+    force: bool = Query(False, description="Force delete even if protected (admin only)")
+):
     """Delete an uploaded DTM file and its subsampled version"""
     try:
-        logger.info(f"Deleting uploaded DTM: {filename}")
+        trace_id = x_trace_id or str(uuid.uuid4())[:8]
+        logger.info(f"[{trace_id}] Delete request for uploaded DTM: {filename}, force={force}")
+        
+        # Check protection unless force delete
+        if not force:
+            check_dtm_protection_for_delete(
+                dtm_id=filename,
+                caller="delete_uploaded_dtm",
+                reason="manual_delete",
+                trace_id=trace_id
+            )
         
         deleted_files = []
         not_found = True
@@ -1243,10 +1646,21 @@ async def delete_uploaded_dtm(filename: str):
                     logger.warning(f"Error searching for subsampled files: {e}")
         
         if not_found:
-            logger.warning(f"Uploaded DTM not found: {filename}")
+            logger.warning(f"[{trace_id}] Uploaded DTM not found: {filename}")
             return {"success": True, "deleted": False, "message": f"Uploaded DTM {filename} not found"}
         
-        logger.info(f"Successfully deleted {len(deleted_files)} file(s) for uploaded DTM: {filename}")
+        # Confirm deletion in lease manager
+        try:
+            lease_mgr = get_lease_manager()
+            lease_mgr.confirm_dtm_deleted(
+                dtm_id=filename,
+                trace_id=trace_id,
+                caller="delete_uploaded_dtm"
+            )
+        except Exception as e:
+            logger.warning(f"[{trace_id}] Failed to confirm DTM deletion in lease manager: {e}")
+        
+        logger.info(f"[{trace_id}] Successfully deleted {len(deleted_files)} file(s) for uploaded DTM: {filename}")
         return {
             "success": True,
             "deleted": True,
@@ -1254,25 +1668,41 @@ async def delete_uploaded_dtm(filename: str):
             "deletedFiles": deleted_files
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting uploaded DTM {filename}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/dtm/cleanup")
-async def cleanup_dtm(request: Request):
+async def cleanup_dtm(
+    request: Request,
+    x_trace_id: Optional[str] = Header(None, alias="X-Trace-ID")
+):
     """Cleanup endpoint for deleting DTM files - matches Node.js backend API"""
     try:
+        trace_id = x_trace_id or str(uuid.uuid4())[:8]
         body = await request.json()
         dtm_path = body.get("path")
         filename = body.get("filename")
         clipped_id = body.get("clippedId")
+        force = body.get("force", False)
         
-        logger.info(f"Cleanup request - path: {dtm_path}, filename: {filename}, clippedId: {clipped_id}")
+        logger.info(f"[{trace_id}] Cleanup request - path: {dtm_path}, filename: {filename}, clippedId: {clipped_id}, force={force}")
         
         # If clippedId is provided, delete the clipped DTM
         if clipped_id:
             try:
-                logger.info(f"Deleting clipped DTM via cleanup: {clipped_id}")
+                # Check protection unless force delete
+                if not force:
+                    check_dtm_protection_for_delete(
+                        dtm_id=clipped_id,
+                        caller="cleanup_dtm",
+                        reason="cleanup_clipped",
+                        trace_id=trace_id
+                    )
+                
+                logger.info(f"[{trace_id}] Deleting clipped DTM via cleanup: {clipped_id}")
                 # Reuse the delete logic - search for files matching the clipped_id
                 deleted_files = []
                 not_found = True
@@ -1287,16 +1717,16 @@ async def cleanup_dtm(request: Request):
                                 if os.path.isfile(file_path):
                                     os.remove(file_path)
                                     deleted_files.append(f"cache/{file}")
-                                    logger.info(f"Deleted clipped DTM file: {file_path}")
+                                    logger.info(f"[{trace_id}] Deleted clipped DTM file: {file_path}")
                                     not_found = False
                             except Exception as e:
-                                logger.error(f"Error deleting {file_path}: {e}")
+                                logger.error(f"[{trace_id}] Error deleting {file_path}: {e}")
                 
                     # Delete subsampled version from DTM_SUBSAMPLED_CACHE_DIR
-                    logger.info(f"Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR}")
+                    logger.info(f"[{trace_id}] Checking for subsampled version in: {DTM_SUBSAMPLED_CACHE_DIR}")
                     if os.path.exists(DTM_SUBSAMPLED_CACHE_DIR):
                         subsampled_files = os.listdir(DTM_SUBSAMPLED_CACHE_DIR)
-                        logger.info(f"Found {len(subsampled_files)} files in subsampled cache directory")
+                        logger.info(f"[{trace_id}] Found {len(subsampled_files)} files in subsampled cache directory")
                         for file in subsampled_files:
                             file_lower = file.lower()
                             # Check if file contains "subsample" AND matches the clipped_id pattern
@@ -1309,19 +1739,32 @@ async def cleanup_dtm(request: Request):
                                     if os.path.isfile(file_path):
                                         os.remove(file_path)
                                         deleted_files.append(f"cache/{file}")
-                                        logger.info(f"Deleted subsampled DTM file: {file_path}")
+                                        logger.info(f"[{trace_id}] Deleted subsampled DTM file: {file_path}")
                                         not_found = False
                                 except Exception as e:
-                                    logger.error(f"Error deleting {file_path}: {e}")
+                                    logger.error(f"[{trace_id}] Error deleting {file_path}: {e}")
                     else:
-                        logger.warning(f"Subsampled cache directory does not exist: {DTM_SUBSAMPLED_CACHE_DIR}")
+                        logger.warning(f"[{trace_id}] Subsampled cache directory does not exist: {DTM_SUBSAMPLED_CACHE_DIR}")
                 
                 if not_found:
                     return {"success": True, "deleted": False, "message": f"Clipped DTM {clipped_id} not found"}
                 
+                # Confirm deletion in lease manager
+                try:
+                    lease_mgr = get_lease_manager()
+                    lease_mgr.confirm_dtm_deleted(
+                        dtm_id=clipped_id,
+                        trace_id=trace_id,
+                        caller="cleanup_dtm"
+                    )
+                except Exception as e:
+                    logger.warning(f"[{trace_id}] Failed to confirm clipped DTM deletion in lease manager: {e}")
+                
                 return {"success": True, "deleted": True, "clippedId": clipped_id, "deletedFiles": deleted_files}
+            except HTTPException:
+                raise
             except Exception as e:
-                logger.error(f"Error deleting clipped DTM: {e}", exc_info=True)
+                logger.error(f"[{trace_id}] Error deleting clipped DTM: {e}", exc_info=True)
                 return {"success": False, "error": "Failed to delete clipped DTM"}
         
         # Legacy: delete uploaded file
@@ -1332,12 +1775,22 @@ async def cleanup_dtm(request: Request):
                 raw_name = os.path.basename(dtm_path)
         
         if not raw_name:
-            logger.warning("No filename provided in cleanup request")
+            logger.warning(f"[{trace_id}] No filename provided in cleanup request")
             return {"success": False, "error": "No filename provided"}
         
         # Use just the basename for safety
         safe_filename = os.path.basename(raw_name)
-        logger.info(f"Attempting to delete legacy DTM file: {safe_filename}")
+        
+        # Check protection unless force delete
+        if not force:
+            check_dtm_protection_for_delete(
+                dtm_id=safe_filename,
+                caller="cleanup_dtm",
+                reason="cleanup_legacy",
+                trace_id=trace_id
+            )
+        
+        logger.info(f"[{trace_id}] Attempting to delete legacy DTM file: {safe_filename}")
         
         # Call the delete function logic
         deleted_files = []
@@ -1667,6 +2120,19 @@ async def clip_dtm(request: ClipRequest):
             duration = time.time() - start_time
             logger.info(f"DTM clipped successfully in {duration:.3f}s: {clipped_id}")
             
+            # Register clipped DTM in lease manager for tracking
+            try:
+                lease_mgr = get_lease_manager()
+                trace_id = str(uuid.uuid4())[:8]
+                lease_mgr.register_dtm(
+                    dtm_id=clipped_id,
+                    storage_path=clipped_file_path,
+                    trace_id=trace_id
+                )
+                logger.info(f"[{trace_id}] Clipped DTM registered in lease manager: {clipped_id}")
+            except Exception as e:
+                logger.warning(f"Failed to register clipped DTM in lease manager: {e}")
+            
             return {
                 "clippedId": clipped_id,
                 "raster": {
@@ -1734,9 +2200,20 @@ async def get_clipped_dtm_metadata(clipped_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/dtm/clipped/{clipped_id}/raster")
-async def get_clipped_dtm_raster(clipped_id: str):
+async def get_clipped_dtm_raster(
+    clipped_id: str,
+    request: Request,
+    x_session_id: Optional[str] = Header(None, alias="X-Session-ID")
+):
     """Get raster data for a clipped DTM"""
     try:
+        # Implicitly acquire/renew lease for this DTM access
+        implicitly_acquire_or_renew_lease(
+            dtm_id=clipped_id,
+            client_ip=get_client_ip(request),
+            session_id=x_session_id
+        )
+        
         clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
         # Resolve to absolute path for better error messages
         clipped_file_path = os.path.abspath(clipped_file_path)
@@ -1873,10 +2350,26 @@ async def get_clipped_dtm_file(clipped_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/dtm/clipped/{clipped_id}")
-async def delete_clipped_dtm(clipped_id: str):
+async def delete_clipped_dtm(
+    clipped_id: str,
+    x_trace_id: Optional[str] = Header(None, alias="X-Trace-ID"),
+    force: bool = Query(False, description="Force delete even if protected (admin only)")
+):
     """Delete a clipped DTM from the cache directory"""
     try:
-        logger.info(f"Deleting clipped DTM: {clipped_id} from cache directory: {DTM_CACHE_DIR}")
+        trace_id = x_trace_id or str(uuid.uuid4())[:8]
+        logger.info(f"[{trace_id}] Delete request for clipped DTM: {clipped_id}, force={force}")
+        
+        # Check protection unless force delete
+        if not force:
+            check_dtm_protection_for_delete(
+                dtm_id=clipped_id,
+                caller="delete_clipped_dtm",
+                reason="manual_delete",
+                trace_id=trace_id
+            )
+        
+        logger.info(f"[{trace_id}] Deleting clipped DTM: {clipped_id} from cache directory: {DTM_CACHE_DIR}")
         
         # Ensure DTM_CACHE_DIR exists
         if not os.path.exists(DTM_CACHE_DIR):
@@ -2001,11 +2494,22 @@ async def delete_clipped_dtm(clipped_id: str):
             logger.warning(f"Subsampled cache directory does not exist: {DTM_SUBSAMPLED_CACHE_DIR}")
         
         if not_found:
-            logger.warning(f"Clipped DTM not found: {clipped_id} in directory: {DTM_CACHE_DIR}")
-            logger.warning(f"Available files: {all_files}")
+            logger.warning(f"[{trace_id}] Clipped DTM not found: {clipped_id} in directory: {DTM_CACHE_DIR}")
+            logger.warning(f"[{trace_id}] Available files: {all_files}")
             return {"success": True, "deleted": False, "message": f"Clipped DTM {clipped_id} not found", "availableFiles": all_files[:20]}
         
-        logger.info(f"Successfully deleted {len(deleted_files)} file(s) for clipped DTM: {clipped_id}")
+        # Confirm deletion in lease manager
+        try:
+            lease_mgr = get_lease_manager()
+            lease_mgr.confirm_dtm_deleted(
+                dtm_id=clipped_id,
+                trace_id=trace_id,
+                caller="delete_clipped_dtm"
+            )
+        except Exception as e:
+            logger.warning(f"[{trace_id}] Failed to confirm clipped DTM deletion in lease manager: {e}")
+        
+        logger.info(f"[{trace_id}] Successfully deleted {len(deleted_files)} file(s) for clipped DTM: {clipped_id}")
         return {
             "success": True,
             "deleted": True,
@@ -2013,6 +2517,8 @@ async def delete_clipped_dtm(clipped_id: str):
             "deletedFiles": deleted_files
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting clipped DTM {clipped_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

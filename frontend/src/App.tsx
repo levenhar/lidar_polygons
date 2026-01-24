@@ -7,6 +7,7 @@ import { useFlightPath } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
 import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
 import climbPresetData from './config/climbPresets.json';
+import { GlobalUndoRedoProvider, useGlobalUndoRedo } from './contexts/GlobalUndoRedoContext';
 import './App.css';
 
 export interface Coordinate {
@@ -167,11 +168,15 @@ function App() {
     exportKML,
     importKML,
     setClimbRequestsByRoute,
-    undo,
-    redo,
-    canUndo,
-    canRedo
-  } = useFlightPath(initialClimbRequestsByRoute);
+    // Local undo/redo are registered with globalUndoRedo and called through it
+    undo: _undo,
+    redo: _redo,
+    canUndo: _canUndo,
+    canRedo: _canRedo
+  } = useFlightPath({
+    initialClimbRequestsByRoute,
+    registerGlobalAction: globalUndoRedo.registerAction
+  });
   
   // Save climb requests to localStorage whenever they change
   React.useEffect(() => {
@@ -782,55 +787,19 @@ function App() {
     resetToSingleRoute();
   }, [dtmSource, activeClippedId, deleteDtmOnServer, resetToSingleRoute, clearProfile]);
 
-  // Warn users that refreshing will clear points and unload the DTM; only clean up on confirmed unload.
+  // Warn users that refreshing will clear points and unload the DTM
+  // NOTE: We do NOT cleanup on page events anymore because:
+  // 1. The lease protection system will handle cleanup when leases expire
+  // 2. Aggressive cleanup can delete DTMs that are still in use
+  // 3. If user refreshes, they may want to keep using the same DTM
+  //
+  // The lease protection system now handles cleanup:
+  // - If client stops using DTM, lease expires after 2-5 minutes
+  // - DTM can then be cleaned up by scheduled jobs
+  // - But it won't be deleted while actively in use
   React.useEffect(() => {
-    const cleanupDtm = () => {
-      // Cleanup clipped DTM if exists - use direct DELETE endpoint
-      if (activeClippedId) {
-        try {
-          // Use fetch with keepalive for reliable cleanup on page unload
-          // sendBeacon only supports POST, so we use fetch with keepalive for DELETE
-          fetch(`/api/dtm/clipped/${activeClippedId}`, {
-            method: 'DELETE',
-            keepalive: true
-          }).catch(() => {
-            // Ignore errors during cleanup - page might be unloading
-          });
-        } catch (error) {
-          // Ignore errors during cleanup
-        }
-      }
-      
-      // Cleanup legacy uploaded DTM if applicable
-      if (dtmSource && !dtmSource.includes('/api/dtm/clipped/')) {
-        try {
-          const payload = JSON.stringify({ path: dtmSource });
-          // Use sendBeacon for POST requests (more reliable during page unload)
-          const blob = new Blob([payload], { type: 'application/json' });
-          navigator.sendBeacon('/api/dtm/cleanup', blob);
-          
-          // Also try fetch with keepalive as fallback
-          fetch('/api/dtm/cleanup', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: payload,
-            keepalive: true
-          }).catch(() => {
-            // Ignore errors during cleanup
-          });
-        } catch (error) {
-          // Ignore errors during cleanup
-        }
-      }
-    };
-
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       if (!dtmSource && !activeClippedId && flightPath.length === 0) return;
-
-      // Trigger cleanup before unload
-      cleanupDtm();
 
       const warning = 'רענון ימחק את כל הנקודות ויסיר את ה‑DTM. להמשיך?';
       event.preventDefault();
@@ -838,28 +807,10 @@ function App() {
       return warning;
     };
 
-    const handlePageHide = (event: PageTransitionEvent) => {
-      // Only cleanup if page is not being cached (e.g., back/forward navigation)
-      if (!event.persisted) {
-        cleanupDtm();
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      // Cleanup when page becomes hidden (user switching tabs, closing window, etc.)
-      if (document.visibilityState === 'hidden') {
-        cleanupDtm();
-      }
-    };
-
     window.addEventListener('beforeunload', handleBeforeUnload);
-    window.addEventListener('pagehide', handlePageHide);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
     
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      window.removeEventListener('pagehide', handlePageHide);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [dtmSource, activeClippedId, flightPath.length]);
 
@@ -973,24 +924,24 @@ function App() {
     };
   }, [editQueue, isProcessingQueue, processEditQueue]);
 
-  // Wrapped undo/redo that processes queue first
+  // Register queue processing callback with global undo/redo manager
+  // This ensures pending edit operations are processed before any undo/redo
+  React.useEffect(() => {
+    globalUndoRedo.setBeforeUndoRedoCallback(processEditQueueImmediately);
+    return () => {
+      globalUndoRedo.setBeforeUndoRedoCallback(null);
+    };
+  }, [globalUndoRedo, processEditQueueImmediately]);
+
+  // Wrapped undo/redo for button clicks - uses global manager directly
+  // Queue processing is handled by the beforeUndoRedo callback
   const handleUndo = React.useCallback(() => {
-    // Process any pending queue first, then undo
-    processEditQueueImmediately();
-    // Use setTimeout to ensure queue processing completes before undo
-    setTimeout(() => {
-      undo();
-    }, 100);
-  }, [processEditQueueImmediately, undo]);
+    globalUndoRedo.undo();
+  }, [globalUndoRedo]);
 
   const handleRedo = React.useCallback(() => {
-    // Process any pending queue first, then redo
-    processEditQueueImmediately();
-    // Use setTimeout to ensure queue processing completes before redo
-    setTimeout(() => {
-      redo();
-    }, 100);
-  }, [processEditQueueImmediately, redo]);
+    globalUndoRedo.redo();
+  }, [globalUndoRedo]);
 
   const handleSetFlightHeight = useCallback((pointIndex: number) => {
     if (pointIndex < 0 || pointIndex >= flightPath.length) return;
@@ -1077,16 +1028,44 @@ function App() {
           <div className="header-title-container">
             <img src="/favicon.png" alt="Logo" className="app-logo" />
             <h1>מתכנן משימות LiDAR</h1>
-            <button
-              onClick={() => setShowSettingsModal(true)}
-              className="btn btn-secondary btn-icon settings-header-btn"
-              type="button"
-              aria-label="הגדרות"
-              title="הגדרות"
-            >
-              <GearIcon />
-            </button>
           </div>
+        </div>
+        <div className="header-actions">
+          <button
+            onClick={handleUndo}
+            disabled={!globalUndoRedo.canUndo}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="בטל"
+            title="בטל פעולה אחרונה (Ctrl+Z)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 14l-4-4 4-4" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M5 10h8a6 6 0 0 1 6 6v2" />
+            </svg>
+          </button>
+          <button
+            onClick={handleRedo}
+            disabled={!globalUndoRedo.canRedo}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="בצע שוב"
+            title="בצע שוב (Ctrl+Y או Ctrl+Shift+Z)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M15 6l4 4-4 4" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M19 10h-8a6 6 0 0 0-6 6v2" />
+            </svg>
+          </button>
+          <button
+            onClick={() => setShowSettingsModal(true)}
+            className="btn btn-secondary btn-icon settings-header-btn"
+            type="button"
+            aria-label="הגדרות"
+            title="הגדרות"
+          >
+            <GearIcon />
+          </button>
         </div>
       </div>
       <div className="app-panels">
@@ -1123,9 +1102,7 @@ function App() {
           overlapPercentage={overlapPercentage}
           fovDegrees={fovDegrees}
           onUndo={handleUndo}
-          onRedo={handleRedo}
-          canUndo={canUndo}
-          canRedo={canRedo}
+          canUndo={globalUndoRedo.canUndo}
           editPointIndex={editPointIndex}
           onEditPointIndexChange={setEditPointIndex}
           hoveredElevationPoint={hoveredElevationPoint}
@@ -1204,6 +1181,15 @@ function App() {
         setClimbConfig={setClimbConfig}
       />
     </div>
+  );
+}
+
+// Main App component that wraps AppContent with GlobalUndoRedoProvider
+function App() {
+  return (
+    <GlobalUndoRedoProvider>
+      <AppContent />
+    </GlobalUndoRedoProvider>
   );
 }
 

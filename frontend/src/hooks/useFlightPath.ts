@@ -1,7 +1,8 @@
 import React, { useCallback, useMemo } from 'react';
 import { Coordinate } from '../App';
-import { useUndoRedo } from './useUndoRedo';
+import { useUndoRedo, UndoRedoOptions } from './useUndoRedo';
 import { computeCumulativeDistances } from '../utils/constraints';
+import { ActionType } from '../contexts/GlobalUndoRedoContext';
 
 export interface GeoJSONFeature {
   type: 'Feature';
@@ -95,13 +96,60 @@ function createRoute(index: number, nominalFlightHeight: number = DEFAULT_NOMINA
   };
 }
 
-export function useFlightPath(initialClimbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>) {
+export interface UseFlightPathOptions {
+  initialClimbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>;
+  // Callback to register actions with the global undo/redo manager
+  registerGlobalAction?: (
+    type: ActionType,
+    undo: () => void,
+    redo: () => void,
+    label?: string
+  ) => number;
+}
+
+export function useFlightPath(
+  initialClimbRequestsByRouteOrOptions?: Record<string, { endDistance: number; climbAmount: number }[]> | UseFlightPathOptions
+) {
+  // Handle both old signature (just initialClimbRequestsByRoute) and new signature (options object)
+  const options: UseFlightPathOptions = 
+    initialClimbRequestsByRouteOrOptions && 'registerGlobalAction' in initialClimbRequestsByRouteOrOptions
+      ? initialClimbRequestsByRouteOrOptions
+      : { initialClimbRequestsByRoute: initialClimbRequestsByRouteOrOptions as Record<string, { endDistance: number; climbAmount: number }[]> | undefined };
+  
+  const { initialClimbRequestsByRoute, registerGlobalAction } = options;
+  
   const initialRoute = createRoute(1, DEFAULT_NOMINAL_FLIGHT_HEIGHT);
-  const { state, setState, undo, redo, canUndo, canRedo, resetHistory } = useUndoRedo<FlightRoutesState>({
-    routes: [initialRoute],
-    activeRouteId: initialRoute.id,
-    climbRequestsByRoute: initialClimbRequestsByRoute || {}
-  });
+  
+  // Determine action type based on what changed between previous and new state
+  const determineActionType = (prevState: FlightRoutesState, newState: FlightRoutesState): ActionType => {
+    const routesChanged = JSON.stringify(prevState.routes) !== JSON.stringify(newState.routes);
+    const climbRequestsChanged = JSON.stringify(prevState.climbRequestsByRoute) !== JSON.stringify(newState.climbRequestsByRoute);
+    
+    if (routesChanged && climbRequestsChanged) {
+      return 'combined';
+    } else if (climbRequestsChanged) {
+      return 'elevation';
+    } else {
+      return 'map';
+    }
+  };
+  
+  // Create undo/redo options that register with global manager
+  const undoRedoOptions: UndoRedoOptions | undefined = registerGlobalAction ? {
+    onActionRegistered: (previousState, newState, undoFn, redoFn) => {
+      const actionType = determineActionType(previousState as FlightRoutesState, newState as FlightRoutesState);
+      registerGlobalAction(actionType, undoFn, redoFn);
+    }
+  } : undefined;
+  
+  const { state, setState, undo, redo, canUndo, canRedo, resetHistory } = useUndoRedo<FlightRoutesState>(
+    {
+      routes: [initialRoute],
+      activeRouteId: initialRoute.id,
+      climbRequestsByRoute: initialClimbRequestsByRoute || {}
+    },
+    undoRedoOptions
+  );
 
   const activeRoute = useMemo(
     () => state.routes.find((route) => route.id === state.activeRouteId) || state.routes[0],

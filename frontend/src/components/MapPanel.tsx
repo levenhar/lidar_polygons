@@ -562,9 +562,7 @@ interface MapPanelProps {
   overlapPercentage: number;
   fovDegrees: number;
   onUndo: () => void;
-  onRedo: () => void;
   canUndo: boolean;
-  canRedo: boolean;
   editPointIndex?: number | null;
   onEditPointIndexChange?: (index: number | null) => void;
   hoveredElevationPoint?: ElevationPoint | null;
@@ -605,9 +603,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   overlapPercentage,
   fovDegrees,
   onUndo,
-  onRedo,
   canUndo,
-  canRedo,
   climbMarkers,
   onShowClimbLabelsChange,
   showClimbLabels,
@@ -1857,53 +1853,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
     aoiMarkersRef.current = [];
   }, []);
 
-  // Cleanup clipped DTM on unload or navigation
-  useEffect(() => {
-    const cleanupClippedDtm = () => {
-      if (activeClippedId) {
-        try {
-          // Use fetch with keepalive for reliable cleanup on page unload
-          // sendBeacon only supports POST, so we use fetch with keepalive for DELETE
-          fetch(`/api/dtm/clipped/${activeClippedId}`, {
-            method: 'DELETE',
-            keepalive: true
-          }).catch(() => {
-            // Ignore errors during cleanup - page might be unloading
-          });
-        } catch (error) {
-          // Ignore errors during cleanup
-        }
-      }
-    };
-
-    const handleBeforeUnload = () => {
-      cleanupClippedDtm();
-    };
-
-    const handlePageHide = (event: PageTransitionEvent) => {
-      // Only cleanup if page is not being cached (e.g., back/forward navigation)
-      if (!event.persisted) {
-        cleanupClippedDtm();
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      // Cleanup when page becomes hidden (user switching tabs, closing window, etc.)
-      if (document.visibilityState === 'hidden') {
-        cleanupClippedDtm();
-      }
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    window.addEventListener('pagehide', handlePageHide);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      window.removeEventListener('pagehide', handlePageHide);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [activeClippedId]);
+  // NOTE: Cleanup handlers removed - too aggressive
+  // The lease protection system now handles cleanup:
+  // - If client stops using DTM, lease expires after 2-5 minutes
+  // - DTM can then be cleaned up by scheduled jobs
+  // - But it won't be deleted while actively in use
+  //
+  // If explicit cleanup is needed, it should be done via UI button
+  // or when user explicitly unloads the DTM, not on page events.
+  // REMOVED: Aggressive cleanup handlers that were deleting DTMs when:
+  // - User switches tabs (visibilitychange) 
+  // - User navigates away temporarily (pagehide)
+  // - Page unloads (beforeunload)
+  //
+  // These events fire too frequently and can delete DTMs that are still in use.
+  // The backend lease protection system will prevent deletion if DTM is in use.
 
   // Set up click handler for adding points, editing points, and parallel line creation
   useEffect(() => {
@@ -4847,38 +4811,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 >
                   <Icon name="pin" />
                   <span className="sr-only">{isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}</span>
-                </button>
-              </Tooltip>
-            </div>
-          </div>
-        </div>
-
-        <div className="control-group">
-          <div className="group-title">היסטוריה</div>
-          <div className="group-columns">
-            <div className="group-column group-column-icons">
-              <Tooltip tooltip="בטל פעולה אחרונה (Ctrl+Z)">
-                <button
-                  onClick={onUndo}
-                  disabled={!canUndo || flightPath.length === 0}
-                  className="btn btn-secondary btn-icon"
-                  aria-label="בטל"
-                  type="button"
-                >
-                  <Icon name="undo" />
-                  <span className="sr-only">בטל</span>
-                </button>
-              </Tooltip>
-              <Tooltip tooltip="בצע שוב (Ctrl+Y או Ctrl+Shift+Z)">
-                <button
-                  onClick={onRedo}
-                  disabled={!canRedo || flightPath.length === 0}
-                  className="btn btn-secondary btn-icon"
-                  aria-label="בצע שוב"
-                  type="button"
-                >
-                  <Icon name="redo" />
-                  <span className="sr-only">בצע שוב</span>
                 </button>
               </Tooltip>
             </div>

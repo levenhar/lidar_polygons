@@ -106,42 +106,195 @@ const getPreviewConfig = () => {
   return { defaults, overrides };
 };
 
+// ============================================================================
+// DTM LEASE PROTECTION HELPERS
+// ============================================================================
+
+/**
+ * Check if a DTM is protected by active leases.
+ * @param {string} dtmId - The DTM identifier
+ * @returns {Promise<{isProtected: boolean, activeLeaseCount: number}>}
+ */
+const checkDtmProtection = async (dtmId) => {
+  try {
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/${dtmId}/protection`, {
+      dispatcher: pythonDispatcher
+    });
+    if (response.ok) {
+      const data = await response.json();
+      return {
+        isProtected: data.isProtected || false,
+        activeLeaseCount: data.activeLeaseCount || 0
+      };
+    }
+  } catch (error) {
+    console.warn(`Failed to check DTM protection for ${dtmId}:`, error.message);
+  }
+  // If we can't check, assume not protected (fail open for cleanup)
+  return { isProtected: false, activeLeaseCount: 0 };
+};
+
+/**
+ * Get list of all protected DTM IDs from the lease manager.
+ * @returns {Promise<Set<string>>}
+ */
+const getProtectedDtmIds = async () => {
+  try {
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/leases/metrics`, {
+      dispatcher: pythonDispatcher
+    });
+    if (response.ok) {
+      const data = await response.json();
+      // Get all DTMs with active leases
+      const auditResponse = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/leases/audit?limit=1000&since_hours=24`, {
+        dispatcher: pythonDispatcher
+      });
+      if (auditResponse.ok) {
+        const auditData = await auditResponse.json();
+        // Extract DTM IDs from lease_acquired entries that haven't been released/deleted
+        const activeDtmIds = new Set();
+        for (const entry of auditData.entries || []) {
+          if (entry.action === 'lease_acquired' || entry.action === 'lease_renewed') {
+            activeDtmIds.add(entry.dtmId);
+          }
+          if (entry.action === 'deleted') {
+            activeDtmIds.delete(entry.dtmId);
+          }
+        }
+        return activeDtmIds;
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to get protected DTM IDs:', error.message);
+  }
+  return new Set();
+};
+
 // Clear cached uploads on restart to avoid serving stale files
+// MODIFIED: Now respects DTM protection status and is DISABLED BY DEFAULT
+// 
+// CRITICAL: This should NOT clear DTM cache directories. The startup cleanup
+// is only meant for temporary upload files, not for cached DTMs that clients
+// may need after a server restart.
 const clearUploadsDirectory = async () => {
   try {
     if (existsSync(uploadsDir)) {
+      // SAFETY CHECK: If uploadsDir contains "Cache" or "DTM", this is likely
+      // a DTM cache directory that should NOT be cleared on startup
+      const uploadsPath = uploadsDir.toLowerCase();
+      if (uploadsPath.includes('cache') || uploadsPath.includes('dtm')) {
+        console.log(`[startup] WARNING: UPLOADS_DIR appears to be a DTM cache directory: ${uploadsDir}`);
+        console.log(`[startup] Skipping startup cleanup to protect DTM files.`);
+        console.log(`[startup] To force cleanup, set CLEAR_UPLOADS_ON_STARTUP=true and FORCE_CLEAR_DTM_CACHE=true`);
+        
+        // Only proceed if explicitly forced
+        if (process.env.FORCE_CLEAR_DTM_CACHE !== 'true') {
+          return;
+        }
+        console.log(`[startup] FORCE_CLEAR_DTM_CACHE is true - proceeding with cleanup`);
+      }
+      
+      // Try to read the lease database directly to check for registered DTMs
+      // This is more reliable than calling Python backend which may not be ready
+      let registeredDtmIds = new Set();
+      try {
+        const dbPath = resolve(uploadsDir, '..', 'dtm_leases.db');
+        if (existsSync(dbPath)) {
+          // We can't easily read SQLite from Node.js without a dependency,
+          // so we'll use a conservative approach: if the lease DB exists,
+          // there may be protected DTMs - don't delete anything
+          console.log(`[startup] Found lease database at ${dbPath}`);
+          console.log(`[startup] Skipping cleanup to protect potentially leased DTMs`);
+          console.log(`[startup] Set FORCE_CLEAR_DTM_CACHE=true to override`);
+          return;
+        }
+      } catch (e) {
+        // Ignore errors reading lease DB
+      }
+      
+      // Also try to get protected DTM IDs from the Python backend
+      let protectedIds = new Set();
+      try {
+        protectedIds = await getProtectedDtmIds();
+        if (protectedIds.size > 0) {
+          console.log(`[startup] Found ${protectedIds.size} protected DTM(s) from Python backend - will skip deletion`);
+        }
+      } catch (e) {
+        console.log(`[startup] Could not fetch protected DTM list (Python backend may not be running yet)`);
+        // FAIL CLOSED: If we can't verify protection, don't delete anything
+        console.log(`[startup] Skipping cleanup to be safe. Set FORCE_CLEAR_DTM_CACHE=true to override`);
+        return;
+      }
+      
       // Readdir and remove each file/directory instead of removing the directory itself
       // This preserves the directory inode which is important for Docker bind mounts
       const { readdir, rm, stat } = await import('fs/promises');
       const files = await readdir(uploadsDir);
+      let deletedCount = 0;
+      let skippedCount = 0;
+      
       await Promise.all(
         files.map(async (file) => {
           const filePath = join(uploadsDir, file);
+          const fileLower = file.toLowerCase();
+          
+          // Skip any file that looks like a DTM (has .tif extension)
+          if (fileLower.endsWith('.tif') || fileLower.endsWith('.tiff') || fileLower.endsWith('.geotiff')) {
+            console.log(`[startup] Skipping DTM file: ${file}`);
+            skippedCount++;
+            return;
+          }
+          
+          // Check if this file is protected
+          const isProtected = protectedIds.has(file) || 
+            [...protectedIds].some(id => file.includes(id));
+          
+          if (isProtected) {
+            console.log(`[startup] Skipping protected DTM: ${file}`);
+            skippedCount++;
+            return;
+          }
+          
           try {
             const stats = await stat(filePath);
             if (stats.isDirectory()) {
+              // Don't delete subdirectories that might contain DTMs
+              if (file.toLowerCase().includes('cache') || file.toLowerCase().includes('viewshed')) {
+                console.log(`[startup] Skipping subdirectory: ${file}`);
+                skippedCount++;
+                return;
+              }
               // Use rm with recursive for directories
               await rm(filePath, { recursive: true, force: true });
             } else {
               // Use unlink for files
               await unlink(filePath);
             }
+            deletedCount++;
           } catch (e) {
-            console.error(`Failed to delete ${file}:`, e);
+            console.error(`[startup] Failed to delete ${file}:`, e);
           }
         })
       );
+      
+      console.log(`[startup] Uploads cache cleared: ${deletedCount} deleted, ${skippedCount} protected (skipped)`);
     } else {
       mkdirSync(uploadsDir, { recursive: true });
+      console.log('[startup] Uploads directory created');
     }
-    console.log('Uploads cache cleared on startup');
   } catch (error) {
-    console.error('Failed to clear uploads cache on startup:', error);
+    console.error('[startup] Failed to clear uploads cache:', error);
   }
 };
 
-// In production we generally want uploads/cache to survive restarts (e.g. DTM cache).
-// Allow explicit override via CLEAR_UPLOADS_ON_STARTUP=true/false.
+// IMPORTANT: Startup cleanup is now DISABLED BY DEFAULT to protect DTM files.
+// This change was made because:
+// 1. uploadsDir often points to DTM_CACHE_DIR (same directory)
+// 2. Clearing on startup deletes DTMs that clients may still need
+// 3. Clients need time to reconnect and re-acquire leases after server restart
+//
+// To enable startup cleanup, set CLEAR_UPLOADS_ON_STARTUP=true
+// To also clear DTM files, set FORCE_CLEAR_DTM_CACHE=true (dangerous!)
 const parseEnvBool = (value) => {
   if (value === undefined) return undefined;
   const normalized = String(value).trim().toLowerCase();
@@ -151,13 +304,14 @@ const parseEnvBool = (value) => {
 };
 
 const clearUploadsOverride = parseEnvBool(process.env.CLEAR_UPLOADS_ON_STARTUP);
-const shouldClearUploadsOnStartup =
-  clearUploadsOverride !== undefined ? clearUploadsOverride : process.env.NODE_ENV !== 'production';
+// Default to FALSE (don't clear) to protect DTM files
+const shouldClearUploadsOnStartup = clearUploadsOverride === true;
 
 if (shouldClearUploadsOnStartup) {
+  console.log('[startup] CLEAR_UPLOADS_ON_STARTUP is enabled');
   clearUploadsDirectory();
 } else {
-  console.log('Skipping uploads cache clear on startup (set CLEAR_UPLOADS_ON_STARTUP=true to enable)');
+  console.log('[startup] Skipping uploads cache clear (set CLEAR_UPLOADS_ON_STARTUP=true to enable)');
 }
 
 // Configure multer for file uploads
@@ -326,54 +480,63 @@ app.post('/api/upload-dtm', async (req, res) => {
 });
 
 // Delete a cached DTM file (used when clients unload/close)
+// IMPORTANT: All cleanup requests are now forwarded to Python backend for protection validation
 app.post('/api/dtm/cleanup', async (req, res) => {
   try {
-    const { path: dtmPath, filename, clippedId } = req.body || {};
-    console.log(`Cleanup request - path: ${dtmPath}, filename: ${filename}, clippedId: ${clippedId}`);
+    const { path: dtmPath, filename, clippedId, force } = req.body || {};
+    const traceId = req.headers['x-trace-id'] || `${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+    console.log(`[${traceId}] Cleanup request - path: ${dtmPath}, filename: ${filename}, clippedId: ${clippedId}, force: ${force}`);
 
     // If clippedId is provided, delete the clipped DTM from Python backend
     if (clippedId) {
       try {
-        console.log(`Deleting clipped DTM via Python backend: ${clippedId}`);
-        const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}`, {
-          method: 'DELETE'
-        });
+        console.log(`[${traceId}] Deleting clipped DTM via Python backend: ${clippedId}`);
+        const response = await fetch(
+          `${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}?force=${force || false}`, 
+          {
+            method: 'DELETE',
+            headers: {
+              'X-Trace-ID': traceId
+            }
+          }
+        );
         const data = await response.json();
-        console.log(`Clipped DTM deletion result:`, data);
-        return res.json(data);
+        console.log(`[${traceId}] Clipped DTM deletion result:`, data);
+        return res.status(response.status).json(data);
       } catch (error) {
-        console.error('Error deleting clipped DTM:', error);
+        console.error(`[${traceId}] Error deleting clipped DTM:`, error);
         return res.status(500).json({ success: false, error: 'Failed to delete clipped DTM' });
       }
     }
 
-    // Legacy: delete uploaded file
-    const rawName = filename || (typeof dtmPath === 'string' ? dtmPath.split('/').pop() : null);
-
-    if (!rawName) {
-      return res.status(400).json({ success: false, error: 'No filename provided' });
+    // For all other cleanup requests, forward to Python backend for protection validation
+    // This ensures DTM lease protection is enforced consistently
+    try {
+      console.log(`[${traceId}] Forwarding cleanup request to Python backend for protection validation`);
+      const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/cleanup`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Trace-ID': traceId
+        },
+        body: JSON.stringify({ path: dtmPath, filename, force: force || false })
+      });
+      
+      const data = await response.json();
+      console.log(`[${traceId}] Python cleanup result:`, data);
+      return res.status(response.status).json(data);
+    } catch (error) {
+      console.error(`[${traceId}] Error forwarding cleanup to Python:`, error);
+      // If Python backend is unavailable, fail safely - don't delete anything
+      return res.status(503).json({ 
+        success: false, 
+        error: 'Python backend unavailable - cannot validate DTM protection', 
+        details: error.message 
+      });
     }
-
-    const safeFilename = basename(rawName);
-    const filePath = join(uploadsDir, safeFilename);
-    
-    console.log(`Attempting to delete legacy DTM file:`);
-    console.log(`  - Filename: ${safeFilename}`);
-    console.log(`  - Full path: ${filePath}`);
-    console.log(`  - Uploads directory: ${uploadsDir}`);
-    console.log(`  - File exists: ${existsSync(filePath)}`);
-
-    if (!existsSync(filePath)) {
-      console.warn(`File not found at: ${filePath}`);
-      return res.json({ success: true, deleted: false, message: `File not found at ${filePath}`, uploadsDir });
-    }
-
-    await unlink(filePath);
-    console.log(`Successfully deleted file: ${filePath}`);
-    res.json({ success: true, deleted: true, filename: safeFilename, path: filePath });
   } catch (error) {
-    console.error('Error deleting DTM file:', error);
-    res.status(500).json({ success: false, error: 'Failed to delete DTM file', details: error.message });
+    console.error('Error in cleanup endpoint:', error);
+    res.status(500).json({ success: false, error: 'Failed to process cleanup request', details: error.message });
   }
 });
 
@@ -545,16 +708,175 @@ app.get('/api/dtm/clipped/:clippedId/tiles/:z/:x/:y.png', async (req, res) => {
 app.delete('/api/dtm/clipped/:clippedId', async (req, res) => {
   try {
     const { clippedId } = req.params;
+    const traceId = req.headers['x-trace-id'] || `${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+    const force = req.query.force === 'true';
     
-    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}`, {
-      method: 'DELETE'
-    });
+    console.log(`[${traceId}] Delete request for clipped DTM: ${clippedId}, force=${force}`);
+    
+    const response = await fetch(
+      `${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}?force=${force}`, 
+      {
+        method: 'DELETE',
+        headers: {
+          'X-Trace-ID': traceId
+        }
+      }
+    );
 
     const data = await response.json();
     res.status(response.status).json(data);
   } catch (error) {
     console.error('Error deleting clipped DTM:', error);
     res.status(500).json({ error: 'Failed to delete clipped DTM', details: error.message });
+  }
+});
+
+// ============================================================================
+// DTM LEASE API ENDPOINTS (proxy to Python backend)
+// ============================================================================
+
+// POST /api/dtm/lease/acquire - Acquire a lease for a DTM
+app.post('/api/dtm/lease/acquire', async (req, res) => {
+  try {
+    const traceId = req.headers['x-trace-id'] || `${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+    console.log(`[${traceId}] Lease acquire request:`, req.body);
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/lease/acquire`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Trace-ID': traceId
+      },
+      body: JSON.stringify(req.body)
+    });
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('Error acquiring lease:', error);
+    res.status(500).json({ error: 'Failed to acquire lease', details: error.message });
+  }
+});
+
+// POST /api/dtm/lease/renew - Renew an existing lease
+app.post('/api/dtm/lease/renew', async (req, res) => {
+  try {
+    const traceId = req.headers['x-trace-id'] || `${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/lease/renew`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Trace-ID': traceId
+      },
+      body: JSON.stringify(req.body)
+    });
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('Error renewing lease:', error);
+    res.status(500).json({ error: 'Failed to renew lease', details: error.message });
+  }
+});
+
+// POST /api/dtm/lease/release - Release a lease
+app.post('/api/dtm/lease/release', async (req, res) => {
+  try {
+    const traceId = req.headers['x-trace-id'] || `${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/lease/release`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Trace-ID': traceId
+      },
+      body: JSON.stringify(req.body)
+    });
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('Error releasing lease:', error);
+    res.status(500).json({ error: 'Failed to release lease', details: error.message });
+  }
+});
+
+// GET /api/dtm/lease/:leaseId - Get lease details
+app.get('/api/dtm/lease/:leaseId', async (req, res) => {
+  try {
+    const { leaseId } = req.params;
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/lease/${leaseId}`);
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('Error getting lease:', error);
+    res.status(500).json({ error: 'Failed to get lease', details: error.message });
+  }
+});
+
+// GET /api/dtm/:dtmId/leases - Get all active leases for a DTM
+app.get('/api/dtm/:dtmId/leases', async (req, res) => {
+  try {
+    const { dtmId } = req.params;
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/${dtmId}/leases`);
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('Error getting DTM leases:', error);
+    res.status(500).json({ error: 'Failed to get DTM leases', details: error.message });
+  }
+});
+
+// GET /api/dtm/:dtmId/protection - Check if DTM is protected
+app.get('/api/dtm/:dtmId/protection', async (req, res) => {
+  try {
+    const { dtmId } = req.params;
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/${dtmId}/protection`);
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('Error checking DTM protection:', error);
+    res.status(500).json({ error: 'Failed to check DTM protection', details: error.message });
+  }
+});
+
+// GET /api/dtm/leases/metrics - Get lease system metrics
+app.get('/api/dtm/leases/metrics', async (req, res) => {
+  try {
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/leases/metrics`);
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('Error getting lease metrics:', error);
+    res.status(500).json({ error: 'Failed to get lease metrics', details: error.message });
+  }
+});
+
+// GET /api/dtm/leases/audit - Get audit log
+app.get('/api/dtm/leases/audit', async (req, res) => {
+  try {
+    const queryParams = new URLSearchParams();
+    if (req.query.dtm_id) queryParams.set('dtm_id', req.query.dtm_id);
+    if (req.query.limit) queryParams.set('limit', req.query.limit);
+    if (req.query.since_hours) queryParams.set('since_hours', req.query.since_hours);
+    
+    const response = await fetch(
+      `${PYTHON_BACKEND_URL}/api/dtm/leases/audit?${queryParams.toString()}`
+    );
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('Error getting audit log:', error);
+    res.status(500).json({ error: 'Failed to get audit log', details: error.message });
   }
 });
 

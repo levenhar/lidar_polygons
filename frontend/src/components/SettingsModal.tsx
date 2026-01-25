@@ -47,6 +47,10 @@ interface SettingsModalProps {
   onSelectClimbPreset: (presetId: string) => void;
   climbConfig: ClimbConfig;
   setClimbConfig: React.Dispatch<React.SetStateAction<ClimbConfig>>;
+  // For calculating default entry height
+  dtmSource?: string | null;
+  flightPath?: Array<{ lng: number; lat: number }>;
+  activeClippedId?: string | null;
 }
 
 // Helper to convert ClimbConfig to draft state for editing
@@ -85,7 +89,10 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   selectedClimbPresetId,
   onSelectClimbPreset,
   climbConfig,
-  setClimbConfig
+  setClimbConfig,
+  dtmSource,
+  flightPath,
+  activeClippedId
 }) => {
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [errors, setErrors] = useState<ValidationError[]>([]);
@@ -109,15 +116,98 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [climbDraft, setClimbDraft] = useState(() => toDraft(climbConfig));
   const [selectedPresetId, setSelectedPresetId] = useState(selectedClimbPresetId);
 
-  // Reset draft values when modal opens
+  // Calculate default entry height: (safetyHeight + outputHeight) / 2 + groundElevation
+  const calculateDefaultEntryHeight = useCallback(async (): Promise<number | null> => {
+    if (!dtmSource || !flightPath || flightPath.length === 0) {
+      return null; // Can't calculate without DTM and flight path
+    }
+
+    try {
+      const firstPoint = flightPath[0];
+      const secondPoint = flightPath[1] || firstPoint;
+      const coordinates = [
+        [firstPoint.lng, firstPoint.lat],
+        [secondPoint.lng, secondPoint.lat]
+      ];
+
+      const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
+      const clippedId = clippedIdMatch ? clippedIdMatch[1] : activeClippedId || undefined;
+
+      const response = await fetch('/api/elevation-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          coordinates,
+          dtmPath: dtmSource,
+          safetyRadiusMeters: 50,
+          resolutionRadiusMeters: 50,
+          ...(clippedId && { clippedId })
+        })
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = await response.json();
+      let groundElevation: number | null = null;
+
+      if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
+        groundElevation = data.profile[0].elevation;
+      } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
+        groundElevation = data.elevations[0];
+      } else if (data.elevation !== undefined) {
+        groundElevation = data.elevation;
+      }
+
+      if (groundElevation === null || isNaN(groundElevation)) {
+        return null;
+      }
+
+      // Calculate default: average of safety and output height + ground elevation
+      const avgHeight = (safetyHeight + outputHeight) / 2;
+      const calculatedHeight = avgHeight + groundElevation;
+      // Round to 1 decimal place
+      return Math.round(calculatedHeight * 10) / 10;
+    } catch (error) {
+      console.error('Failed to calculate default entry height:', error);
+      return null;
+    }
+  }, [dtmSource, flightPath, activeClippedId, safetyHeight, outputHeight]);
+
+  // Reset draft values when modal opens and calculate default entry height if needed
   useEffect(() => {
     if (isOpen) {
-      setGeneralDraft({
-        nominalFlightHeight: nominalFlightHeight.toString(),
-        safetyRadius: safetyRadius.toString(),
-        safetyHeight: safetyHeight.toString(),
-        outputHeight: outputHeight.toString()
-      });
+      const currentEntryHeight = nominalFlightHeight;
+      const isDefaultValue = Math.abs(currentEntryHeight - 250) < 0.1; // Check if still at default (250)
+
+      // Calculate default entry height if at default value
+      if (isDefaultValue) {
+        calculateDefaultEntryHeight().then((defaultHeight) => {
+          if (defaultHeight !== null && !isNaN(defaultHeight)) {
+            setGeneralDraft(prev => ({
+              ...prev,
+              nominalFlightHeight: defaultHeight.toFixed(1)
+            }));
+          } else {
+            // Fallback: use current values
+            setGeneralDraft({
+              nominalFlightHeight: nominalFlightHeight.toString(),
+              safetyRadius: safetyRadius.toString(),
+              safetyHeight: safetyHeight.toString(),
+              outputHeight: outputHeight.toString()
+            });
+          }
+        });
+      } else {
+        setGeneralDraft({
+          nominalFlightHeight: nominalFlightHeight.toString(),
+          safetyRadius: safetyRadius.toString(),
+          safetyHeight: safetyHeight.toString(),
+          outputHeight: outputHeight.toString()
+        });
+      }
+
       setMissionDraft({
         overlapPercentage: overlapPercentage.toString(),
         fovDegrees: fovDegrees.toString()
@@ -136,7 +226,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     return () => {
       document.body.style.overflow = '';
     };
-  }, [isOpen, nominalFlightHeight, safetyRadius, safetyHeight, outputHeight, overlapPercentage, fovDegrees, climbConfig, selectedClimbPresetId]);
+  }, [isOpen, nominalFlightHeight, safetyRadius, safetyHeight, outputHeight, overlapPercentage, fovDegrees, climbConfig, selectedClimbPresetId, calculateDefaultEntryHeight]);
 
   // Focus first input when tab changes
   useEffect(() => {

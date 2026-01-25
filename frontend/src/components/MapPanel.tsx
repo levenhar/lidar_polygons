@@ -863,14 +863,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
         break;
       case 'easting':
         if (isNaN || numValue < 0 || numValue > 999999) {
-          setDialogError('מזרחית חייבת להיות בין 0 ל-999999 מטרים');
+          setDialogError('Easting חייב להיות בין 0 ל-999999 מטרים');
         } else {
           setDialogError(null);
         }
         break;
       case 'northing':
         if (isNaN || numValue < 0 || numValue > 10000000) {
-          setDialogError('צפונית חייבת להיות בין 0 ל-10000000 מטרים');
+          setDialogError('Narthing חייב להיות בין 0 ל-10000000 מטרים');
         } else {
           setDialogError(null);
         }
@@ -4525,7 +4525,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             </>
           ) : (
             <>
-              <label className="quick-modal__label" htmlFor="easting-input">מזרחית (מ')</label>
+              <label className="quick-modal__label" htmlFor="easting-input">Easting (מ')</label>
               <input
                 id="easting-input"
                 type="number"
@@ -4542,7 +4542,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 }}
                 className={`quick-modal__input ${dialogError ? 'error' : ''}`}
               />
-              <label className="quick-modal__label" htmlFor="northing-input">צפונית (מ')</label>
+              <label className="quick-modal__label" htmlFor="northing-input">Northing (מ')</label>
               <input
                 id="northing-input"
                 type="number"

@@ -848,6 +848,12 @@ export function useFlightPath(
   const importKML = useCallback(
     async (file: File, dtmSource?: string | null): Promise<{ routes: FlightRoute[]; climbRequests: { endDistance: number; climbAmount: number }[]; nominalFlightHeight?: number } | null> => {
       try {
+        // Validate file size (10MB limit for KML files)
+        const MAX_KML_SIZE = 10 * 1024 * 1024; // 10MB
+        if (file.size > MAX_KML_SIZE) {
+          throw new Error(`KML file size (${(file.size / (1024 * 1024)).toFixed(2)}MB) exceeds maximum allowed size of ${MAX_KML_SIZE / (1024 * 1024)}MB`);
+        }
+        
         const text = await file.text();
         const parser = new DOMParser();
         const kmlDoc = parser.parseFromString(text, 'text/xml');

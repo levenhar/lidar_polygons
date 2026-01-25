@@ -2345,10 +2345,32 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 id="climb-amount-input"
                 type="number"
                 step="0.1"
-                min="0"
+                min="-1000"
+                max="1000"
+                required
+                inputMode="decimal"
+                aria-required="true"
                 value={climbAmountInput}
-                onChange={(e) => setClimbAmountInput(e.target.value)}
-                className="climb-modal__input"
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setClimbAmountInput(value);
+                  
+                  // Real-time validation
+                  if (value === '' || value === '-') {
+                    setClimbAmountError(null);
+                    return;
+                  }
+                  
+                  const numValue = parseFloat(value);
+                  if (Number.isNaN(numValue)) {
+                    setClimbAmountError('ערך חייב להיות מספר');
+                  } else if (numValue < -1000 || numValue > 1000) {
+                    setClimbAmountError('שינוי גובה חייב להיות בין -1000 ל-1000 מטרים');
+                  } else {
+                    setClimbAmountError(null);
+                  }
+                }}
+                className={`climb-modal__input ${climbAmountError ? 'error' : ''}`}
               />
               {/* Maximum values display */}
               {pendingClimbEnd !== null && totalRouteLength > 0 && (

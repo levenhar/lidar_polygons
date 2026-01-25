@@ -1576,6 +1576,7 @@ function App() {
           setClimbRequests={setClimbRequests}
           climbWarnings={fullProfileResult.warnings}
           showMetadata={showMetadata}
+          activeRouteName={routes.find(r => r.id === activeRouteId)?.name}
         />
       </div>
       <ExportSettingsModal

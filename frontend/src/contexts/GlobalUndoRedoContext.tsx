@@ -167,7 +167,7 @@ export function GlobalUndoRedoProvider({ children }: GlobalUndoRedoProviderProps
       }
 
       // Check for Ctrl+Z (undo) or Ctrl+Y / Ctrl+Shift+Z (redo)
-      const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+      const isMac = navigator.platform?.toUpperCase().indexOf('MAC') >= 0;
       const modifier = isMac ? e.metaKey : e.ctrlKey;
       
       if (modifier) {

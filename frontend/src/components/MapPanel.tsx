@@ -690,6 +690,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const viewshedImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const basemapToggleRef = useRef<HTMLButtonElement | null>(null);
+  const routesPanelRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hoveredElevationMarkerRef = useRef<L.Marker | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
@@ -3522,6 +3523,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, [baseMaps.length]);
 
+  // Prevent routes panel clicks from creating points in draw mode
+  useEffect(() => {
+    if (!routesPanelRef.current) return;
+
+    const element = routesPanelRef.current;
+
+    L.DomEvent.disableClickPropagation(element);
+    L.DomEvent.disableScrollPropagation(element);
+    L.DomEvent.on(element, 'mousedown', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'mouseup', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'mousemove', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchstart', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchend', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchmove', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'dblclick', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'contextmenu', L.DomEvent.stopPropagation);
+
+    return () => {
+      L.DomEvent.off(element, 'mousedown', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'mouseup', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'mousemove', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchstart', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchend', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchmove', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'dblclick', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'contextmenu', L.DomEvent.stopPropagation);
+    };
+  }, []);
+
   // Handle outside click and ESC to close display settings popover
   useEffect(() => {
     if (!displaySettingsOpen) return;
@@ -5564,7 +5594,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
         )}
         {/* Routes Panel - positioned inside map */}
-        <div className={`control-group routes-panel ${isRoutesPanelOpen ? 'open' : 'closed'}`}>
+        <div className={`control-group routes-panel ${isRoutesPanelOpen ? 'open' : 'closed'}`} ref={routesPanelRef}>
           <div className="routes-panel-header header-group">
             <button
               type="button"
@@ -5599,7 +5629,23 @@ const MapPanel: React.FC<MapPanelProps> = ({
                         style={{ backgroundColor: route.color }}
                         aria-hidden
                       />
-                      <span className="route-name-block">
+                      <span 
+                        className="route-name-block"
+                        onClick={(e) => {
+                          // Detect double-click using detail property (detail === 2 means double-click)
+                          if (e.detail === 2) {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (editingRouteId !== route.id) {
+                              setEditingRouteId(route.id);
+                              setEditingRouteName(route.name);
+                            }
+                          } else {
+                            // Single click - prevent route selection
+                            e.stopPropagation();
+                          }
+                        }}
+                      >
                         <span className="route-index">#{idx + 1}</span>
                         {editingRouteId === route.id ? (
                           <input
@@ -5607,12 +5653,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
                             value={editingRouteName}
                             autoFocus
                             onChange={(e) => setEditingRouteName(e.target.value)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                            }}
                             onBlur={() => {
+                              // Only save if we're still in editing mode (not cancelled)
                               if (editingRouteId) {
                                 onRenameRoute(editingRouteId, editingRouteName);
+                                setEditingRouteId(null);
+                                setEditingRouteName('');
                               }
-                              setEditingRouteId(null);
-                              setEditingRouteName('');
                             }}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
@@ -5622,10 +5672,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
                                 }
                                 setEditingRouteId(null);
                                 setEditingRouteName('');
+                                e.currentTarget.blur();
                               } else if (e.key === 'Escape') {
                                 e.preventDefault();
+                                // Clear editing state first to prevent onBlur from saving
                                 setEditingRouteId(null);
                                 setEditingRouteName('');
+                                e.currentTarget.blur();
                               }
                             }}
                             placeholder={`מסלול ${idx + 1}`}
@@ -5634,11 +5687,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
                           <button
                             type="button"
                             className="route-name-button"
-                            onDoubleClick={() => {
-                              setEditingRouteId(route.id);
-                              setEditingRouteName(route.name);
-                            }}
                             title={`${route.name} (לחיצה כפולה לשינוי שם)`}
+                            onClick={(e) => {
+                              // Detect double-click using detail property (detail === 2 means double-click)
+                              if (e.detail === 2) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (editingRouteId !== route.id) {
+                                  setEditingRouteId(route.id);
+                                  setEditingRouteName(route.name);
+                                }
+                              } else {
+                                // Single click - prevent route selection
+                                e.stopPropagation();
+                              }
+                            }}
                           >
                             <span className="route-name-text">{route.name}</span>
                           </button>
@@ -6125,7 +6188,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     </div>
                     <div className="dtm-source-info">
                       <span className="dtm-source-title">טען מקומי</span>
-                      <span className="dtm-source-desc">העלה קובץ GeoTIFF מהמחשב</span>
+                      <span className="dtm-source-desc" style={{ fontSize: '0.85rem', color: '#666', marginTop: '0.25rem' }}>טעינה מקומית מוגבלת ל-2 GB</span>
                     </div>
                   </button>
                 </div>
@@ -6154,7 +6217,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       >
                         <Icon name="upload" />
                         <span className="dtm-local-title">לחץ לבחירת קובץ</span>
-                        <span className="dtm-local-hint">ניתן לבחור קבצי TIF בלבד, עד 2GB</span>
+                        <span className="dtm-local-hint">ניתן לבחור קבצי TIF בלבד</span>
+                        <span className="dtm-local-hint" style={{ marginTop: '0.5rem', fontWeight: '500' }}>הערה: טעינה מקומית מוגבלת ל-2 GB</span>
                       </label>
                       
                       {localFileError && (

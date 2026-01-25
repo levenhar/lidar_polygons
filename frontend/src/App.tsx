@@ -26,7 +26,7 @@ import './App.css';
 export interface Coordinate {
   lng: number;
   lat: number;
-  height?: number; // Optional flight height in meters (AGL - Above Ground Level)
+  height?: number; // Optional flight height in meters (ASL - Above Sea Level)
   id?: string; // Stable ID for the point (used to anchor climb points)
 }
 
@@ -35,7 +35,7 @@ export interface ElevationPoint {
   elevation: number;
   longitude: number;
   latitude: number;
-  flightHeight?: number; // Interpolated flight height (AGL) at this point
+  flightHeight?: number; // Interpolated flight height (AGL - computed as plannedAltitude - elevation) at this point
   minElevation?: number; // Minimum elevation in DTM within radius
   maxElevation?: number; // Maximum elevation in DTM within radius
   plannedAltitude?: number;
@@ -108,6 +108,15 @@ function AppContent() {
   const [hoverSource, setHoverSource] = useState<'map' | 'profile' | null>(null);
   const [showMetadata, setShowMetadata] = useState(true);
   const [showClimbLabels, setShowClimbLabels] = useState(true);
+  const [showNextLineSuggestions, setShowNextLineSuggestions] = useState<boolean>(() => {
+    // Load from localStorage on mount, default to true
+    try {
+      const stored = localStorage.getItem('showNextLineSuggestions');
+      return stored !== null ? JSON.parse(stored) : true;
+    } catch {
+      return true;
+    }
+  });
   // DTM display settings (will be passed from MapPanel)
   const [dtmDisplaySettings, setDtmDisplaySettings] = useState<{
     palette: 'gray' | 'jet';
@@ -201,6 +210,15 @@ function AppContent() {
       console.error('Failed to save climb requests to localStorage:', error);
     }
   }, [climbRequestsByRoute]);
+
+  // Save showNextLineSuggestions to localStorage whenever it changes
+  React.useEffect(() => {
+    try {
+      localStorage.setItem('showNextLineSuggestions', JSON.stringify(showNextLineSuggestions));
+    } catch (error) {
+      console.error('Failed to save showNextLineSuggestions to localStorage:', error);
+    }
+  }, [showNextLineSuggestions]);
   
   // Wrap insertPoints to mark it as an insert operation
   const insertPointsWrapped = React.useCallback((index: number, points: Coordinate[]) => {
@@ -387,9 +405,9 @@ function AppContent() {
   const fullProfileResultInternal = React.useMemo(() => {
     if (elevationProfile.length === 0) return { points: [], warnings: [] };
 
-    // 1. Calculate base altitude profile (nominal height above first point)
-    const startElevation = elevationProfile[0].elevation;
-    const constantAltitude = startElevation + nominalFlightHeight;
+    // 1. Calculate base altitude profile (entry height is now ASL, not AGL)
+    // Entry height (nominalFlightHeight) is absolute altitude above sea level
+    const constantAltitude = nominalFlightHeight;
     const baseAltitudeProfile: BaseAltitudeSample[] = elevationProfile.map((p) => ({
       distance: p.distance,
       baseAltitude: constantAltitude,
@@ -1298,7 +1316,8 @@ function AppContent() {
           dtmInverted: dtmDisplaySettings.inverted,
           dtmOpacity: dtmDisplaySettings.opacity,
           showMetadata,
-          showClimbLabels
+          showClimbLabels,
+          showNextLineSuggestions
         }
       });
       
@@ -1318,10 +1337,112 @@ function AppContent() {
     dtmDisplaySettings
   ]);
 
+  // Migrate entry height from AGL to ASL for old projects
+  const migrateEntryHeightIfNeeded = useCallback(async (
+    projectData: ProjectFileData,
+    dtmSource: string | null
+  ): Promise<ProjectFileData> => {
+    // Check if migration is needed
+    if (!(projectData as any)._needsEntryHeightMigration) {
+      return projectData;
+    }
+
+    // Migration requires DTM and at least one route
+    if (!dtmSource || !projectData.routes || projectData.routes.length === 0) {
+      console.warn('Project migration: Cannot migrate entry height - DTM or routes not available. Project will load with AGL values (may be incorrect).');
+      return projectData;
+    }
+
+    try {
+      // Get ground elevation at the first point of the first route
+      const firstRoute = projectData.routes[0];
+      if (!firstRoute.points || firstRoute.points.length === 0) {
+        return projectData;
+      }
+
+      const firstPoint = firstRoute.points[0];
+      const secondPoint = firstRoute.points[1] || firstPoint;
+      const coordinates = [
+        [firstPoint.lng, firstPoint.lat],
+        [secondPoint.lng, secondPoint.lat]
+      ];
+
+      const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
+      const clippedId = clippedIdMatch ? clippedIdMatch[1] : undefined;
+
+      const response = await fetch('/api/elevation-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          coordinates,
+          dtmPath: dtmSource,
+          safetyRadiusMeters: 50,
+          resolutionRadiusMeters: 50,
+          ...(clippedId && { clippedId })
+        })
+      });
+
+      if (!response.ok) {
+        console.warn('Project migration: Failed to query ground elevation for migration');
+        return projectData;
+      }
+
+      const data = await response.json();
+      let groundElevation: number | null = null;
+
+      if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
+        groundElevation = data.profile[0].elevation;
+      } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
+        groundElevation = data.elevations[0];
+      } else if (data.elevation !== undefined) {
+        groundElevation = data.elevation;
+      }
+
+      if (groundElevation === null || isNaN(groundElevation)) {
+        console.warn('Project migration: Could not extract ground elevation');
+        return projectData;
+      }
+
+      // Convert AGL to ASL: newEntryHeight = oldEntryHeight (AGL) + groundElevation
+      const oldEntryHeight = projectData.general.nominalFlightHeight;
+      const newEntryHeight = oldEntryHeight + groundElevation;
+
+      console.log('Project migration: Converting entry height from AGL to ASL', {
+        oldEntryHeight,
+        groundElevation,
+        newEntryHeight
+      });
+
+      // Update project data
+      const migratedData: ProjectFileData = {
+        ...projectData,
+        general: {
+          ...projectData.general,
+          nominalFlightHeight: newEntryHeight
+        },
+        routes: projectData.routes.map(route => ({
+          ...route,
+          nominalFlightHeight: route.nominalFlightHeight + groundElevation
+        }))
+      };
+
+      // Remove migration flag
+      delete (migratedData as any)._needsEntryHeightMigration;
+
+      return migratedData;
+    } catch (error) {
+      console.error('Project migration: Error during migration', error);
+      return projectData;
+    }
+  }, []);
+
   // Restore project routes and climb points
-  const restoreProjectRoutes = useCallback((projectData: ProjectFileData) => {
+  const restoreProjectRoutes = useCallback(async (projectData: ProjectFileData) => {
+    // Migrate entry height if needed (AGL -> ASL)
+    const migratedData = await migrateEntryHeightIfNeeded(projectData, dtmSource);
+    
     // Convert project routes to FlightRoute format
-    const restoredRoutes: FlightRoute[] = projectData.routes.map((routeData) => ({
+    const restoredRoutes: FlightRoute[] = migratedData.routes.map((routeData) => ({
       id: routeData.id,
       name: routeData.name,
       color: routeData.color,
@@ -1335,9 +1456,14 @@ function AppContent() {
       nominalFlightHeight: routeData.nominalFlightHeight
     }));
     
+    // Update nominalFlightHeight if it was migrated
+    if (migratedData.general.nominalFlightHeight !== projectData.general.nominalFlightHeight) {
+      setNominalFlightHeight(migratedData.general.nominalFlightHeight);
+    }
+    
     // Use importRoutes to restore all routes at once
-    importRoutes(restoredRoutes, projectData.climbRequestsByRoute);
-  }, [importRoutes]);
+    importRoutes(restoredRoutes, migratedData.climbRequestsByRoute);
+  }, [importRoutes, migrateEntryHeightIfNeeded, dtmSource, setNominalFlightHeight]);
 
   // Load Project handler
   const handleLoadProject = useCallback(async () => {
@@ -1353,7 +1479,10 @@ function AppContent() {
         const projectData = await readProjectFile(file);
         
         // Step 1: Restore settings (but don't trigger heavy computations yet)
-        setNominalFlightHeight(projectData.general.nominalFlightHeight);
+        // Note: Entry height may be migrated later if it's an old project (AGL -> ASL)
+        // We'll set it after migration if needed
+        const initialEntryHeight = projectData.general.nominalFlightHeight;
+        setNominalFlightHeight(initialEntryHeight);
         setSafetySearchRadius(projectData.general.safetyRadius);
         setSafetyHeight(projectData.general.safetyHeight);
         setResolutionHeight(projectData.general.outputHeight);
@@ -1363,6 +1492,7 @@ function AppContent() {
         setClimbConfig(projectData.ascendDescend.climbConfig);
         setShowMetadata(projectData.display.showMetadata ?? true);
         setShowClimbLabels(projectData.display.showClimbLabels ?? true);
+        setShowNextLineSuggestions(projectData.display.showNextLineSuggestions ?? true);
         
         // Step 2: Restore DTM
         if (projectData.dtm) {
@@ -1459,9 +1589,11 @@ function AppContent() {
         
         // Step 3: Restore routes and points (after DTM is loaded or skipped)
         // This will be done after DTM loading completes
+        // Migration (AGL -> ASL) will happen during route restoration if needed
         if (!projectData.dtm || projectData.dtm.sourceType === 'server') {
           // Restore routes immediately if no DTM or server DTM loaded
-          restoreProjectRoutes(projectData);
+          // Migration will be attempted if DTM is available
+          await restoreProjectRoutes(projectData);
         } else {
           // For local DTM, routes will be restored after file is selected
           (window as any).__pendingProjectRestore = projectData;
@@ -1515,9 +1647,9 @@ function AppContent() {
         originalFile: file
       });
       
-      // Restore routes after DTM is loaded
-      setTimeout(() => {
-        restoreProjectRoutes(pendingProject);
+      // Restore routes after DTM is loaded (migration will happen if needed)
+      setTimeout(async () => {
+        await restoreProjectRoutes(pendingProject);
         (window as any).__pendingProjectRestore = undefined;
       }, 500);
       
@@ -1648,7 +1780,10 @@ function AppContent() {
           hoverSource={hoverSource}
           showMetadata={showMetadata}
           onShowMetadataChange={setShowMetadata}
+          showNextLineSuggestions={showNextLineSuggestions}
+          onShowNextLineSuggestionsChange={setShowNextLineSuggestions}
           climbRequests={climbRequests}
+          elevationProfile={fullProfileResult.points}
           onExportClick={() => {
             const routesWithPoints = routes.filter(route => route.points.length >= 2);
             if (routesWithPoints.length > 1) {

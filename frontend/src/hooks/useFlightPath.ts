@@ -594,11 +594,9 @@ export function useFlightPath(
       });
 
       // Always add entry point (גובה כניסה) at the first point (number 1)
-      // Save as absolute altitude (sea level): nominalFlightHeight + ground elevation at first point
+      // Entry height (nominalFlightHeight) is now ASL, so save it directly without adding ground elevation
       if (hasEntryPoint) {
-        const firstPoint = routesToExport[0].points[0]; // First point (index 0)
-        const groundElevation = firstTurnPointElevation ?? 0; // Use provided elevation or default to 0
-        const absoluteAltitude = Math.round(nominalFlightHeight! + groundElevation);
+        const absoluteAltitude = Math.round(nominalFlightHeight!);
         const entryPointName = `גובה כניסה - ${absoluteAltitude}`;
         kmlContent += `    <Placemark>
       <name>${escapeXml(entryPointName)}</name>
@@ -1084,20 +1082,26 @@ export function useFlightPath(
           });
         });
 
-        // If we found absolute altitude in "גובה כניסה", calculate nominalFlightHeight
-        // by subtracting ground elevation at the *first point of the imported route* (from elevation profile).
-        // This matches how we export: absoluteAltitude = nominalFlightHeight + elevationProfile[0].elevation
-        // Formula: nominalFlightHeight = "גובה כניסה" value - (elevationProfile[0].elevation at route start)
+        // If we found absolute altitude in "גובה כניסה", use it directly as ASL
+        // Entry height (nominalFlightHeight) is now ASL, matching the exported format
+        // Legacy files (exported before this change) stored: ASL = AGL + ground elevation
+        // New files (exported after this change) store: ASL = entry height directly
+        // We handle both by using the imported value as ASL directly
         if (absoluteAltitudeInfo && routes.length > 0) {
           // TypeScript: absoluteAltitudeInfo is guaranteed to be defined here due to the if check
           const { altitude: absoluteAltitude } = absoluteAltitudeInfo as { altitude: number; coord: Coordinate };
-          const firstRoute = routes[0];
           
-          // Try to get ground elevation from the elevation profile at the start of the imported route.
-          // The API requires at least 2 points, so use the first segment of the route (or duplicate if needed).
-          let groundElevation: number | null = null;
+          // Entry height is now ASL, so use the imported value directly
+          // For legacy files that stored (AGL + ground), this will be incorrect, but we can't reliably
+          // detect legacy vs new without a version marker. The user should re-export with the new format.
+          console.log('KML import: Using entry height as ASL:', absoluteAltitude);
+          nominalFlightHeight = Math.round(absoluteAltitude);
+          
+          // Optional: Try to detect legacy files by checking if DTM is available and value seems too high
+          // This is a best-effort detection and may not be reliable
           if (dtmSource) {
             try {
+              const firstRoute = routes[0];
               const p0 = firstRoute.points[0];
               const p1 = firstRoute.points[1] ?? firstRoute.points[0];
               const coordinates = [
@@ -1107,78 +1111,50 @@ export function useFlightPath(
               const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
               const clippedId = clippedIdMatch ? clippedIdMatch[1] : undefined;
               
-              console.log('KML import: Querying elevation profile for route start (for nominal height):', {
-                lng: p0.lng,
-                lat: p0.lat,
-                dtmSource,
-                clippedId
+              const response = await fetch('/api/elevation-profile', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  coordinates,
+                  dtmPath: dtmSource,
+                  safetyRadiusMeters: 50,
+                  resolutionRadiusMeters: 50,
+                  ...(clippedId && { clippedId })
+                })
               });
+              
+              if (response.ok) {
+                const data = await response.json();
+                let groundElevation: number | null = null;
                 
-                const response = await fetch('/api/elevation-profile', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    coordinates,
-                    dtmPath: dtmSource,
-                    safetyRadiusMeters: 50,
-                    resolutionRadiusMeters: 50,
-                    ...(clippedId && { clippedId })
-                  })
-                });
-                
-                if (response.ok) {
-                  const data = await response.json();
-                  console.log('KML import: Elevation API response:', data);
-                  
-                  // Check different possible response formats
-                  // Based on useElevationProfile.ts, the response has data.profile array
-                  if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
-                    // Profile format: array of ElevationPoint objects with elevation property
-                    // Get the elevation of the first point (route start)
-                    groundElevation = data.profile[0].elevation;
-                  } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
-                    // Direct elevations array
-                    groundElevation = data.elevations[0];
-                  } else if (data.elevation !== undefined) {
-                    // Single elevation value
-                    groundElevation = data.elevation;
-                  } else if (Array.isArray(data) && data.length > 0) {
-                    // Direct array response
-                    groundElevation = typeof data[0] === 'number' ? data[0] : data[0].elevation;
-                  }
-                  
-                  if (groundElevation !== null && !isNaN(groundElevation)) {
-                    console.log('KML import: Extracted ground elevation:', groundElevation, 'from absolute altitude:', absoluteAltitude);
-                  } else {
-                    console.warn('KML import: Failed to extract ground elevation from API response');
-                    groundElevation = null;
-                  }
-                } else {
-                  const errorText = await response.text();
-                  console.warn('KML import: Elevation API error:', response.status, errorText);
+                if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
+                  groundElevation = data.profile[0].elevation;
+                } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
+                  groundElevation = data.elevations[0];
+                } else if (data.elevation !== undefined) {
+                  groundElevation = data.elevation;
+                } else if (Array.isArray(data) && data.length > 0) {
+                  groundElevation = typeof data[0] === 'number' ? data[0] : data[0].elevation;
                 }
-              } catch (error) {
-                console.warn('KML import: Failed to query elevation for entry point:', error);
+                
+                // Heuristic: If the imported value is much higher than ground + typical flight height (e.g., > 1000m),
+                // it might be a legacy file. However, we can't be certain, so we'll use it as-is and log a warning.
+                if (groundElevation !== null && !isNaN(groundElevation)) {
+                  const estimatedAGL = absoluteAltitude - groundElevation;
+                  if (estimatedAGL > 1000) {
+                    console.warn('KML import: Imported entry height seems unusually high for AGL. If this is a legacy file (pre-ASL format), the value may be incorrect. Consider re-exporting with the new format.', {
+                      importedASL: absoluteAltitude,
+                      groundElevation,
+                      estimatedAGL
+                    });
+                  }
+                }
               }
-            } else {
-              console.warn('KML import: No DTM source available, cannot query ground elevation');
+            } catch (error) {
+              // Ignore errors in legacy detection - use imported value as-is
+              console.log('KML import: Could not check for legacy file format, using imported value as ASL');
             }
-            
-            // Calculate nominalFlightHeight = absoluteAltitude - groundElevation
-            // This gives us: nominalFlightHeight = "גובה כניסה" value - ground elevation at entry point
-            // IMPORTANT: We MUST subtract ground elevation. If we can't get it, we should not set nominalFlightHeight
-            if (groundElevation !== null && !isNaN(groundElevation)) {
-              console.log('KML import: Calculating nominal height:', {
-                absoluteAltitude,
-                groundElevation,
-                calculated: absoluteAltitude - groundElevation
-              });
-              nominalFlightHeight = Math.round(absoluteAltitude - groundElevation);
-            } else {
-              console.warn('KML import: Cannot calculate nominal flight height - ground elevation not available. Absolute altitude:', absoluteAltitude);
-              // Don't set nominalFlightHeight if we can't get ground elevation
-              // This ensures we don't use the absolute altitude as-is
-            }
+          }
         }
         
         // Calculate distances for climb points if we have routes

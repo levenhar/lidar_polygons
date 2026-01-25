@@ -235,3 +235,66 @@ export function findClosestPointOnLine(
 
   return { t: clampedT, distance };
 }
+
+/**
+ * Sample points uniformly along a line segment
+ * @param start Starting point of the line segment
+ * @param end Ending point of the line segment
+ * @param numSamples Number of sample points to generate (default: 30)
+ * @returns Array of coordinates along the line segment
+ */
+export function samplePointsAlongLine(
+  start: Coordinate,
+  end: Coordinate,
+  numSamples: number = 30
+): Coordinate[] {
+  if (numSamples <= 0) return [];
+  if (numSamples === 1) return [start];
+  
+  const samples: Coordinate[] = [];
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / (numSamples - 1); // 0 to 1
+    samples.push({
+      lng: start.lng + (end.lng - start.lng) * t,
+      lat: start.lat + (end.lat - start.lat) * t
+    });
+  }
+  return samples;
+}
+
+/**
+ * Calculate the spacing distance for next line suggestions based on mission parameters.
+ * This is the shared source-of-truth for spacing calculations used by both:
+ * - Next line suggestion rendering
+ * - Parallel lines tool default spacing
+ * 
+ * @param overlapPercentage Required overlap percentage (0-100)
+ * @param fovDegrees Field of view in degrees
+ * @param avgAGL Average altitude above ground level (AGL) in meters
+ * @returns Spacing distance in meters, or null if calculation is invalid
+ */
+export function calculateNextLineSpacing(
+  overlapPercentage: number,
+  fovDegrees: number,
+  avgAGL: number
+): number | null {
+  const safeOverlap = Math.max(0, Math.min(overlapPercentage, 99.9));
+  const overlapFraction = safeOverlap / 100;
+  const safeFov = Math.max(1, Math.min(fovDegrees, 179.9));
+  const fovRadians = (safeFov * Math.PI) / 180;
+  const spacingFactor = 1 - overlapFraction;
+
+  if (!(spacingFactor > 0) || !(fovRadians > 0) || !(avgAGL > 0)) {
+    return null;
+  }
+
+  // Calculate half-width based on AGL * tan(fov/2)
+  const swathWidth = avgAGL * Math.tan(fovRadians / 2);
+  const spacing = swathWidth * spacingFactor;
+
+  if (!Number.isFinite(spacing) || spacing <= 0) {
+    return null;
+  }
+
+  return spacing;
+}

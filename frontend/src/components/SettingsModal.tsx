@@ -197,8 +197,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
     // General validations
     const entryHeight = parseFloat(generalDraft.nominalFlightHeight);
-    if (isNaN(entryHeight) || entryHeight < 0) {
-      newErrors.push({ field: 'nominalFlightHeight', message: 'גובה כניסה חייב להיות מספר חיובי' });
+    if (isNaN(entryHeight) || entryHeight < 0 || entryHeight > 10000) {
+      newErrors.push({ field: 'nominalFlightHeight', message: 'גובה כניסה חייב להיות בין 0 ל-10000' });
     }
 
     const safetyRad = parseFloat(generalDraft.safetyRadius);
@@ -207,23 +207,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
 
     const safetyH = parseFloat(generalDraft.safetyHeight);
-    const isSafetyHValid = !isNaN(safetyH) && safetyH >= 0;
-    const isEntryHValid = !isNaN(entryHeight) && entryHeight > 0;
-    
-    if (!isSafetyHValid) {
+    if (isNaN(safetyH) || safetyH < 0) {
       if (generalDraft.safetyHeight.trim() !== '') {
         newErrors.push({ field: 'safetyHeight', message: 'גובה בטיחות חייב להיות מספר חיובי' });
       }
-    } else if (isEntryHValid && isSafetyHValid && safetyH >= entryHeight) {
-      // Only show error if safety height is greater than or equal to entrance height
-      newErrors.push({ field: 'safetyHeight', message: 'גובה בטיחות חייב להיות קטן מגובה כניסה' });
     }
 
     const outputH = parseFloat(generalDraft.outputHeight);
     if (isNaN(outputH) || outputH < 0) {
       newErrors.push({ field: 'outputHeight', message: 'גובה תוצר חייב להיות מספר חיובי' });
-    } else if (!isNaN(entryHeight) && outputH <= entryHeight) {
-      newErrors.push({ field: 'outputHeight', message: 'גובה תוצר חייב להיות גדול מגובה כניסה' });
     }
 
     // Mission validations
@@ -269,7 +261,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     return newErrors.length === 0;
   }, [generalDraft, missionDraft, climbDraft]);
 
-  // Validate when draft values change (for relationship validations)
+  // Validate when draft values change
   useEffect(() => {
     if (isOpen) {
       validateAll();
@@ -459,7 +451,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     {getFieldError('nominalFlightHeight')}
                   </span>
                 )}
-                <span className="settings-modal__hint">גובה הטיסה ההתחלתי מעל פני הקרקע (AGL)</span>
+                <span className="settings-modal__hint">גובה הטיסה ההתחלתי מעל פני הים (ASL)</span>
               </div>
 
               <div className="settings-modal__field">
@@ -598,7 +590,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
               <div className="settings-modal__field">
                 <label htmlFor="fov-degrees" className="settings-modal__label">
-                  שדה ראייה (FOV)
+                  מפתח סריקה (FOV)
                   <span className="settings-modal__unit">מעלות</span>
                 </label>
                 <div className="settings-modal__input-wrapper">

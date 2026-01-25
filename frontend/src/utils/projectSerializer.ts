@@ -13,7 +13,8 @@ import { FlightRoute } from '../hooks/useFlightPath';
 import { ClimbConfig } from './climb';
 
 // Schema version for backwards compatibility
-export const PROJECT_SCHEMA_VERSION = 1;
+// Version 2: Entry height changed from AGL to ASL
+export const PROJECT_SCHEMA_VERSION = 2;
 
 // Project file extension
 export const PROJECT_FILE_EXTENSION = '.routeproj';
@@ -85,6 +86,7 @@ export interface DisplaySettings {
   dtmOpacity: number; // 0-1
   showMetadata?: boolean;
   showClimbLabels?: boolean;
+  showNextLineSuggestions?: boolean;
 }
 
 /**
@@ -365,9 +367,18 @@ export function validateProject(data: any): ProjectFileData {
  * Migrate project data to current schema version
  */
 function migrateProject(data: any): any {
-  // For now, just return as-is since we're on v1
-  // Future versions can add migration logic here
-  return data;
+  let migrated = { ...data };
+  
+  // Migration from v1 to v2: Entry height changed from AGL to ASL
+  if (migrated.schemaVersion < 2) {
+    // Mark as needing migration - actual conversion requires DTM data
+    // which is not available at validation time
+    migrated._needsEntryHeightMigration = true;
+    migrated.schemaVersion = 2;
+    console.log('Project migration: Marked for entry height migration (AGL -> ASL). Conversion will happen when DTM is loaded.');
+  }
+  
+  return migrated;
 }
 
 /**

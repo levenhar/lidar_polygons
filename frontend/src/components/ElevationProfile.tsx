@@ -391,7 +391,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           minDelta = delta;
         }
       }
-      return closest.plannedAltitude ?? (closest.elevation + nominalFlightHeight);
+      // Entry height (nominalFlightHeight) is ASL, so return it directly if no planned altitude
+      return closest.plannedAltitude ?? nominalFlightHeight;
     },
     [elevationProfile, nominalFlightHeight]
   );
@@ -443,8 +444,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const chartArea: d3.Selection<SVGGElement, unknown, null, undefined> = g.append('g')
       .attr('clip-path', `url(#${clipPathIdRef.current})`);
 
-    const plannedAltitudes = elevationProfile.map((p) => p.plannedAltitude || (p.elevation + nominalFlightHeight));
-    const baseAltitudes = elevationProfile.map((p) => p.baseAltitude || (p.elevation + nominalFlightHeight));
+    // Entry height (nominalFlightHeight) is ASL, so base altitude is nominalFlightHeight directly
+    const plannedAltitudes = elevationProfile.map((p) => p.plannedAltitude ?? nominalFlightHeight);
+    const baseAltitudes = elevationProfile.map((p) => p.baseAltitude ?? nominalFlightHeight);
 
     // @ts-ignore
     const getSafetyThreshold = (d: ElevationPoint) => {
@@ -557,9 +559,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     let climbEndMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbStartMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbLabels: d3.Selection<SVGTextElement, any, any, any> | null = null;
+    // Entry height (nominalFlightHeight) is ASL, so base altitude is nominalFlightHeight directly
     const profileWithPlan = elevationProfile.map((p) => {
-      const planned = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
-      const baseAltitude = p.baseAltitude ?? planned;
+      const planned = p.plannedAltitude ?? nominalFlightHeight;
+      const baseAltitude = p.baseAltitude ?? nominalFlightHeight;
       const climbDelta = p.climbDelta ?? 0;
       return {
         ...p,
@@ -1639,8 +1642,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return;
     }
     const baseAfterExisting = (() => {
-      const startElevation = elevationProfile[0].elevation;
-      const constantAltitude = startElevation + nominalFlightHeight;
+      // Entry height (nominalFlightHeight) is ASL, so base altitude is nominalFlightHeight directly
+      const constantAltitude = nominalFlightHeight;
       let currentBase: BaseAltitudeSample[] = elevationProfile.map((p) => ({
         distance: p.distance,
         baseAltitude: constantAltitude,
@@ -2008,11 +2011,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (!svgRef.current) return;
 
     // Calculate statistics based on flight altitude (planned altitude)
+    // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
     let totalAscent = 0;
     let totalDescent = 0;
     for (let i = 1; i < elevationProfile.length; i++) {
-      const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? (elevationProfile[i - 1].elevation + nominalFlightHeight);
-      const currAltitude = elevationProfile[i].plannedAltitude ?? (elevationProfile[i].elevation + nominalFlightHeight);
+      const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? nominalFlightHeight;
+      const currAltitude = elevationProfile[i].plannedAltitude ?? nominalFlightHeight;
       const altitudeDiff = currAltitude - prevAltitude;
       if (altitudeDiff > 0) {
         totalAscent += altitudeDiff;
@@ -2027,9 +2031,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
 
     // Find minimum flight height across all points (considering climb points)
+    // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
     const minFlightHeight = Math.min(
       ...elevationProfile.map(p => {
-        const plannedAlt = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
+        const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
         return plannedAlt - p.elevation;
       })
     );
@@ -2038,7 +2043,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const minElevationPoint = elevationProfile.reduce((min, p) => 
       p.elevation < min.elevation ? p : min
     );
-    const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? (minElevationPoint.elevation + nominalFlightHeight);
+    const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? nominalFlightHeight;
     const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
 
     // Change legend text-anchor to 'start' for PNG export
@@ -2169,8 +2174,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (elevationProfile.length === 0) return;
 
     const headers = ['Distance (מ\')', 'Ground Elevation (מ\')', 'Flight Altitude (מ\')', 'AGL (מ\')', 'Longitude', 'Latitude'];
+    // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
     const rows = elevationProfile.map((point) => {
-      const flightAltitude = point.plannedAltitude ?? (point.elevation + nominalFlightHeight);
+      const flightAltitude = point.plannedAltitude ?? nominalFlightHeight;
       const agl = flightAltitude - point.elevation;
       return [
         point.distance.toFixed(2),
@@ -2586,11 +2592,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       )}
       {elevationProfile.length > 0 && (() => {
         // Calculate ascent and descent based on flight altitude (planned altitude)
+        // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
         let totalAscent = 0;
         let totalDescent = 0;
         for (let i = 1; i < elevationProfile.length; i++) {
-          const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? (elevationProfile[i - 1].elevation + nominalFlightHeight);
-          const currAltitude = elevationProfile[i].plannedAltitude ?? (elevationProfile[i].elevation + nominalFlightHeight);
+          const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? nominalFlightHeight;
+          const currAltitude = elevationProfile[i].plannedAltitude ?? nominalFlightHeight;
           const altitudeDiff = currAltitude - prevAltitude;
           if (altitudeDiff > 0) {
             totalAscent += altitudeDiff;
@@ -2600,9 +2607,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         }
 
         // Find minimum flight height across all points (considering climb points)
+        // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
         const minFlightHeight = Math.min(
           ...elevationProfile.map(p => {
-            const plannedAlt = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
+            const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
             return plannedAlt - p.elevation;
           })
         );
@@ -2611,7 +2619,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         const minElevationPoint = elevationProfile.reduce((min, p) => 
           p.elevation < min.elevation ? p : min
         );
-        const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? (minElevationPoint.elevation + nominalFlightHeight);
+        const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? nominalFlightHeight;
         const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
 
         return (

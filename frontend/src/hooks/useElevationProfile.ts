@@ -332,9 +332,9 @@ export function useElevationProfile() {
 
       // If we have climb requests and config, recalculate planned altitude properly
       if (climbRequests && climbRequests.length > 0 && climbConfig) {
-        // 1. Calculate base altitude profile (nominal height above first point)
-        const startElevation = prevProfile[0].elevation;
-        const constantAltitude = startElevation + nominalFlightHeight;
+        // 1. Calculate base altitude profile (entry height is now ASL, not AGL)
+        // Entry height (nominalFlightHeight) is absolute altitude above sea level
+        const constantAltitude = nominalFlightHeight;
         const baseAltitudeProfile: BaseAltitudeSample[] = prevProfile.map((p) => ({
           distance: p.distance,
           baseAltitude: constantAltitude,
@@ -385,20 +385,22 @@ export function useElevationProfile() {
         });
 
         // 4. Update profile with new planned and base altitudes
+        // Entry height (nominalFlightHeight) is ASL, so base altitude is nominalFlightHeight directly
         return prevProfile.map((p, i) => ({
           ...p,
-          plannedAltitude: currentPlanned[i]?.plannedAltitude ?? (p.elevation + nominalFlightHeight),
-          baseAltitude: currentPlanned[i]?.baseAltitude ?? (p.elevation + nominalFlightHeight),
+          plannedAltitude: currentPlanned[i]?.plannedAltitude ?? nominalFlightHeight,
+          baseAltitude: currentPlanned[i]?.baseAltitude ?? nominalFlightHeight,
           climbDelta: currentPlanned[i]?.climbDelta ?? 0,
-          flightHeight: (currentPlanned[i]?.plannedAltitude ?? (p.elevation + nominalFlightHeight)) - p.elevation
+          flightHeight: (currentPlanned[i]?.plannedAltitude ?? nominalFlightHeight) - p.elevation
         }));
       } else {
         // No climb requests, just update based on nominal height
+        // Entry height (nominalFlightHeight) is ASL, so planned/base altitude is nominalFlightHeight directly
         return prevProfile.map(point => ({
           ...point,
-          plannedAltitude: point.elevation + nominalFlightHeight,
-          baseAltitude: point.elevation + nominalFlightHeight,
-          flightHeight: nominalFlightHeight
+          plannedAltitude: nominalFlightHeight,
+          baseAltitude: nominalFlightHeight,
+          flightHeight: nominalFlightHeight - point.elevation
         }));
       }
     });

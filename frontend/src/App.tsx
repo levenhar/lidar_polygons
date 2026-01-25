@@ -26,7 +26,7 @@ import './App.css';
 export interface Coordinate {
   lng: number;
   lat: number;
-  height?: number; // Optional flight height in meters (AGL - Above Ground Level)
+  height?: number; // Optional flight height in meters (ASL - Above Sea Level)
   id?: string; // Stable ID for the point (used to anchor climb points)
 }
 
@@ -35,7 +35,7 @@ export interface ElevationPoint {
   elevation: number;
   longitude: number;
   latitude: number;
-  flightHeight?: number; // Interpolated flight height (AGL) at this point
+  flightHeight?: number; // Interpolated flight height (AGL - computed as plannedAltitude - elevation) at this point
   minElevation?: number; // Minimum elevation in DTM within radius
   maxElevation?: number; // Maximum elevation in DTM within radius
   plannedAltitude?: number;
@@ -128,6 +128,15 @@ function App() {
   const [hoverSource, setHoverSource] = useState<'map' | 'profile' | null>(null);
   const [showMetadata, setShowMetadata] = useState(true);
   const [showClimbLabels, setShowClimbLabels] = useState(true);
+  const [showNextLineSuggestions, setShowNextLineSuggestions] = useState<boolean>(() => {
+    // Load from localStorage on mount, default to true
+    try {
+      const stored = localStorage.getItem('showNextLineSuggestions');
+      return stored !== null ? JSON.parse(stored) : true;
+    } catch {
+      return true;
+    }
+  });
   // DTM display settings (will be passed from MapPanel)
   const [dtmDisplaySettings, setDtmDisplaySettings] = useState<{
     palette: 'gray' | 'jet';
@@ -221,6 +230,15 @@ function App() {
       console.error('Failed to save climb requests to localStorage:', error);
     }
   }, [climbRequestsByRoute]);
+
+  // Save showNextLineSuggestions to localStorage whenever it changes
+  React.useEffect(() => {
+    try {
+      localStorage.setItem('showNextLineSuggestions', JSON.stringify(showNextLineSuggestions));
+    } catch (error) {
+      console.error('Failed to save showNextLineSuggestions to localStorage:', error);
+    }
+  }, [showNextLineSuggestions]);
   
   // Wrap insertPoints to mark it as an insert operation
   const insertPointsWrapped = React.useCallback((index: number, points: Coordinate[]) => {
@@ -413,9 +431,9 @@ function App() {
   const fullProfileResultInternal = React.useMemo(() => {
     if (elevationProfile.length === 0) return { points: [], warnings: [] };
 
-    // 1. Calculate base altitude profile (nominal height above first point)
-    const startElevation = elevationProfile[0].elevation;
-    const constantAltitude = startElevation + nominalFlightHeight;
+    // 1. Calculate base altitude profile (entry height is now ASL, not AGL)
+    // Entry height (nominalFlightHeight) is absolute altitude above sea level
+    const constantAltitude = nominalFlightHeight;
     const baseAltitudeProfile: BaseAltitudeSample[] = elevationProfile.map((p) => ({
       distance: p.distance,
       baseAltitude: constantAltitude,
@@ -1444,7 +1462,10 @@ function App() {
           hoverSource={hoverSource}
           showMetadata={showMetadata}
           onShowMetadataChange={setShowMetadata}
+          showNextLineSuggestions={showNextLineSuggestions}
+          onShowNextLineSuggestionsChange={setShowNextLineSuggestions}
           climbRequests={climbRequests}
+          elevationProfile={fullProfileResult.points}
           onExportClick={() => {
             const routesWithPoints = routes.filter(route => route.points.length >= 2);
             if (routesWithPoints.length > 1) {

@@ -9,7 +9,7 @@ import { FlightRoute } from '../hooks/useFlightPath';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import CoordinateTooltip from './CoordinateTooltip';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing } from '../utils/geometry';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, samplePointsAlongLine } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
@@ -593,7 +593,10 @@ interface MapPanelProps {
   hoverSource?: 'map' | 'profile' | null;
   showMetadata: boolean;
   onShowMetadataChange: (show: boolean) => void;
+  showNextLineSuggestions: boolean;
+  onShowNextLineSuggestionsChange: (show: boolean) => void;
   climbRequests?: { endDistance: number; climbAmount: number }[];
+  elevationProfile?: ElevationPoint[]; // Elevation profile with planned altitudes
   // Export/Import props
   onExportClick: () => void;
   onImportKML: (file: File) => Promise<void>;
@@ -639,7 +642,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
   hoverSource,
   showMetadata,
   onShowMetadataChange,
+  showNextLineSuggestions,
+  onShowNextLineSuggestionsChange,
   climbRequests: _climbRequests = [],
+  elevationProfile = [],
   onExportClick,
   onImportKML,
   canExport
@@ -708,6 +714,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
     crs: string | null;
     noDataValue: number | null;
   } | null>(null);
+  // Cache for avgAGL per line segment: key is `${startIndex}-${endIndex}`, value is avgAGL or null if unavailable
+  const avgAGLCacheRef = useRef<Map<string, number | null>>(new Map());
+  // Track cache invalidation: when flightPath signature changes, clear cache
+  const flightPathSignatureRef = useRef<string>('');
   const [viewshedRaster, setViewshedRaster] = useState<ViewshedRasterData | null>(null);
   const [viewshedVisible, setViewshedVisible] = useState(true);
   const [viewshedColormap, setViewshedColormap] = useState('jet');
@@ -2127,13 +2137,32 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
 
         if (closestSegmentIndex >= 0) {
+          // Calculate default spacing using shared function for the selected segment with line-specific avgAGL
+          const segmentStart = flightPath[closestSegmentIndex];
+          const segmentEnd = flightPath[closestSegmentIndex + 1];
+          
+          // Compute line-specific avgAGL for the selected segment
+          const avgAGL = computeAvgAGLForSegment(segmentStart, segmentEnd, closestSegmentIndex, closestSegmentIndex + 1, nominalFlightHeight);
+          
+          // Use avgAGL if available, otherwise fall back to average height
+          const effectiveAGL = avgAGL !== null ? avgAGL : (() => {
+            const startHeight = segmentStart.height ?? nominalFlightHeight;
+            const endHeight = segmentEnd.height ?? nominalFlightHeight;
+            return (startHeight + endHeight) / 2;
+          })();
+          
+          const calculatedSpacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
+          const defaultOffset = calculatedSpacing !== null && calculatedSpacing > 0 
+            ? calculatedSpacing.toFixed(1) 
+            : '50'; // Fallback to 50 if calculation fails
+          
           setDialog({
             type: 'parallelOffset',
             title: 'היסט מקביל'
           });
           setDialogValues({
             segmentIndex: closestSegmentIndex.toString(),
-            offset: '50'
+            offset: defaultOffset
           });
           setDialogError(null);
         } else {
@@ -2265,6 +2294,307 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     return elevation;
   }, []);
+
+  /**
+   * Compute average AGL (Altitude Above Ground Level) for a line segment
+   * Samples points along the line, queries DTM elevation, and computes AGL = plannedAltitude - DTM elevation
+   * @param start Start coordinate of the line segment
+   * @param end End coordinate of the line segment
+   * @param startIndex Index of start point in flightPath (for caching)
+   * @param endIndex Index of end point in flightPath (for caching)
+   * @param nominalFlightHeight Default flight height if point doesn't have height property
+   * @returns Average AGL in meters, or null if DTM is unavailable or calculation fails
+   */
+  const computeAvgAGLForSegment = useCallback((
+    start: Coordinate,
+    end: Coordinate,
+    startIndex: number,
+    endIndex: number,
+    nominalFlightHeight: number
+  ): number | null => {
+    // Check cache first - include elevation profile signature, entry height, and climb requests in cache key
+    // This ensures cache is invalidated when any of these change
+    const profileSignature = elevationProfile && elevationProfile.length > 0
+      ? elevationProfile
+          .filter((_, idx) => idx % Math.max(1, Math.floor(elevationProfile.length / 10)) === 0) // Sample ~10 points
+          .map(p => `${p.distance.toFixed(1)}:${(p.plannedAltitude ?? p.baseAltitude ?? 0).toFixed(1)}`)
+          .join('|')
+      : 'no-profile';
+    const climbSignature = _climbRequests.length > 0
+      ? _climbRequests.map(c => `${c.endDistance.toFixed(1)}:${c.climbAmount.toFixed(1)}`).join('|')
+      : 'no-climbs';
+    const cacheKey = `${startIndex}-${endIndex}-${nominalFlightHeight.toFixed(1)}-${climbSignature}-${profileSignature}`;
+    
+    // Only use cache if elevation profile has planned altitudes (not just base altitudes)
+    const hasPlannedAltitudes = elevationProfile && elevationProfile.some(p => p.plannedAltitude !== undefined);
+    if (avgAGLCacheRef.current.has(cacheKey) && hasPlannedAltitudes) {
+      const cached = avgAGLCacheRef.current.get(cacheKey);
+      if (cached !== undefined) {
+        console.log(`[avgAGL] Cache hit for segment ${startIndex}-${endIndex}: ${cached !== null ? cached.toFixed(1) + 'm' : 'null'} (profile has planned altitudes)`);
+        return cached;
+      }
+    } else if (avgAGLCacheRef.current.has(cacheKey) && !hasPlannedAltitudes) {
+      // Clear cache if we don't have planned altitudes yet (profile might be updating)
+      console.log(`[avgAGL] Cache exists but elevation profile lacks planned altitudes - recalculating`);
+      avgAGLCacheRef.current.delete(cacheKey);
+    }
+
+    // Get point heights
+    const startHeight = start.height ?? nominalFlightHeight;
+    const endHeight = end.height ?? nominalFlightHeight;
+    console.log(`[avgAGL] Computing for segment ${startIndex}-${endIndex}: startHeight=${startHeight}m, endHeight=${endHeight}m, nominalFlightHeight=${nominalFlightHeight}m`);
+
+    // Check if DTM is available
+    if (!dtmRasterDataRef.current) {
+      console.warn(`[avgAGL] DTM unavailable for segment ${startIndex}-${endIndex} - will use fallback (avg height: ${((startHeight + endHeight) / 2).toFixed(1)}m)`);
+      avgAGLCacheRef.current.set(cacheKey, null);
+      return null;
+    }
+
+    console.log(`[avgAGL] DTM available, sampling points for segment ${startIndex}-${endIndex}`);
+    console.log(`[avgAGL] Elevation profile status: length=${elevationProfile?.length || 0}, hasPlannedAltitudes=${elevationProfile?.some(p => p.plannedAltitude !== undefined) || false}`);
+
+    // Calculate cumulative distances for the entire flight path to get accurate distance along path
+    const cumulativeDistances: number[] = [];
+    let totalDist = 0;
+    cumulativeDistances.push(0);
+    for (let i = 1; i < flightPath.length; i++) {
+      const segDist = calculateDistance(flightPath[i - 1], flightPath[i]);
+      totalDist += segDist;
+      cumulativeDistances.push(totalDist);
+    }
+    
+    // Calculate distance from start of path to start and end of this segment
+    const segmentStartDistance = cumulativeDistances[startIndex] || 0;
+    const segmentEndDistance = cumulativeDistances[endIndex] || totalDist;
+    const segmentLength = segmentEndDistance - segmentStartDistance;
+
+    // Sample points along the line (increase to 50 samples for better accuracy)
+    const numSamples = 50;
+    const samplePoints = samplePointsAlongLine(start, end, numSamples);
+    console.log(`[avgAGL] Sampled ${samplePoints.length} points along segment ${startIndex}-${endIndex} (segment length: ${segmentLength.toFixed(1)}m)`);
+    
+    const aglValues: number[] = [];
+    let validSamples = 0;
+    let dtmNullCount = 0;
+    let negativeAGLCount = 0;
+    let sampleDetails: Array<{ t: number; distance: number; plannedAlt: number; groundElev: number | null; agl: number | null }> = [];
+
+    for (let i = 0; i < samplePoints.length; i++) {
+      const point = samplePoints[i];
+      const t = samplePoints.length > 1 ? i / (samplePoints.length - 1) : 0; // 0 to 1
+      
+      // Calculate actual distance along path from start of flight path
+      const distanceAlongPath = segmentStartDistance + (segmentLength * t);
+      
+      // Get planned altitude from elevation profile if available, otherwise interpolate between start and end heights
+      let plannedAltitude: number;
+      let altitudeSource = 'fallback';
+      if (elevationProfile && elevationProfile.length > 0) {
+        // Find the two adjacent points in elevation profile for interpolation
+        let pointBefore: ElevationPoint | null = null;
+        let pointAfter: ElevationPoint | null = null;
+        
+        for (let j = 0; j < elevationProfile.length - 1; j++) {
+          const p1 = elevationProfile[j];
+          const p2 = elevationProfile[j + 1];
+          if (p1.distance <= distanceAlongPath && p2.distance >= distanceAlongPath) {
+            pointBefore = p1;
+            pointAfter = p2;
+            break;
+          }
+        }
+        
+        if (pointBefore && pointAfter) {
+          // Interpolate between the two points
+          const distRange = pointAfter.distance - pointBefore.distance;
+          const distFromBefore = distanceAlongPath - pointBefore.distance;
+          const interpolationFactor = distRange > 0 ? distFromBefore / distRange : 0;
+          
+          // Prefer plannedAltitude, then baseAltitude, then fallback to nominalFlightHeight
+          const altBefore = pointBefore.plannedAltitude ?? pointBefore.baseAltitude ?? nominalFlightHeight;
+          const altAfter = pointAfter.plannedAltitude ?? pointAfter.baseAltitude ?? nominalFlightHeight;
+          plannedAltitude = altBefore + (altAfter - altBefore) * interpolationFactor;
+          altitudeSource = pointBefore.plannedAltitude !== undefined || pointAfter.plannedAltitude !== undefined 
+            ? 'elevationProfile-planned' 
+            : 'elevationProfile-base';
+          
+          // Debug logging for first and middle samples
+          if (i === 0 || i === Math.floor(samplePoints.length / 2)) {
+            console.debug(`[avgAGL] Sample ${i}: dist=${distanceAlongPath.toFixed(1)}m, before=${pointBefore.distance.toFixed(1)}m (plannedAlt=${pointBefore.plannedAltitude?.toFixed(1) ?? 'N/A'}, baseAlt=${pointBefore.baseAltitude?.toFixed(1) ?? 'N/A'}), after=${pointAfter.distance.toFixed(1)}m (plannedAlt=${pointAfter.plannedAltitude?.toFixed(1) ?? 'N/A'}, baseAlt=${pointAfter.baseAltitude?.toFixed(1) ?? 'N/A'}), interpolated=${plannedAltitude.toFixed(1)}m (${altitudeSource})`);
+          }
+        } else {
+          // Distance is outside profile range, use closest point
+          let closestPoint = elevationProfile[0];
+          let minDelta = Math.abs(closestPoint.distance - distanceAlongPath);
+          
+          for (const profilePoint of elevationProfile) {
+            const delta = Math.abs(profilePoint.distance - distanceAlongPath);
+            if (delta < minDelta) {
+              minDelta = delta;
+              closestPoint = profilePoint;
+            }
+          }
+          
+          plannedAltitude = closestPoint.plannedAltitude ?? closestPoint.baseAltitude ?? nominalFlightHeight;
+          altitudeSource = closestPoint.plannedAltitude !== undefined ? 'elevationProfile-closest-planned' : 'elevationProfile-closest-base';
+        }
+      } else {
+        // No elevation profile: interpolate between start and end heights (both are ASL)
+        // Entry height (nominalFlightHeight) is ASL, so startHeight and endHeight are ASL
+        plannedAltitude = startHeight + (endHeight - startHeight) * t;
+        altitudeSource = 'interpolated-heights';
+      }
+      
+      // Query DTM elevation at this point
+      const groundElevation = calculateElevationAtPoint(point.lat, point.lng);
+      
+      if (groundElevation === null) {
+        dtmNullCount++;
+        sampleDetails.push({ t, distance: distanceAlongPath, plannedAlt: plannedAltitude, groundElev: null, agl: null });
+        continue;
+      }
+      
+      if (!isFinite(groundElevation)) {
+        dtmNullCount++;
+        sampleDetails.push({ t, distance: distanceAlongPath, plannedAlt: plannedAltitude, groundElev: groundElevation, agl: null });
+        continue;
+      }
+      
+      // AGL = plannedAltitude (ASL) - groundElevation (ASL)
+      // Both are ASL, so the difference gives AGL
+      const agl = plannedAltitude - groundElevation;
+      sampleDetails.push({ t, distance: distanceAlongPath, plannedAlt: plannedAltitude, groundElev: groundElevation, agl });
+      
+      // Log first and last samples for debugging
+      if (i === 0 || i === samplePoints.length - 1) {
+        console.debug(`[avgAGL] Sample ${i} (t=${t.toFixed(3)}, dist=${distanceAlongPath.toFixed(1)}m): plannedAlt=${plannedAltitude.toFixed(1)}m (${altitudeSource}), groundElev=${groundElevation.toFixed(1)}m, agl=${agl.toFixed(1)}m`);
+      }
+      
+      // Accept any finite AGL value (even negative) - the user's flight path might be below ground
+      // which is a valid scenario to detect, but we'll still calculate spacing based on the absolute difference
+      if (isFinite(agl)) {
+        // Use absolute value of AGL for spacing calculation if negative
+        // This handles cases where ground is higher than flight altitude
+        const aglForSpacing = agl > 0 ? agl : Math.abs(agl);
+        aglValues.push(aglForSpacing);
+        validSamples++;
+        if (agl <= 0) {
+          negativeAGLCount++;
+          console.warn(`[avgAGL] Sample ${i} (t=${t.toFixed(2)}, dist=${distanceAlongPath.toFixed(1)}m): Flight below ground - plannedAlt=${plannedAltitude.toFixed(1)}m, groundElev=${groundElevation.toFixed(1)}m, agl=${agl.toFixed(1)}m (using abs value: ${aglForSpacing.toFixed(1)}m)`);
+        }
+      } else {
+        dtmNullCount++;
+        console.debug(`[avgAGL] Sample ${i} (t=${t.toFixed(2)}, dist=${distanceAlongPath.toFixed(1)}m): invalid AGL - plannedAlt=${plannedAltitude.toFixed(1)}m, groundElev=${groundElevation.toFixed(1)}m, agl=${agl}`);
+      }
+    }
+
+    console.log(`[avgAGL] Segment ${startIndex}-${endIndex} analysis:
+  - Total samples: ${samplePoints.length}
+  - Valid AGL samples: ${validSamples}
+  - DTM null/invalid: ${dtmNullCount}
+  - Negative AGL: ${negativeAGLCount}
+  - Required valid samples: ${Math.ceil(samplePoints.length * 0.5)}`);
+
+    // If we don't have enough valid samples, return null
+    const requiredSamples = Math.ceil(samplePoints.length * 0.5);
+    if (validSamples < requiredSamples) {
+      console.warn(`[avgAGL] Insufficient valid samples for segment ${startIndex}-${endIndex}: ${validSamples}/${samplePoints.length} (need ${requiredSamples}) - will use fallback (avg height: ${((startHeight + endHeight) / 2).toFixed(1)}m)`);
+      if (sampleDetails.length > 0 && sampleDetails.length <= 5) {
+        console.log(`[avgAGL] Sample details:`, sampleDetails);
+      }
+      avgAGLCacheRef.current.set(cacheKey, null);
+      return null;
+    }
+
+    // Calculate average AGL
+    const avgAGL = aglValues.reduce((sum, agl) => sum + agl, 0) / aglValues.length;
+    
+    // Calculate min/max AGL for debugging
+    const minAGL = Math.min(...aglValues);
+    const maxAGL = Math.max(...aglValues);
+    
+    if (!isFinite(avgAGL) || avgAGL <= 0) {
+      console.error(`[avgAGL] Invalid avgAGL for segment ${startIndex}-${endIndex}: ${avgAGL} - will use fallback (avg height: ${((startHeight + endHeight) / 2).toFixed(1)}m)`);
+      avgAGLCacheRef.current.set(cacheKey, null);
+      return null;
+    }
+
+    // Only cache if we have planned altitudes - don't cache values calculated without planned altitudes
+    const hasPlannedAltitudesForCache = elevationProfile && elevationProfile.some(p => p.plannedAltitude !== undefined);
+    if (hasPlannedAltitudesForCache) {
+      avgAGLCacheRef.current.set(cacheKey, avgAGL);
+      console.log(`[avgAGL] ✓ Segment ${startIndex}-${endIndex}: avgAGL=${avgAGL.toFixed(1)}m (min=${minAGL.toFixed(1)}m, max=${maxAGL.toFixed(1)}m, ${validSamples}/${samplePoints.length} valid samples, elevationProfile.length=${elevationProfile?.length || 0}, CACHED)`);
+    } else {
+      console.log(`[avgAGL] ✓ Segment ${startIndex}-${endIndex}: avgAGL=${avgAGL.toFixed(1)}m (min=${minAGL.toFixed(1)}m, max=${maxAGL.toFixed(1)}m, ${validSamples}/${samplePoints.length} valid samples, elevationProfile.length=${elevationProfile?.length || 0}, NOT CACHED - no planned altitudes)`);
+    }
+    
+    return avgAGL;
+  }, [calculateElevationAtPoint, elevationProfile, flightPath, nominalFlightHeight, _climbRequests]);
+
+  // Invalidate avgAGL cache when flightPath or DTM changes
+  useEffect(() => {
+    const currentSignature = JSON.stringify(flightPath.map(p => ({ lng: p.lng, lat: p.lat, height: p.height })));
+    if (currentSignature !== flightPathSignatureRef.current) {
+      avgAGLCacheRef.current.clear();
+      flightPathSignatureRef.current = currentSignature;
+      console.debug('[avgAGL] Cache invalidated: flightPath changed');
+    }
+  }, [flightPath]);
+
+  // Invalidate cache when DTM changes
+  useEffect(() => {
+    avgAGLCacheRef.current.clear();
+    console.debug('[avgAGL] Cache invalidated: DTM changed');
+  }, [dtmSource, dtmLoaded]);
+
+  // Invalidate cache when elevation profile changes (especially when planned altitudes are added)
+  useEffect(() => {
+    if (elevationProfile && elevationProfile.length > 0) {
+      // Create a signature based on planned altitudes to detect changes
+      const profileSignature = elevationProfile
+        .filter((_, idx) => idx % Math.max(1, Math.floor(elevationProfile.length / 10)) === 0) // Sample ~10 points
+        .map(p => `${p.distance.toFixed(1)}:${(p.plannedAltitude ?? p.baseAltitude ?? 0).toFixed(1)}`)
+        .join('|');
+      
+      const lastSignature = (avgAGLCacheRef.current as any).__lastProfileSignature;
+      const hasPlanned = elevationProfile.some(p => p.plannedAltitude !== undefined);
+      const lastHadPlanned = (avgAGLCacheRef.current as any).__lastHadPlannedAltitudes;
+      
+      // Clear cache if:
+      // 1. Signature changed (profile data changed)
+      // 2. Planned altitudes just became available (was false, now true) - this is critical!
+      if (profileSignature !== lastSignature || (hasPlanned && !lastHadPlanned)) {
+        avgAGLCacheRef.current.clear();
+        (avgAGLCacheRef.current as any).__lastProfileSignature = profileSignature;
+        (avgAGLCacheRef.current as any).__lastHadPlannedAltitudes = hasPlanned;
+        console.debug(`[avgAGL] Cache invalidated: elevation profile changed (hasPlannedAltitudes=${hasPlanned}, signature changed=${profileSignature !== lastSignature}, plannedAltitudes just added=${hasPlanned && !lastHadPlanned})`);
+      }
+    } else if (elevationProfile && elevationProfile.length === 0) {
+      // Profile cleared
+      avgAGLCacheRef.current.clear();
+      (avgAGLCacheRef.current as any).__lastProfileSignature = undefined;
+      (avgAGLCacheRef.current as any).__lastHadPlannedAltitudes = false;
+      console.debug('[avgAGL] Cache invalidated: elevation profile cleared');
+    }
+  }, [elevationProfile]);
+
+  // Invalidate cache when entry height (nominalFlightHeight) changes
+  useEffect(() => {
+    avgAGLCacheRef.current.clear();
+    console.debug(`[avgAGL] Cache invalidated: entry height (nominalFlightHeight) changed to ${nominalFlightHeight}m`);
+  }, [nominalFlightHeight]);
+
+  // Invalidate cache when climb requests change (climb points added/removed/modified)
+  useEffect(() => {
+    const climbSignature = JSON.stringify(_climbRequests.map(c => ({ endDistance: c.endDistance, climbAmount: c.climbAmount })));
+    const lastClimbSignature = (avgAGLCacheRef.current as any).__lastClimbSignature;
+    if (climbSignature !== lastClimbSignature) {
+      avgAGLCacheRef.current.clear();
+      (avgAGLCacheRef.current as any).__lastClimbSignature = climbSignature;
+      console.debug(`[avgAGL] Cache invalidated: climb requests changed (count: ${_climbRequests.length})`);
+    }
+  }, [_climbRequests]);
 
   // Handle information mode - query elevation on mouse move
   useEffect(() => {
@@ -2423,6 +2753,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const currentEditingIndex =
         externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
       if (currentEditingIndex !== null) return;
+
+      // Only allow inserting points in the middle of a line if Shift key is pressed
+      if (!originalEvent || !originalEvent.shiftKey) return;
 
       if (flightPath.length < 2) return;
 
@@ -2857,28 +3190,39 @@ const MapPanel: React.FC<MapPanelProps> = ({
     });
     suggestedLinesRef.current = [];
 
+    // Don't render if toggle is off
+    if (!showNextLineSuggestions) return;
+
     if (flightPath.length < 2) return;
-
-    const safeOverlap = Math.max(0, Math.min(overlapPercentage, 99.9));
-    const overlapFraction = safeOverlap / 100;
-    const safeFov = Math.max(1, Math.min(fovDegrees, 179.9));
-    const fovRadians = (safeFov * Math.PI) / 180;
-    const spacingFactor = 1 - overlapFraction;
-
-    if (!(spacingFactor > 0) || !(fovRadians > 0)) return;
 
     for (let i = 0; i < flightPath.length - 1; i++) {
       const start = flightPath[i];
       const end = flightPath[i + 1];
-      const startHeight = start.height ?? nominalFlightHeight;
-      const endHeight = end.height ?? nominalFlightHeight;
-      const avgHeight = (startHeight + endHeight) / 2;
+      
+      // Compute line-specific avgAGL
+      const avgAGL = computeAvgAGLForSegment(start, end, i, i + 1, nominalFlightHeight);
+      
+      // If avgAGL is unavailable, fall back to average height (old behavior)
+      // This ensures suggestions still show even without DTM
+      const effectiveAGL = avgAGL !== null ? avgAGL : (() => {
+        const startHeight = start.height ?? nominalFlightHeight;
+        const endHeight = end.height ?? nominalFlightHeight;
+        const fallbackAGL = (startHeight + endHeight) / 2;
+        console.log(`[suggestions] Segment ${i}-${i + 1}: avgAGL is null, using fallback AGL=${fallbackAGL.toFixed(1)}m (startHeight=${startHeight}m, endHeight=${endHeight}m)`);
+        return fallbackAGL;
+      })();
 
-      // Calculate half-width based on user request (height * tan(fov/2))
-      const swathWidth = avgHeight * Math.tan(fovRadians / 2);
-      const spacing = swathWidth * spacingFactor;
+      console.log(`[suggestions] Segment ${i}-${i + 1}: effectiveAGL=${effectiveAGL.toFixed(1)}m (from ${avgAGL !== null ? 'avgAGL' : 'fallback'})`);
 
-      if (!Number.isFinite(spacing) || spacing <= 0) continue;
+      // Use shared spacing calculation function with line-specific avgAGL (or fallback)
+      const spacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
+      
+      if (spacing === null || spacing <= 0) {
+        console.warn(`[suggestions] Segment ${i}-${i + 1}: Invalid spacing=${spacing} (overlap=${overlapPercentage}%, fov=${fovDegrees}°, effectiveAGL=${effectiveAGL.toFixed(1)}m), skipping`);
+        continue;
+      }
+      
+      console.log(`[suggestions] Segment ${i}-${i + 1}: spacing=${spacing.toFixed(1)}m`);
 
       [spacing, -spacing].forEach((offset) => {
         const [parallelStart, parallelEnd] = calculateParallelLine(start, end, offset);
@@ -2889,9 +3233,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           ],
           {
             color: activeRouteColor,
-            weight: 2,
-            opacity: 0.25,
-            dashArray: '4 8',
+            weight: 3, // Increased from 2 for better visibility
+            opacity: 0.5, // Increased from 0.25 for better visibility
+            dashArray: '8 4', // More prominent dash pattern
             interactive: false
           }
         ).addTo(map.current!);
@@ -2905,7 +3249,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       });
       suggestedLinesRef.current = [];
     };
-  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight, activeRouteColor]);
+  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight, activeRouteColor, showNextLineSuggestions, computeAvgAGLForSegment]);
 
   // Render passive polylines for non-active routes
   useEffect(() => {
@@ -3119,6 +3463,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
       L.DomEvent.off(element, 'contextmenu', L.DomEvent.stopPropagation);
     };
   }, [displaySettingsOpen]);
+
+  // Prevent display settings button clicks from creating points in draw mode
+  useEffect(() => {
+    if (!displaySettingsButtonRef.current) return;
+
+    const element = displaySettingsButtonRef.current;
+
+    L.DomEvent.disableClickPropagation(element);
+    L.DomEvent.disableScrollPropagation(element);
+    L.DomEvent.on(element, 'mousedown', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'mouseup', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'mousemove', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchstart', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchend', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'touchmove', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'dblclick', L.DomEvent.stopPropagation);
+    L.DomEvent.on(element, 'contextmenu', L.DomEvent.stopPropagation);
+
+    return () => {
+      L.DomEvent.off(element, 'mousedown', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'mouseup', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'mousemove', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchstart', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchend', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'touchmove', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'dblclick', L.DomEvent.stopPropagation);
+      L.DomEvent.off(element, 'contextmenu', L.DomEvent.stopPropagation);
+    };
+  }, []);
 
   // Prevent basemap toggle clicks from creating points in draw mode
   useEffect(() => {
@@ -5523,6 +5896,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       </Tooltip>
                     </div>
                   </div>
+
+                  <div className="display-settings-row">
+                    <div className="display-settings-toggle-row">
+                      <span className="display-settings-label">הצג הצעות קווים הבאים</span>
+                      <button
+                        type="button"
+                        onClick={() => onShowNextLineSuggestionsChange(!showNextLineSuggestions)}
+                        className={`toggle-btn ${showNextLineSuggestions ? 'active' : ''}`}
+                        aria-pressed={showNextLineSuggestions}
+                        aria-label={showNextLineSuggestions ? 'הסתר הצעות קווים' : 'הצג הצעות קווים'}
+                      >
+                        <span className="toggle-btn-thumb" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
                 {/* DTM Section */}
@@ -5535,9 +5923,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       <span className="display-settings-label-secondary">DTM פעיל</span>
                       <span
                         className="display-settings-value"
-                      title={activeDtmName || ''}
+                        title={activeDtmName || ''}
                       >
-                      {dtmLoaded && activeDtmName ? activeDtmName : ''}
+                        {dtmLoaded && activeDtmName ? activeDtmName : ''}
                       </span>
                     </div>
                   </div>

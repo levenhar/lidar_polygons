@@ -226,12 +226,86 @@ function AppContent() {
     insertPoints(index, points);
   }, [insertPoints]);
   
+  // Calculate default entry height: (safetyHeight + outputHeight) / 2 + groundElevation
+  const calculateDefaultEntryHeight = React.useCallback(async (
+    point: Coordinate
+  ): Promise<number | null> => {
+    if (!dtmSource) {
+      return null; // Can't calculate without DTM
+    }
+
+    try {
+      const coordinates = [
+        [point.lng, point.lat],
+        [point.lng, point.lat] // Use same point for second coordinate
+      ];
+
+      const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
+      const clippedId = clippedIdMatch ? clippedIdMatch[1] : activeClippedId || undefined;
+
+      const response = await fetch('/api/elevation-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          coordinates,
+          dtmPath: dtmSource,
+          safetyRadiusMeters: 50,
+          resolutionRadiusMeters: 50,
+          ...(clippedId && { clippedId })
+        })
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = await response.json();
+      let groundElevation: number | null = null;
+
+      if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
+        groundElevation = data.profile[0].elevation;
+      } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
+        groundElevation = data.elevations[0];
+      } else if (data.elevation !== undefined) {
+        groundElevation = data.elevation;
+      }
+
+      if (groundElevation === null || isNaN(groundElevation)) {
+        return null;
+      }
+
+      // Calculate default: average of safety and output height + ground elevation
+      const avgHeight = (safetyHeight + resolutionHeight) / 2;
+      const calculatedHeight = avgHeight + groundElevation;
+      // Round to 1 decimal place
+      return Math.round(calculatedHeight * 10) / 10;
+    } catch (error) {
+      console.error('Failed to calculate default entry height:', error);
+      return null;
+    }
+  }, [dtmSource, activeClippedId, safetyHeight, resolutionHeight]);
+
+  // Update entry height when first point is added
+  React.useEffect(() => {
+    // Only update if flight path just became length 1 (first point added)
+    // and entry height is still at default (250)
+    if (flightPath.length === 1 && Math.abs(nominalFlightHeight - 250) < 0.1) {
+      const firstPoint = flightPath[0];
+      calculateDefaultEntryHeight(firstPoint).then((defaultHeight) => {
+        if (defaultHeight !== null && !isNaN(defaultHeight)) {
+          setNominalFlightHeight(defaultHeight);
+          console.log(`[ENTRY_HEIGHT] Auto-updated entry height to ${defaultHeight.toFixed(1)}m (calculated from first point)`);
+        }
+      });
+    }
+  }, [flightPath.length, nominalFlightHeight, calculateDefaultEntryHeight, setNominalFlightHeight, flightPath]);
+
   // Wrap addPoint and addPoints to mark them as insert operations
   const addPointWrapped = React.useCallback((point: Coordinate) => {
     isInsertOperationRef.current = true;
     addPoint(point);
   }, [addPoint]);
-  
+
   const addPointsWrapped = React.useCallback((points: Coordinate[]) => {
     isInsertOperationRef.current = true;
     addPoints(points);
@@ -1853,6 +1927,9 @@ function AppContent() {
         onSelectClimbPreset={handleSelectClimbPreset}
         climbConfig={climbConfig}
         setClimbConfig={setClimbConfig}
+        dtmSource={dtmSource}
+        flightPath={flightPath}
+        activeClippedId={activeClippedId}
       />
       <AnchorPointWarningModal
         isOpen={anchorWarningModal.isOpen}

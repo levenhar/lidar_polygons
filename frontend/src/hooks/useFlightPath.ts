@@ -596,6 +596,7 @@ export function useFlightPath(
       // Always add entry point (גובה כניסה) at the first point (number 1)
       // Entry height (nominalFlightHeight) is now ASL, so save it directly without adding ground elevation
       if (hasEntryPoint) {
+        const firstPoint = routesToExport[0].points[0];
         const absoluteAltitude = Math.round(nominalFlightHeight!);
         const entryPointName = `גובה כניסה - ${absoluteAltitude}`;
         kmlContent += `    <Placemark>

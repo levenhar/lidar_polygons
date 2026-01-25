@@ -957,7 +957,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const handleSelectSource = useCallback((source: DtmSourceType) => {
     setDtmSourceType(source);
     if (source === 'local') {
-      setDtmLoaderStep('local-picker');
+      // Directly trigger file picker dialog
+      if (localFileInputRef.current) {
+        localFileInputRef.current.click();
+      }
     } else if (source === 'server') {
       setDtmLoaderStep('server-area');
     }
@@ -1020,6 +1023,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     
+    // Switch to local-picker step to show progress/errors
+    setDtmLoaderStep('local-picker');
     setLocalFileError(null);
     
     const validation = validateLocalFile(file);
@@ -5693,6 +5698,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
               </button>
             </div>
 
+            {/* Hidden file input - always available for direct file picker */}
+            <input
+              ref={localFileInputRef}
+              type="file"
+              accept=".tif,.tiff"
+              onChange={handleLocalFileSelect}
+              id="dtm-local-upload"
+              style={{ display: 'none' }}
+              disabled={isLocalUploading}
+            />
+
             {/* Step: Source Choice */}
             {dtmLoaderStep === 'source-choice' && (
               <div className="dtm-loader-content">
@@ -5742,16 +5758,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 </button>
                 
                 <div className="dtm-local-picker">
-                  <input
-                    ref={localFileInputRef}
-                    type="file"
-                    accept=".tif,.tiff"
-                    onChange={handleLocalFileSelect}
-                    id="dtm-local-upload"
-                    style={{ display: 'none' }}
-                    disabled={isLocalUploading}
-                  />
-                  
                   {!isLocalUploading ? (
                     <>
                       <label

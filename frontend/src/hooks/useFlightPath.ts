@@ -3,7 +3,7 @@ import { Coordinate } from '../App';
 import { useUndoRedo, UndoRedoOptions } from './useUndoRedo';
 import { computeCumulativeDistances } from '../utils/constraints';
 import { ActionType } from '../contexts/GlobalUndoRedoContext';
-import { ensurePointId } from '../utils/climbAnchors';
+import { ensurePointId, ClimbRequest } from '../utils/climbAnchors';
 
 export interface GeoJSONFeature {
   type: 'Feature';
@@ -1327,6 +1327,59 @@ export function useFlightPath(
     [setState]
   );
 
+  // Import routes directly (for project restore)
+  const importRoutes = useCallback(
+    (routesToImport: FlightRoute[], climbRequestsByRouteToImport?: Record<string, { endDistance: number; climbAmount: number; anchorPointIdA?: string; anchorPointIdB?: string; segmentRatio?: number }[]>) => {
+      if (routesToImport.length === 0) return;
+      
+      setState(
+        (prevState) => {
+          // Find empty route to reuse, or append new routes
+          const emptyRouteIndex = prevState.routes.findIndex((r) => r.points.length === 0);
+          const nextRoutes = [...prevState.routes];
+          let nextActiveRouteId = routesToImport[0]?.id || prevState.activeRouteId;
+          const updatedClimbRequestsByRoute = climbRequestsByRouteToImport 
+            ? { ...prevState.climbRequestsByRoute, ...climbRequestsByRouteToImport }
+            : prevState.climbRequestsByRoute;
+
+          if (emptyRouteIndex !== -1 && routesToImport.length > 0) {
+            // Reuse empty route for first imported route
+            const existingEmpty = prevState.routes[emptyRouteIndex];
+            const firstImported = routesToImport[0];
+            nextRoutes[emptyRouteIndex] = {
+              ...existingEmpty,
+              id: firstImported.id,
+              name: firstImported.name || existingEmpty.name,
+              color: firstImported.color || existingEmpty.color,
+              visible: firstImported.visible !== undefined ? firstImported.visible : existingEmpty.visible,
+              points: firstImported.points,
+              nominalFlightHeight: firstImported.nominalFlightHeight
+            };
+            nextActiveRouteId = firstImported.id;
+
+            // Append additional routes
+            if (routesToImport.length > 1) {
+              nextRoutes.push(...routesToImport.slice(1));
+            }
+          } else {
+            // No empty route, replace all routes
+            nextRoutes.splice(0, nextRoutes.length, ...routesToImport);
+            nextActiveRouteId = routesToImport[0]?.id || '';
+          }
+
+          return {
+            ...prevState,
+            routes: nextRoutes,
+            activeRouteId: nextActiveRouteId,
+            climbRequestsByRoute: updatedClimbRequestsByRoute
+          };
+        },
+        true
+      );
+    },
+    [setState]
+  );
+
   return {
     routes: state.routes,
     activeRouteId: ensureActiveRoute(state.activeRouteId),
@@ -1351,6 +1404,7 @@ export function useFlightPath(
     hideNonActiveRoutes,
     exportKML,
     importKML,
+    importRoutes,
     setClimbRequestsByRoute,
     undo,
     redo,

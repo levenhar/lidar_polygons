@@ -4,13 +4,23 @@ import ElevationProfile from './components/ElevationProfile';
 import ExportSettingsModal from './components/ExportSettingsModal';
 import SettingsModal, { GearIcon } from './components/SettingsModal';
 import AnchorPointWarningModal from './components/AnchorPointWarningModal';
-import { useFlightPath } from './hooks/useFlightPath';
+import MissingLocalDTMModal from './components/MissingLocalDTMModal';
+import { useFlightPath, FlightRoute } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
 import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
 import climbPresetData from './config/climbPresets.json';
 import { GlobalUndoRedoProvider, useGlobalUndoRedo } from './contexts/GlobalUndoRedoContext';
 import { findClimbsAnchoredToPoint, ClimbRequest, getClimbPositionFromAnchors, findAnchorPointsForClimb } from './utils/climbAnchors';
 import { computeCumulativeDistances } from './utils/constraints';
+import { 
+  exportProject, 
+  readProjectFile, 
+  downloadProjectFile, 
+  PROJECT_FILE_EXTENSION,
+  LocalDtmDescriptor,
+  ProjectFileData,
+  ProjectValidationError
+} from './utils/projectSerializer';
 import './App.css';
 
 export interface Coordinate {
@@ -97,6 +107,15 @@ function App() {
   // @ts-ignore
   const [dtmInfo, setDtmInfo] = useState<DTMInfo | null>(null);
   const [activeClippedId, setActiveClippedId] = useState<string | null>(null);
+  // Track original DTM file/metadata for project save/load
+  const [localDtmFile, setLocalDtmFile] = useState<File | null>(null);
+  const [dtmSourceType, setDtmSourceType] = useState<'local' | 'server' | null>(null);
+  const [serverDtmId, setServerDtmId] = useState<string | null>(null);
+  const [serverDtmMetadata, setServerDtmMetadata] = useState<{ displayName?: string; sizeBytes?: number; modifiedAt?: string } | null>(null);
+  const [aoiGeometry, setAoiGeometry] = useState<{ type: 'bbox' | 'polygon' | 'kml'; bbox?: { minLon: number; minLat: number; maxLon: number; maxLat: number }; polygon?: [number, number][] } | null>(null);
+  // Project load state
+  const [missingLocalDtmModal, setMissingLocalDtmModal] = useState<{ isOpen: boolean; descriptor: LocalDtmDescriptor | null }>({ isOpen: false, descriptor: null });
+  const [isLoadingProject, setIsLoadingProject] = useState(false);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
   const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
@@ -109,6 +128,16 @@ function App() {
   const [hoverSource, setHoverSource] = useState<'map' | 'profile' | null>(null);
   const [showMetadata, setShowMetadata] = useState(true);
   const [showClimbLabels, setShowClimbLabels] = useState(true);
+  // DTM display settings (will be passed from MapPanel)
+  const [dtmDisplaySettings, setDtmDisplaySettings] = useState<{
+    palette: 'gray' | 'jet';
+    inverted: boolean;
+    opacity: number;
+  }>({
+    palette: 'gray',
+    inverted: false,
+    opacity: 0.1
+  });
 
   const [selectedClimbPresetId, setSelectedClimbPresetId] = useState<string>(CLIMB_PRESETS[0]?.id ?? 'custom');
   const [climbConfig, setClimbConfig] = useState<ClimbConfig>(presetToConfig(CLIMB_PRESETS[0]));
@@ -172,6 +201,7 @@ function App() {
     resetToSingleRoute,
     exportKML,
     importKML,
+    importRoutes,
     setClimbRequestsByRoute,
     // Local undo/redo are registered with globalUndoRedo and called through it
     undo: _undo,
@@ -884,7 +914,14 @@ function App() {
     setHoverSource(point ? 'profile' : null);
   }, []);
 
-  const handleDtmLoad = useCallback((source: string, info?: any, clippedId?: string) => {
+  const handleDtmLoad = useCallback((source: string, info?: any, clippedId?: string, options?: {
+    sourceType?: 'local' | 'server';
+    originalFile?: File;
+    serverId?: string;
+    serverMetadata?: { displayName?: string; sizeBytes?: number; modifiedAt?: string };
+    aoi?: { type: 'bbox' | 'polygon' | 'kml'; bbox?: { minLon: number; minLat: number; maxLon: number; maxLat: number }; polygon?: [number, number][] };
+  }) => {
+    const { sourceType, originalFile, serverId, serverMetadata, aoi } = options || {};
     // If loading a new DTM and we have an existing clippedId, delete the old one first
     if (activeClippedId && clippedId && activeClippedId !== clippedId) {
       deleteDtmOnServer(undefined, activeClippedId);
@@ -900,6 +937,24 @@ function App() {
         bounds: info.bounds,
         clippedId: clippedId || info.clippedId
       });
+    }
+    
+    // Track source type and metadata for project save/load
+    if (sourceType) {
+      setDtmSourceType(sourceType);
+      if (sourceType === 'local' && originalFile) {
+        setLocalDtmFile(originalFile);
+        setServerDtmId(null);
+        setServerDtmMetadata(null);
+      } else if (sourceType === 'server' && serverId) {
+        setServerDtmId(serverId);
+        setServerDtmMetadata(serverMetadata || null);
+        setLocalDtmFile(null);
+      }
+    }
+    
+    if (aoi) {
+      setAoiGeometry(aoi);
     }
   }, [activeClippedId, deleteDtmOnServer]);
 
@@ -1309,6 +1364,33 @@ function App() {
             </svg>
           </button>
           <button
+            onClick={handleSaveProject}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="שמור פרויקט"
+            title="שמור פרויקט"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17 21v-8H7v8" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M7 3v5h8" />
+            </svg>
+          </button>
+          <button
+            onClick={handleLoadProject}
+            disabled={isLoadingProject}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="טען פרויקט"
+            title="טען פרויקט"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17 8l-5-5-5 5" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 3v12" />
+            </svg>
+          </button>
+          <button
             onClick={() => setShowSettingsModal(true)}
             className="btn btn-secondary btn-icon settings-header-btn"
             type="button"
@@ -1346,6 +1428,8 @@ function App() {
           onResetToSingleRoute={resetToSingleRoute}
           onDtmLoad={handleDtmLoad}
           onDtmUnload={handleDtmUnload}
+          onDisplaySettingsChange={setDtmDisplaySettings}
+          initialDisplaySettings={dtmDisplaySettings}
           climbMarkers={climbMarkers}
           showClimbLabels={showClimbLabels}
           onShowClimbLabelsChange={setShowClimbLabels}
@@ -1525,6 +1609,17 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+      {missingLocalDtmModal.isOpen && missingLocalDtmModal.descriptor && (
+        <MissingLocalDTMModal
+          isOpen={missingLocalDtmModal.isOpen}
+          descriptor={missingLocalDtmModal.descriptor}
+          onFileSelected={handleMissingLocalDtmSelected}
+          onCancel={() => {
+            setMissingLocalDtmModal({ isOpen: false, descriptor: null });
+            (window as any).__pendingProjectRestore = undefined;
+          }}
+        />
       )}
     </div>
   );

@@ -243,7 +243,9 @@ type IconName =
   | 'checklist'
   | 'checklist-single'
   | 'pin'
-  | 'sliders';
+  | 'sliders'
+  | 'eye'
+  | 'eye-off';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
 
@@ -494,6 +496,20 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <line {...stroke} x1="17" y1="16" x2="23" y2="16" />
         </svg>
       );
+    case 'eye':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+          <circle {...stroke} cx="12" cy="12" r="3" />
+        </svg>
+      );
+    case 'eye-off':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+          <line {...stroke} x1="1" y1="1" x2="23" y2="23" />
+        </svg>
+      );
     default:
       return (
         <svg {...common}>
@@ -556,8 +572,16 @@ interface MapPanelProps {
   onShowAllRoutes: () => void;
   onHideNonActiveRoutes: () => void;
   onResetToSingleRoute: () => void;
-  onDtmLoad: (source: string, info?: any, clippedId?: string) => void;
+  onDtmLoad: (source: string, info?: any, clippedId?: string, options?: {
+    sourceType?: 'local' | 'server';
+    originalFile?: File;
+    serverId?: string;
+    serverMetadata?: { displayName?: string; sizeBytes?: number; modifiedAt?: string };
+    aoi?: { type: 'bbox' | 'polygon' | 'kml'; bbox?: { minLon: number; minLat: number; maxLon: number; maxLat: number }; polygon?: [number, number][] };
+  }) => void;
   onDtmUnload: () => void;
+  onDisplaySettingsChange?: (settings: { palette: 'gray' | 'jet'; inverted: boolean; opacity: number }) => void;
+  initialDisplaySettings?: { palette: 'gray' | 'jet'; inverted: boolean; opacity: number };
   nominalFlightHeight: number;
   overlapPercentage: number;
   fovDegrees: number;
@@ -599,6 +623,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onResetToSingleRoute,
   onDtmLoad,
   onDtmUnload,
+  onDisplaySettingsChange,
+  initialDisplaySettings,
   nominalFlightHeight,
   overlapPercentage,
   fovDegrees,
@@ -613,7 +639,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   hoverSource,
   showMetadata,
   onShowMetadataChange,
-  climbRequests = [],
+  climbRequests: _climbRequests = [],
   onExportClick,
   onImportKML,
   canExport
@@ -624,13 +650,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const tileLayerOptionsRef = useRef<TileLayerOptionsWithAgent | null>(null);
   const mapTokenRef = useRef<string | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+  const [showDrawModeNote, setShowDrawModeNote] = useState(false);
+  const [isFadingOut, setIsFadingOut] = useState(false);
+  const drawModeNoteTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [isParallelLineMode, setIsParallelLineMode] = useState(false);
   const [dtmLoaded, setDtmLoaded] = useState(false);
   const [dtmBounds, setDtmBounds] = useState<number[] | null>(null);
-  const [dtmOpacity, setDtmOpacity] = useState<number>(0.1); // Default 90% transparency (10% opacity)
-  const [dtmColorPalette, setDtmColorPalette] = useState<'gray' | 'jet'>('gray');
-  const [dtmColorInverted, setDtmColorInverted] = useState<boolean>(false);
+  const [dtmOpacity, setDtmOpacity] = useState<number>(initialDisplaySettings?.opacity ?? 0.1); // Default 90% transparency (10% opacity)
+  const [dtmColorPalette, setDtmColorPalette] = useState<'gray' | 'jet'>(initialDisplaySettings?.palette ?? 'gray');
+  const [dtmColorInverted, setDtmColorInverted] = useState<boolean>(initialDisplaySettings?.inverted ?? false);
   const [displaySettingsOpen, setDisplaySettingsOpen] = useState<boolean>(false);
+  
+  // Apply initial display settings when they change (e.g., from project load)
+  useEffect(() => {
+    if (initialDisplaySettings) {
+      setDtmOpacity(initialDisplaySettings.opacity);
+      setDtmColorPalette(initialDisplaySettings.palette);
+      setDtmColorInverted(initialDisplaySettings.inverted);
+    }
+  }, [initialDisplaySettings]);
   const displaySettingsButtonRef = useRef<HTMLButtonElement>(null);
   const displaySettingsPopoverRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<L.Marker[]>([]);
@@ -641,6 +679,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const segmentLengthLabelsRef = useRef<L.Marker[]>([]);
   const hoveredPointRef = useRef<number | null>(null);
   const justFinishedDraggingRef = useRef<boolean>(false);
+  const lastRightClickTimeRef = useRef<number>(0);
   const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const viewshedImageOverlayRef = useRef<L.ImageOverlay | null>(null);
@@ -758,7 +797,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const aoiFirstClickRef = useRef<L.LatLng | null>(null); // For two-click bbox
   const kmlInputRef = useRef<HTMLInputElement | null>(null);
   const [isClipping, setIsClipping] = useState(false);
-  const [activeClippedId, setActiveClippedId] = useState<string | null>(propClippedId || null);
+  const [_activeClippedId, setActiveClippedId] = useState<string | null>(propClippedId || null);
   
   // Legacy modal state (to be removed after migration)
   const [showDtmOptionsModal, setShowDtmOptionsModal] = useState(false);
@@ -1022,7 +1061,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
             if (data.success) {
               const uploadedFileName = data.path?.split('/').pop()?.split('\\').pop() || 'Uploaded DTM';
               setActiveDtmName(stripDtmTimestamp(uploadedFileName));
-              onDtmLoad(data.path, data);
+              onDtmLoad(data.path, data, undefined, {
+                sourceType: 'local',
+                originalFile: file
+              });
               handleCloseDtmLoader();
             } else {
               throw new Error(data.error || 'Upload failed');
@@ -1242,6 +1284,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       // Notify parent with the clipped DTM info
       // Use the dataUrl as the dtmSource (for raster loading)
+      const selectedDtm = dtmOptions.find(d => d.id === selectedDtmId);
       onDtmLoad(clipResult.dataUrl, {
         bounds: {
           minX: clipResult.raster.bbox[0],
@@ -1255,7 +1298,27 @@ const MapPanel: React.FC<MapPanelProps> = ({
         },
         clippedId: clipResult.clippedId,
         crs: clipResult.raster.crs
-      }, clipResult.clippedId);
+      }, clipResult.clippedId, {
+        sourceType: 'server',
+        serverId: selectedDtmId || '',
+        serverMetadata: selectedDtm ? {
+          displayName: selectedDtm.displayName,
+          sizeBytes: selectedDtm.sizeBytes,
+          modifiedAt: selectedDtm.modifiedAt
+        } : undefined,
+        aoi: aoiPolygon ? {
+          type: 'polygon',
+          polygon: aoiPolygon.coordinates
+        } : aoiBounds ? {
+          type: 'bbox',
+          bbox: {
+            minLon: aoiBounds.minLon,
+            minLat: aoiBounds.minLat,
+            maxLon: aoiBounds.maxLon,
+            maxLat: aoiBounds.maxLat
+          }
+        } : undefined
+      });
 
     } catch (error) {
       console.error('Error clipping DTM:', error);
@@ -2098,11 +2161,45 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
     };
 
+    const handleContextMenu = (e: L.LeafletMouseEvent) => {
+      const now = Date.now();
+      const timeSinceLastClick = now - lastRightClickTimeRef.current;
+      
+      // Check for double right-click (within 500ms)
+      if (timeSinceLastClick < 500 && timeSinceLastClick > 0) {
+        // Double right-click detected - enable draw mode
+        e.originalEvent.preventDefault();
+        if (!isDrawing && dtmLoaded) {
+          setIsDrawing(true);
+        }
+        lastRightClickTimeRef.current = 0; // Reset to prevent triple-click from triggering again
+        return;
+      }
+      
+      // Update last click time
+      lastRightClickTimeRef.current = now;
+      
+      // Reset timer after 1 second to prevent very old clicks from interfering
+      setTimeout(() => {
+        if (Date.now() - lastRightClickTimeRef.current > 1000) {
+          lastRightClickTimeRef.current = 0;
+        }
+      }, 1000);
+      
+      // Exit draw mode on single right-click
+      if (isDrawing) {
+        e.originalEvent.preventDefault();
+        setIsDrawing(false);
+      }
+    };
+
     map.current.on('click', handleClick);
+    map.current.on('contextmenu', handleContextMenu);
 
     return () => {
       if (map.current) {
         map.current.off('click', handleClick);
+        map.current.off('contextmenu', handleContextMenu);
       }
     };
   }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints, isAoiSelectionMode]);
@@ -2307,15 +2404,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }).addTo(map.current);
 
     // Allow inserting a new vertex by clicking on a line segment.
-    // Only works when Shift+LeftClick is pressed.
+    // Only works when draw mode is on.
     const handleClickableLineClick = (e: L.LeafletMouseEvent) => {
       const originalEvent = e.originalEvent as MouseEvent | undefined;
       if (originalEvent && originalEvent.button !== 0) return; // left-click only
       if (!dtmLoaded) return;
       if (isParallelLineMode) return;
       
-      // Only insert points when Shift key is pressed
-      if (!originalEvent || !originalEvent.shiftKey) return;
+      // Only insert points when draw mode is on
+      if (!isDrawing) return;
 
       // If editing a point via "click to move", don't insert
       const currentEditingIndex =
@@ -2536,6 +2633,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       el.addEventListener('mousedown', (e) => {
         // Only handle left mouse button (button 0)
         if (e.button !== 0) return;
+        // Only allow dragging when draw mode is on
+        if (!isDrawing) return;
 
         e.preventDefault();
         e.stopPropagation();
@@ -2933,6 +3032,38 @@ const MapPanel: React.FC<MapPanelProps> = ({
       setIsParallelLineMode(false);
     }
   }, [dtmLoaded, isDrawing, isParallelLineMode]);
+
+  // Show note when draw mode is turned on
+  useEffect(() => {
+    // Clear any existing timers
+    if (drawModeNoteTimerRef.current) {
+      clearTimeout(drawModeNoteTimerRef.current);
+      drawModeNoteTimerRef.current = null;
+    }
+
+    if (isDrawing) {
+      setIsFadingOut(false);
+      setShowDrawModeNote(true);
+      drawModeNoteTimerRef.current = setTimeout(() => {
+        setIsFadingOut(true);
+        drawModeNoteTimerRef.current = setTimeout(() => {
+          setShowDrawModeNote(false);
+          setIsFadingOut(false);
+          drawModeNoteTimerRef.current = null;
+        }, 300); // Fade out duration
+      }, 3000); // Show for 3 seconds before fading
+    } else {
+      setIsFadingOut(false);
+      setShowDrawModeNote(false);
+    }
+
+    return () => {
+      if (drawModeNoteTimerRef.current) {
+        clearTimeout(drawModeNoteTimerRef.current);
+        drawModeNoteTimerRef.current = null;
+      }
+    };
+  }, [isDrawing]);
 
   // Sync external edit point index with internal state
   useEffect(() => {
@@ -3674,6 +3805,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (dtmImageOverlayRef.current) {
       dtmImageOverlayRef.current.setOpacity(newOpacity);
     }
+    
+    // Notify parent of display settings change
+    onDisplaySettingsChange?.({
+      palette: dtmColorPalette,
+      inverted: dtmColorInverted,
+      opacity: newOpacity
+    });
   };
 
   const handleViewshedOpacityChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -5027,11 +5165,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
 
       </div>
-      <div className="map-instruction-banner">
-        <div className="map-instruction-text">
-          לחץ Shift על מנת להוסיף נקודה בין נקודות קיימות
-        </div>
-      </div>
       <div
         ref={mapContainer}
         className="map-container"
@@ -5040,6 +5173,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
+        {showDrawModeNote && (
+          <div className={`map-instruction-banner ${isFadingOut ? 'fade-out' : 'fade-in'}`}>
+            <div className="map-instruction-content">
+              <div className="map-instruction-text">
+                לחץ Shift על מנת להוסיף נקודה בין נקודות קיימות
+              </div>
+              <div className="map-instruction-icon">
+                <Icon name="info" />
+              </div>
+            </div>
+          </div>
+        )}
         {/* Routes Panel - positioned inside map */}
         <div className={`control-group routes-panel ${isRoutesPanelOpen ? 'open' : 'closed'}`}>
           <div className="routes-panel-header header-group">
@@ -5123,24 +5268,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       </span>
                     </div>
                     <div className="route-actions">
-                      <label
-                        className="route-visibility switch"
-                        title={
-                          route.id === activeRouteId
-                            ? 'המסלול הפעיל נשאר גלוי.'
-                            : route.visible
-                              ? 'הסתר מסלול'
-                              : 'הצג מסלול'
-                        }
-                      >
-                        <input
-                          type="checkbox"
-                          checked={route.visible}
+                      <Tooltip tooltip={
+                        route.id === activeRouteId
+                          ? 'המסלול הפעיל נשאר גלוי.'
+                          : route.visible
+                            ? 'הסתר מסלול'
+                            : 'הצג מסלול'
+                      }>
+                        <button
+                          type="button"
+                          className="btn btn-icon btn-compact route-visibility-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (route.id !== activeRouteId) {
+                              onToggleRouteVisibility(route.id);
+                            }
+                          }}
                           disabled={route.id === activeRouteId}
-                          onChange={() => onToggleRouteVisibility(route.id)}
-                        />
-                        <span className="switch-slider" aria-hidden />
-                      </label>
+                          aria-label={route.visible ? 'הסתר מסלול' : 'הצג מסלול'}
+                        >
+                          <Icon name={route.visible ? 'eye' : 'eye-off'} />
+                        </button>
+                      </Tooltip>
                       <Tooltip tooltip={routes.length <= 1 ? 'השאר לפחות מסלול אחד' : 'מחק מסלול'}>
                         <button
                           type="button"
@@ -5413,7 +5562,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       <button
                         type="button"
                         className={`display-settings-segment ${dtmColorPalette === 'gray' ? 'active' : ''}`}
-                        onClick={() => setDtmColorPalette('gray')}
+                        onClick={() => {
+                          setDtmColorPalette('gray');
+                          onDisplaySettingsChange?.({
+                            palette: 'gray',
+                            inverted: dtmColorInverted,
+                            opacity: dtmOpacity
+                          });
+                        }}
                         disabled={!dtmLoaded}
                         aria-pressed={dtmColorPalette === 'gray'}
                       >
@@ -5422,7 +5578,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       <button
                         type="button"
                         className={`display-settings-segment ${dtmColorPalette === 'jet' ? 'active' : ''}`}
-                        onClick={() => setDtmColorPalette('jet')}
+                        onClick={() => {
+                          setDtmColorPalette('jet');
+                          onDisplaySettingsChange?.({
+                            palette: 'jet',
+                            inverted: dtmColorInverted,
+                            opacity: dtmOpacity
+                          });
+                        }}
                         disabled={!dtmLoaded}
                         aria-pressed={dtmColorPalette === 'jet'}
                       >
@@ -5437,7 +5600,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       <span className="display-settings-label">היפוך צבעים</span>
                       <button
                         type="button"
-                        onClick={() => setDtmColorInverted(!dtmColorInverted)}
+                        onClick={() => {
+                          const newInverted = !dtmColorInverted;
+                          setDtmColorInverted(newInverted);
+                          onDisplaySettingsChange?.({
+                            palette: dtmColorPalette,
+                            inverted: newInverted,
+                            opacity: dtmOpacity
+                          });
+                        }}
                         className={`toggle-btn ${dtmColorInverted ? 'active' : ''}`}
                         disabled={!dtmLoaded}
                         aria-pressed={dtmColorInverted}

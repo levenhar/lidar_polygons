@@ -207,17 +207,23 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
 
     const safetyH = parseFloat(generalDraft.safetyHeight);
-    if (isNaN(safetyH) || safetyH < 0) {
-      newErrors.push({ field: 'safetyHeight', message: 'גובה בטיחות חייב להיות מספר חיובי' });
-    } else if (!isNaN(entryHeight) && safetyH < entryHeight) {
-      newErrors.push({ field: 'safetyHeight', message: 'גובה בטיחות חייב להיות גדול או שווה לגובה כניסה' });
+    const isSafetyHValid = !isNaN(safetyH) && safetyH >= 0;
+    const isEntryHValid = !isNaN(entryHeight) && entryHeight > 0;
+    
+    if (!isSafetyHValid) {
+      if (generalDraft.safetyHeight.trim() !== '') {
+        newErrors.push({ field: 'safetyHeight', message: 'גובה בטיחות חייב להיות מספר חיובי' });
+      }
+    } else if (isEntryHValid && isSafetyHValid && safetyH >= entryHeight) {
+      // Only show error if safety height is greater than or equal to entrance height
+      newErrors.push({ field: 'safetyHeight', message: 'גובה בטיחות חייב להיות קטן מגובה כניסה' });
     }
 
     const outputH = parseFloat(generalDraft.outputHeight);
     if (isNaN(outputH) || outputH < 0) {
       newErrors.push({ field: 'outputHeight', message: 'גובה תוצר חייב להיות מספר חיובי' });
-    } else if (!isNaN(safetyH) && outputH < safetyH) {
-      newErrors.push({ field: 'outputHeight', message: 'גובה תוצר חייב להיות גדול או שווה לגובה בטיחות' });
+    } else if (!isNaN(entryHeight) && outputH <= entryHeight) {
+      newErrors.push({ field: 'outputHeight', message: 'גובה תוצר חייב להיות גדול מגובה כניסה' });
     }
 
     // Mission validations
@@ -262,6 +268,13 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     setErrors(newErrors);
     return newErrors.length === 0;
   }, [generalDraft, missionDraft, climbDraft]);
+
+  // Validate when draft values change (for relationship validations)
+  useEffect(() => {
+    if (isOpen) {
+      validateAll();
+    }
+  }, [isOpen, generalDraft.nominalFlightHeight, generalDraft.safetyHeight, generalDraft.outputHeight, validateAll]);
 
   const getFieldError = (field: string): string | undefined => {
     return errors.find(e => e.field === field)?.message;
@@ -437,8 +450,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   value={generalDraft.nominalFlightHeight}
                   onChange={(e) => {
                     setGeneralDraft(prev => ({ ...prev, nominalFlightHeight: e.target.value }));
-                    // Trigger validation to check dependencies
-                    setTimeout(() => validateAll(), 0);
                   }}
                   className={`settings-modal__input ${getFieldError('nominalFlightHeight') ? 'error' : ''}`}
                   aria-describedby={getFieldError('nominalFlightHeight') ? 'entry-height-error' : undefined}
@@ -498,8 +509,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   value={generalDraft.safetyHeight}
                   onChange={(e) => {
                     setGeneralDraft(prev => ({ ...prev, safetyHeight: e.target.value }));
-                    // Trigger validation to check dependencies
-                    setTimeout(() => validateAll(), 0);
                   }}
                   className={`settings-modal__input ${getFieldError('safetyHeight') ? 'error' : ''}`}
                   aria-describedby={getFieldError('safetyHeight') ? 'safety-height-error' : undefined}

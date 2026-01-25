@@ -453,6 +453,20 @@
   opacity: 0.35;
 }
 
+.route-visibility-btn {
+  color: #64748b;
+}
+
+.route-visibility-btn:hover:not(:disabled) {
+  color: #0ea5e9;
+  background: #f0f9ff;
+}
+
+.route-visibility-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .btn-visibility-cycle {
   justify-content: center;
   font-weight: 600;
@@ -1498,17 +1512,71 @@
    ============================================================================ */
 
 .map-instruction-banner {
-  padding: 0.75rem 1.25rem;
-  background: #f8fafc;
-  border-bottom: 1px solid #e5e7eb;
+  position: absolute;
+  top: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  pointer-events: none;
+  padding: 1rem 1.25rem;
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  border-radius: 0.75rem;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
+  transition: opacity 0.3s ease-out, transform 0.3s ease-out;
+  min-width: 400px;
+  max-width: 600px;
+}
+
+.map-instruction-banner.fade-in {
+  animation: fadeInSlideDown 0.3s ease-out;
+}
+
+.map-instruction-banner.fade-out {
+  opacity: 0;
+  transform: translateX(-50%) translateY(-20px);
+}
+
+.map-instruction-content {
   display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+  align-items: center;
+  gap: 0.875rem;
 }
 
 .map-instruction-text {
-  font-size: 0.95rem;
-  color: #0f172a;
+  font-size: 0.9375rem;
+  color: #f1f5f9;
+  font-weight: 500;
+  line-height: 1.5;
+  flex: 1;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+.map-instruction-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  background: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+  flex-shrink: 0;
+}
+
+.map-instruction-icon svg {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+
+@keyframes fadeInSlideDown {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
 }
 
 /* ============================================================================

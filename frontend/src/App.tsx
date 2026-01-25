@@ -4,13 +4,23 @@ import ElevationProfile from './components/ElevationProfile';
 import ExportSettingsModal from './components/ExportSettingsModal';
 import SettingsModal, { GearIcon } from './components/SettingsModal';
 import AnchorPointWarningModal from './components/AnchorPointWarningModal';
-import { useFlightPath } from './hooks/useFlightPath';
+import MissingLocalDTMModal from './components/MissingLocalDTMModal';
+import { useFlightPath, FlightRoute } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
 import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
 import climbPresetData from './config/climbPresets.json';
 import { GlobalUndoRedoProvider, useGlobalUndoRedo } from './contexts/GlobalUndoRedoContext';
 import { findClimbsAnchoredToPoint, ClimbRequest, getClimbPositionFromAnchors, findAnchorPointsForClimb } from './utils/climbAnchors';
 import { computeCumulativeDistances } from './utils/constraints';
+import { 
+  exportProject, 
+  readProjectFile, 
+  downloadProjectFile, 
+  PROJECT_FILE_EXTENSION,
+  LocalDtmDescriptor,
+  ProjectFileData,
+  ProjectValidationError
+} from './utils/projectSerializer';
 import './App.css';
 
 export interface Coordinate {
@@ -77,6 +87,15 @@ function AppContent() {
   // @ts-ignore
   const [dtmInfo, setDtmInfo] = useState<DTMInfo | null>(null);
   const [activeClippedId, setActiveClippedId] = useState<string | null>(null);
+  // Track original DTM file/metadata for project save/load
+  const [localDtmFile, setLocalDtmFile] = useState<File | null>(null);
+  const [dtmSourceType, setDtmSourceType] = useState<'local' | 'server' | null>(null);
+  const [serverDtmId, setServerDtmId] = useState<string | null>(null);
+  const [serverDtmMetadata, setServerDtmMetadata] = useState<{ displayName?: string; sizeBytes?: number; modifiedAt?: string } | null>(null);
+  const [aoiGeometry, setAoiGeometry] = useState<{ type: 'bbox' | 'polygon' | 'kml'; bbox?: { minLon: number; minLat: number; maxLon: number; maxLat: number }; polygon?: [number, number][] } | null>(null);
+  // Project load state
+  const [missingLocalDtmModal, setMissingLocalDtmModal] = useState<{ isOpen: boolean; descriptor: LocalDtmDescriptor | null }>({ isOpen: false, descriptor: null });
+  const [isLoadingProject, setIsLoadingProject] = useState(false);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
   const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
@@ -89,6 +108,16 @@ function AppContent() {
   const [hoverSource, setHoverSource] = useState<'map' | 'profile' | null>(null);
   const [showMetadata, setShowMetadata] = useState(true);
   const [showClimbLabels, setShowClimbLabels] = useState(true);
+  // DTM display settings (will be passed from MapPanel)
+  const [dtmDisplaySettings, setDtmDisplaySettings] = useState<{
+    palette: 'gray' | 'jet';
+    inverted: boolean;
+    opacity: number;
+  }>({
+    palette: 'gray',
+    inverted: false,
+    opacity: 0.1
+  });
 
   const [selectedClimbPresetId, setSelectedClimbPresetId] = useState<string>(CLIMB_PRESETS[0]?.id ?? 'custom');
   const [climbConfig, setClimbConfig] = useState<ClimbConfig>(presetToConfig(CLIMB_PRESETS[0]));
@@ -152,6 +181,7 @@ function AppContent() {
     resetToSingleRoute,
     exportKML,
     importKML,
+    importRoutes,
     setClimbRequestsByRoute,
     // Local undo/redo are registered with globalUndoRedo and called through it
     undo: _undo,
@@ -858,7 +888,14 @@ function AppContent() {
     setHoverSource(point ? 'profile' : null);
   }, []);
 
-  const handleDtmLoad = useCallback((source: string, info?: any, clippedId?: string) => {
+  const handleDtmLoad = useCallback((source: string, info?: any, clippedId?: string, options?: {
+    sourceType?: 'local' | 'server';
+    originalFile?: File;
+    serverId?: string;
+    serverMetadata?: { displayName?: string; sizeBytes?: number; modifiedAt?: string };
+    aoi?: { type: 'bbox' | 'polygon' | 'kml'; bbox?: { minLon: number; minLat: number; maxLon: number; maxLat: number }; polygon?: [number, number][] };
+  }) => {
+    const { sourceType, originalFile, serverId, serverMetadata, aoi } = options || {};
     // If loading a new DTM and we have an existing clippedId, delete the old one first
     if (activeClippedId && clippedId && activeClippedId !== clippedId) {
       deleteDtmOnServer(undefined, activeClippedId);
@@ -874,6 +911,24 @@ function AppContent() {
         bounds: info.bounds,
         clippedId: clippedId || info.clippedId
       });
+    }
+    
+    // Track source type and metadata for project save/load
+    if (sourceType) {
+      setDtmSourceType(sourceType);
+      if (sourceType === 'local' && originalFile) {
+        setLocalDtmFile(originalFile);
+        setServerDtmId(null);
+        setServerDtmMetadata(null);
+      } else if (sourceType === 'server' && serverId) {
+        setServerDtmId(serverId);
+        setServerDtmMetadata(serverMetadata || null);
+        setLocalDtmFile(null);
+      }
+    }
+    
+    if (aoi) {
+      setAoiGeometry(aoi);
     }
   }, [activeClippedId, deleteDtmOnServer]);
 
@@ -1209,6 +1264,270 @@ function AppContent() {
     }
   }, []);
 
+  // Save Project handler
+  const handleSaveProject = useCallback(() => {
+    try {
+      const projectData = exportProject({
+        dtmSource,
+        dtmInfo,
+        activeClippedId,
+        dtmSourceType,
+        localDtmFile,
+        serverDtmId,
+        serverDtmMetadata,
+        aoiGeometry: aoiGeometry || undefined,
+        routes,
+        activeRouteId,
+        climbRequestsByRoute,
+        general: {
+          nominalFlightHeight,
+          safetyRadius: safetySearchRadius,
+          safetyHeight,
+          outputHeight: resolutionHeight
+        },
+        mission: {
+          overlapPercentage,
+          fovDegrees
+        },
+        ascendDescend: {
+          selectedPresetId: selectedClimbPresetId,
+          climbConfig
+        },
+        display: {
+          dtmPalette: dtmDisplaySettings.palette,
+          dtmInverted: dtmDisplaySettings.inverted,
+          dtmOpacity: dtmDisplaySettings.opacity,
+          showMetadata,
+          showClimbLabels
+        }
+      });
+      
+      const filename = `project_${new Date().toISOString().split('T')[0]}${PROJECT_FILE_EXTENSION}`;
+      downloadProjectFile(projectData, filename);
+    } catch (error) {
+      console.error('Failed to save project:', error);
+      alert(`שגיאה בשמירת הפרויקט: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
+    }
+  }, [
+    dtmSource, dtmInfo, activeClippedId, dtmSourceType, localDtmFile, serverDtmId, serverDtmMetadata, aoiGeometry,
+    routes, activeRouteId, climbRequestsByRoute,
+    nominalFlightHeight, safetySearchRadius, safetyHeight, resolutionHeight,
+    overlapPercentage, fovDegrees,
+    selectedClimbPresetId, climbConfig,
+    showMetadata, showClimbLabels,
+    dtmDisplaySettings
+  ]);
+
+  // Restore project routes and climb points
+  const restoreProjectRoutes = useCallback((projectData: ProjectFileData) => {
+    // Convert project routes to FlightRoute format
+    const restoredRoutes: FlightRoute[] = projectData.routes.map((routeData) => ({
+      id: routeData.id,
+      name: routeData.name,
+      color: routeData.color,
+      visible: routeData.visible,
+      points: routeData.points.map(p => ({
+        lng: p.lng,
+        lat: p.lat,
+        height: p.height,
+        id: p.id
+      })),
+      nominalFlightHeight: routeData.nominalFlightHeight
+    }));
+    
+    // Use importRoutes to restore all routes at once
+    importRoutes(restoredRoutes, projectData.climbRequestsByRoute);
+  }, [importRoutes]);
+
+  // Load Project handler
+  const handleLoadProject = useCallback(async () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = PROJECT_FILE_EXTENSION;
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+
+      setIsLoadingProject(true);
+      try {
+        const projectData = await readProjectFile(file);
+        
+        // Step 1: Restore settings (but don't trigger heavy computations yet)
+        setNominalFlightHeight(projectData.general.nominalFlightHeight);
+        setSafetySearchRadius(projectData.general.safetyRadius);
+        setSafetyHeight(projectData.general.safetyHeight);
+        setResolutionHeight(projectData.general.outputHeight);
+        setOverlapPercentage(projectData.mission.overlapPercentage);
+        setFovDegrees(projectData.mission.fovDegrees);
+        setSelectedClimbPresetId(projectData.ascendDescend.selectedPresetId);
+        setClimbConfig(projectData.ascendDescend.climbConfig);
+        setShowMetadata(projectData.display.showMetadata ?? true);
+        setShowClimbLabels(projectData.display.showClimbLabels ?? true);
+        
+        // Step 2: Restore DTM
+        if (projectData.dtm) {
+          if (projectData.dtm.sourceType === 'local') {
+            // Local DTM - need to prompt user to select file
+            setMissingLocalDtmModal({
+              isOpen: true,
+              descriptor: projectData.dtm
+            });
+            // Store project data for later restore after DTM is selected
+            (window as any).__pendingProjectRestore = projectData;
+            setIsLoadingProject(false);
+            return;
+          } else if (projectData.dtm.sourceType === 'server') {
+            // Server DTM - re-fetch from server
+            try {
+              // If it was a clipped DTM, we need to re-clip it
+              if (projectData.dtm.clippedId) {
+                // Try to use the existing clipped DTM
+                handleDtmLoad(
+                  `/api/dtm/clipped/${projectData.dtm.clippedId}/data`,
+                  { clippedId: projectData.dtm.clippedId },
+                  projectData.dtm.clippedId,
+                  {
+                    sourceType: 'server',
+                    serverId: projectData.dtm.dtmServerId,
+                    serverMetadata: {
+                      displayName: projectData.dtm.displayName,
+                      sizeBytes: projectData.dtm.sizeBytes,
+                      modifiedAt: projectData.dtm.modifiedAt
+                    },
+                    aoi: projectData.dtm.aoi ? {
+                      type: projectData.dtm.aoi.type,
+                      bbox: projectData.dtm.aoi.bbox ? {
+                        minLon: projectData.dtm.aoi.bbox[0],
+                        minLat: projectData.dtm.aoi.bbox[1],
+                        maxLon: projectData.dtm.aoi.bbox[2],
+                        maxLat: projectData.dtm.aoi.bbox[3]
+                      } : undefined,
+                      polygon: projectData.dtm.aoi.polygon
+                    } : undefined
+                  }
+                );
+              } else {
+                // Regular server DTM - need to re-clip if AOI was used
+                if (projectData.dtm.aoi) {
+                  // Re-clip the DTM
+                  // This will be handled by MapPanel's DTM loading flow
+                  setServerDtmId(projectData.dtm.dtmServerId);
+                  setServerDtmMetadata({
+                    displayName: projectData.dtm.displayName,
+                    sizeBytes: projectData.dtm.sizeBytes,
+                    modifiedAt: projectData.dtm.modifiedAt
+                  });
+                  setAoiGeometry({
+                    type: projectData.dtm.aoi.type,
+                    bbox: projectData.dtm.aoi.bbox ? {
+                      minLon: projectData.dtm.aoi.bbox[0],
+                      minLat: projectData.dtm.aoi.bbox[1],
+                      maxLon: projectData.dtm.aoi.bbox[2],
+                      maxLat: projectData.dtm.aoi.bbox[3]
+                    } : undefined,
+                    polygon: projectData.dtm.aoi.polygon
+                  });
+                  // Store project data for later restore after DTM is loaded
+                  (window as any).__pendingProjectRestore = projectData;
+                  setIsLoadingProject(false);
+                  alert('בחר DTM מהשרת ואזור עבודה כדי להמשיך את שחזור הפרויקט.');
+                  return;
+                } else {
+                  // No AOI, just load the DTM directly
+                  handleDtmLoad(
+                    `/api/dtm/${projectData.dtm.dtmServerId}/data`,
+                    {},
+                    undefined,
+                    {
+                      sourceType: 'server',
+                      serverId: projectData.dtm.dtmServerId,
+                      serverMetadata: {
+                        displayName: projectData.dtm.displayName,
+                        sizeBytes: projectData.dtm.sizeBytes,
+                        modifiedAt: projectData.dtm.modifiedAt
+                      }
+                    }
+                  );
+                }
+              }
+            } catch (error) {
+              console.error('Failed to load server DTM:', error);
+              alert(`שגיאה בטעינת DTM מהשרת: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}\n\nהאם ברצונך להמשיך ללא DTM?`);
+            }
+          }
+        }
+        
+        // Step 3: Restore routes and points (after DTM is loaded or skipped)
+        // This will be done after DTM loading completes
+        if (!projectData.dtm || projectData.dtm.sourceType === 'server') {
+          // Restore routes immediately if no DTM or server DTM loaded
+          restoreProjectRoutes(projectData);
+        } else {
+          // For local DTM, routes will be restored after file is selected
+          (window as any).__pendingProjectRestore = projectData;
+        }
+        
+        setIsLoadingProject(false);
+      } catch (error) {
+        console.error('Failed to load project:', error);
+        setIsLoadingProject(false);
+        if (error instanceof ProjectValidationError) {
+          alert(`שגיאה בקובץ הפרויקט: ${error.message}`);
+        } else {
+          alert(`שגיאה בטעינת הפרויקט: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
+        }
+      }
+    };
+    input.click();
+  }, [setNominalFlightHeight, setSafetySearchRadius, setSafetyHeight, setResolutionHeight, setOverlapPercentage, setFovDegrees, setSelectedClimbPresetId, setClimbConfig, setShowMetadata, setShowClimbLabels, handleDtmLoad, setServerDtmId, setServerDtmMetadata, setAoiGeometry, restoreProjectRoutes]);
+
+  // Handle missing local DTM file selection
+  const handleMissingLocalDtmSelected = useCallback(async (file: File) => {
+    const pendingProject = (window as any).__pendingProjectRestore as ProjectFileData | undefined;
+    if (!pendingProject) {
+      alert('שגיאה: נתוני הפרויקט לא נמצאו');
+      setMissingLocalDtmModal({ isOpen: false, descriptor: null });
+      return;
+    }
+
+    try {
+      // Upload the local DTM file
+      const formData = new FormData();
+      formData.append('dtm', file);
+      
+      const response = await fetch('/api/upload-dtm', {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Failed to upload DTM: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      if (!data.success) {
+        throw new Error(data.error || 'Upload failed');
+      }
+      
+      // Load the DTM
+      handleDtmLoad(data.path, data, undefined, {
+        sourceType: 'local',
+        originalFile: file
+      });
+      
+      // Restore routes after DTM is loaded
+      setTimeout(() => {
+        restoreProjectRoutes(pendingProject);
+        (window as any).__pendingProjectRestore = undefined;
+      }, 500);
+      
+      setMissingLocalDtmModal({ isOpen: false, descriptor: null });
+    } catch (error) {
+      console.error('Failed to load local DTM:', error);
+      alert(`שגיאה בטעינת קובץ DTM: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
+    }
+  }, [handleDtmLoad, restoreProjectRoutes]);
+
   // Keyboard shortcuts for undo/redo are now handled globally by GlobalUndoRedoContext
   // which properly excludes text inputs and uses the unified action history
 
@@ -1249,6 +1568,33 @@ function AppContent() {
             </svg>
           </button>
           <button
+            onClick={handleSaveProject}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="שמור פרויקט"
+            title="שמור פרויקט"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17 21v-8H7v8" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M7 3v5h8" />
+            </svg>
+          </button>
+          <button
+            onClick={handleLoadProject}
+            disabled={isLoadingProject}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="טען פרויקט"
+            title="טען פרויקט"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17 8l-5-5-5 5" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 3v12" />
+            </svg>
+          </button>
+          <button
             onClick={() => setShowSettingsModal(true)}
             className="btn btn-secondary btn-icon settings-header-btn"
             type="button"
@@ -1286,6 +1632,8 @@ function AppContent() {
           onResetToSingleRoute={resetToSingleRoute}
           onDtmLoad={handleDtmLoad}
           onDtmUnload={handleDtmUnload}
+          onDisplaySettingsChange={setDtmDisplaySettings}
+          initialDisplaySettings={dtmDisplaySettings}
           climbMarkers={climbMarkers}
           showClimbLabels={showClimbLabels}
           onShowClimbLabelsChange={setShowClimbLabels}
@@ -1465,6 +1813,17 @@ function AppContent() {
             </div>
           </div>
         </div>
+      )}
+      {missingLocalDtmModal.isOpen && missingLocalDtmModal.descriptor && (
+        <MissingLocalDTMModal
+          isOpen={missingLocalDtmModal.isOpen}
+          descriptor={missingLocalDtmModal.descriptor}
+          onFileSelected={handleMissingLocalDtmSelected}
+          onCancel={() => {
+            setMissingLocalDtmModal({ isOpen: false, descriptor: null });
+            (window as any).__pendingProjectRestore = undefined;
+          }}
+        />
       )}
     </div>
   );

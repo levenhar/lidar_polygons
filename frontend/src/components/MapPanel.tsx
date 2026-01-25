@@ -5910,21 +5910,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
                           <Icon name="tag" />
                         </button>
                       </Tooltip>
-                    </div>
-                  </div>
-
-                  <div className="display-settings-row">
-                    <div className="display-settings-toggle-row">
-                      <span className="display-settings-label">הצג הצעות קווים הבאים</span>
-                      <button
-                        type="button"
-                        onClick={() => onShowNextLineSuggestionsChange(!showNextLineSuggestions)}
-                        className={`toggle-btn ${showNextLineSuggestions ? 'active' : ''}`}
-                        aria-pressed={showNextLineSuggestions}
-                        aria-label={showNextLineSuggestions ? 'הסתר הצעות קווים' : 'הצג הצעות קווים'}
-                      >
-                        <span className="toggle-btn-thumb" />
-                      </button>
+                      <Tooltip tooltip={showNextLineSuggestions ? 'הסתר הצעות לגים עוקבים' : 'הצג הצעות לגים עוקבים'}>
+                        <button
+                          type="button"
+                          onClick={() => onShowNextLineSuggestionsChange(!showNextLineSuggestions)}
+                          className={`display-settings-icon-toggle ${showNextLineSuggestions ? 'active' : ''}`}
+                          aria-pressed={showNextLineSuggestions}
+                          aria-label={showNextLineSuggestions ? 'הסתר הצעות קווים' : 'הצג הצעות קווים'}
+                        >
+                          <Icon name={showNextLineSuggestions ? 'eye' : 'eye-off'} />
+                        </button>
+                      </Tooltip>
                     </div>
                   </div>
                 </div>

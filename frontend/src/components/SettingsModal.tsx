@@ -209,11 +209,15 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const safetyH = parseFloat(generalDraft.safetyHeight);
     if (isNaN(safetyH) || safetyH < 0) {
       newErrors.push({ field: 'safetyHeight', message: 'גובה בטיחות חייב להיות מספר חיובי' });
+    } else if (!isNaN(entryHeight) && safetyH < entryHeight) {
+      newErrors.push({ field: 'safetyHeight', message: 'גובה בטיחות חייב להיות גדול או שווה לגובה כניסה' });
     }
 
     const outputH = parseFloat(generalDraft.outputHeight);
     if (isNaN(outputH) || outputH < 0) {
       newErrors.push({ field: 'outputHeight', message: 'גובה תוצר חייב להיות מספר חיובי' });
+    } else if (!isNaN(safetyH) && outputH < safetyH) {
+      newErrors.push({ field: 'outputHeight', message: 'גובה תוצר חייב להיות גדול או שווה לגובה בטיחות' });
     }
 
     // Mission validations
@@ -425,9 +429,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   id="entry-height"
                   type="number"
                   min="0"
-                  step="10"
+                  max="10000"
+                  step="0.1"
+                  required
+                  inputMode="decimal"
+                  aria-required="true"
                   value={generalDraft.nominalFlightHeight}
-                  onChange={(e) => setGeneralDraft(prev => ({ ...prev, nominalFlightHeight: e.target.value }))}
+                  onChange={(e) => {
+                    setGeneralDraft(prev => ({ ...prev, nominalFlightHeight: e.target.value }));
+                    // Trigger validation to check dependencies
+                    setTimeout(() => validateAll(), 0);
+                  }}
                   className={`settings-modal__input ${getFieldError('nominalFlightHeight') ? 'error' : ''}`}
                   aria-describedby={getFieldError('nominalFlightHeight') ? 'entry-height-error' : undefined}
                 />
@@ -448,9 +460,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   id="safety-radius"
                   type="number"
                   min="1"
-                  step="5"
+                  max="1000"
+                  step="1"
+                  required
+                  inputMode="numeric"
+                  aria-required="true"
                   value={generalDraft.safetyRadius}
-                  onChange={(e) => setGeneralDraft(prev => ({ ...prev, safetyRadius: e.target.value }))}
+                  onChange={(e) => {
+                    setGeneralDraft(prev => ({ ...prev, safetyRadius: e.target.value }));
+                    setTimeout(() => validateAll(), 0);
+                  }}
                   className={`settings-modal__input ${getFieldError('safetyRadius') ? 'error' : ''}`}
                   aria-describedby={getFieldError('safetyRadius') ? 'safety-radius-error' : undefined}
                 />
@@ -471,9 +490,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   id="safety-height"
                   type="number"
                   min="0"
-                  step="10"
+                  max="1000"
+                  step="0.1"
+                  required
+                  inputMode="decimal"
+                  aria-required="true"
                   value={generalDraft.safetyHeight}
-                  onChange={(e) => setGeneralDraft(prev => ({ ...prev, safetyHeight: e.target.value }))}
+                  onChange={(e) => {
+                    setGeneralDraft(prev => ({ ...prev, safetyHeight: e.target.value }));
+                    // Trigger validation to check dependencies
+                    setTimeout(() => validateAll(), 0);
+                  }}
                   className={`settings-modal__input ${getFieldError('safetyHeight') ? 'error' : ''}`}
                   aria-describedby={getFieldError('safetyHeight') ? 'safety-height-error' : undefined}
                 />
@@ -494,9 +521,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   id="output-height"
                   type="number"
                   min="0"
-                  step="10"
+                  max="10000"
+                  step="0.1"
+                  required
+                  inputMode="decimal"
+                  aria-required="true"
                   value={generalDraft.outputHeight}
-                  onChange={(e) => setGeneralDraft(prev => ({ ...prev, outputHeight: e.target.value }))}
+                  onChange={(e) => {
+                    setGeneralDraft(prev => ({ ...prev, outputHeight: e.target.value }));
+                    // Trigger validation to check dependencies
+                    setTimeout(() => validateAll(), 0);
+                  }}
                   className={`settings-modal__input ${getFieldError('outputHeight') ? 'error' : ''}`}
                   aria-describedby={getFieldError('outputHeight') ? 'output-height-error' : undefined}
                 />
@@ -531,8 +566,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     min="0"
                     max="100"
                     step="1"
+                    required
+                    inputMode="numeric"
+                    aria-required="true"
                     value={missionDraft.overlapPercentage}
-                    onChange={(e) => setMissionDraft(prev => ({ ...prev, overlapPercentage: e.target.value }))}
+                    onChange={(e) => {
+                      setMissionDraft(prev => ({ ...prev, overlapPercentage: e.target.value }));
+                      setTimeout(() => validateAll(), 0);
+                    }}
                     className={`settings-modal__input ${getFieldError('overlapPercentage') ? 'error' : ''}`}
                     aria-describedby={getFieldError('overlapPercentage') ? 'overlap-error' : undefined}
                   />
@@ -558,8 +599,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     min="1"
                     max="179"
                     step="1"
+                    required
+                    inputMode="numeric"
+                    aria-required="true"
                     value={missionDraft.fovDegrees}
-                    onChange={(e) => setMissionDraft(prev => ({ ...prev, fovDegrees: e.target.value }))}
+                    onChange={(e) => {
+                      setMissionDraft(prev => ({ ...prev, fovDegrees: e.target.value }));
+                      setTimeout(() => validateAll(), 0);
+                    }}
                     className={`settings-modal__input ${getFieldError('fovDegrees') ? 'error' : ''}`}
                     aria-describedby={getFieldError('fovDegrees') ? 'fov-error' : undefined}
                   />
@@ -637,8 +684,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   <input
                     id="climb-ratio"
                     type="number"
-                    step="0.1"
+                    step="0.01"
                     min="0.1"
+                    max="100"
+                    required
+                    inputMode="decimal"
+                    aria-required="true"
                     value={climbDraft.climbRatio}
                     onChange={(e) => {
                       markCustomPreset();
@@ -647,6 +698,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         climbRatio: e.target.value,
                         descentRatio: prev.linkRatios ? e.target.value : prev.descentRatio
                       }));
+                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('climbRatio') ? 'error' : ''}`}
                   />
@@ -665,12 +717,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   <input
                     id="descent-ratio"
                     type="number"
-                    step="0.1"
+                    step="0.01"
                     min="0.1"
+                    max="100"
+                    required
+                    inputMode="decimal"
+                    aria-required="true"
                     value={climbDraft.descentRatio}
                     onChange={(e) => {
                       markCustomPreset();
                       setClimbDraft(prev => ({ ...prev, descentRatio: e.target.value }));
+                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('descentRatio') ? 'error' : ''}`}
                     disabled={climbDraft.linkRatios}
@@ -691,12 +748,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 <input
                   id="vertex-proximity"
                   type="number"
-                  step="1"
+                  step="0.1"
                   min="0"
+                  max="1000"
+                  required
+                  inputMode="decimal"
+                  aria-required="true"
                   value={climbDraft.vertexProximityMeters}
                   onChange={(e) => {
                     markCustomPreset();
                     setClimbDraft(prev => ({ ...prev, vertexProximityMeters: e.target.value }));
+                    setTimeout(() => validateAll(), 0);
                   }}
                   className={`settings-modal__input ${getFieldError('vertexProximityMeters') ? 'error' : ''}`}
                 />
@@ -717,11 +779,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   <input
                     id="min-climb"
                     type="number"
-                    step="1"
+                    step="0.1"
+                    min="0"
+                    max="1000"
+                    required
+                    inputMode="decimal"
+                    aria-required="true"
                     value={climbDraft.minClimb}
                     onChange={(e) => {
                       markCustomPreset();
                       setClimbDraft(prev => ({ ...prev, minClimb: e.target.value }));
+                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('minClimb') ? 'error' : ''}`}
                   />
@@ -740,11 +808,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   <input
                     id="max-climb"
                     type="number"
-                    step="1"
+                    step="0.1"
+                    min="0.1"
+                    max="1000"
+                    required
+                    inputMode="decimal"
+                    aria-required="true"
                     value={climbDraft.maxClimb}
                     onChange={(e) => {
                       markCustomPreset();
                       setClimbDraft(prev => ({ ...prev, maxClimb: e.target.value }));
+                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('maxClimb') ? 'error' : ''}`}
                   />

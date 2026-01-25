@@ -324,8 +324,15 @@ const storage = multer.diskStorage({
   }
 });
 
+// File size limits
+const MAX_DTM_SIZE = 2 * 1024 * 1024 * 1024; // 2GB
+const MAX_KML_SIZE = 10 * 1024 * 1024; // 10MB
+
 const upload = multer({
   storage,
+  limits: {
+    fileSize: MAX_DTM_SIZE
+  },
   fileFilter: (req, file, cb) => {
     // Accept GeoTIFF files
     if (file.mimetype === 'image/tiff' ||
@@ -448,6 +455,19 @@ const proxyToPython = async (endpoint, options = {}) => {
 // Proxy the raw multipart request to Python
 app.post('/api/upload-dtm', async (req, res) => {
   try {
+    // Check Content-Length header for file size validation
+    const contentLength = req.headers['content-length'];
+    if (contentLength) {
+      const fileSize = parseInt(contentLength, 10);
+      if (fileSize > MAX_DTM_SIZE) {
+        return res.status(400).json({
+          error: `File size exceeds maximum allowed size of ${MAX_DTM_SIZE / (1024 * 1024 * 1024)}GB`,
+          maxSize: MAX_DTM_SIZE,
+          receivedSize: fileSize
+        });
+      }
+    }
+
     console.log('Proxying DTM upload to Python backend...');
 
     // We forward the request as a stream to the Python backend

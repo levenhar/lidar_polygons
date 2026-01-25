@@ -114,6 +114,9 @@ function App() {
   const [climbConfig, setClimbConfig] = useState<ClimbConfig>(presetToConfig(CLIMB_PRESETS[0]));
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
+  const [flightHeightModal, setFlightHeightModal] = useState<{ isOpen: boolean; pointIndex: number; currentHeight: number } | null>(null);
+  const [flightHeightInput, setFlightHeightInput] = useState<string>('');
+  const [flightHeightError, setFlightHeightError] = useState<string | null>(null);
   
   // Queue system for height profile edits
   type EditOperation = 
@@ -1087,18 +1090,32 @@ function App() {
     if (pointIndex < 0 || pointIndex >= flightPath.length) return;
     const currentPoint = flightPath[pointIndex];
     const currentHeight = currentPoint.height ?? nominalFlightHeight;
-    const heightInput = prompt(`הזן גובה טיסה (AGL במטרים) עבור נקודה ${pointIndex + 1}:`, currentHeight.toString());
-
-    if (heightInput !== null) {
-      const height = parseFloat(heightInput);
-      if (!isNaN(height) && height >= 0) {
-        // Queue the operation instead of executing immediately
-        setEditQueue((prev) => [...prev, { type: 'setFlightHeight', index: pointIndex, height }]);
-      } else {
-        alert('הגובה חייב להיות חיובי.');
-      }
-    }
+    setFlightHeightModal({ isOpen: true, pointIndex, currentHeight });
+    setFlightHeightInput(currentHeight.toString());
+    setFlightHeightError(null);
   }, [flightPath, nominalFlightHeight]);
+
+  const handleFlightHeightSubmit = useCallback(() => {
+    if (!flightHeightModal) return;
+    
+    const height = parseFloat(flightHeightInput);
+    if (isNaN(height) || height < 0 || height > 10000) {
+      setFlightHeightError('הגובה חייב להיות מספר בין 0 ל-10000 מטרים');
+      return;
+    }
+    
+    // Queue the operation instead of executing immediately
+    setEditQueue((prev) => [...prev, { type: 'setFlightHeight', index: flightHeightModal.pointIndex, height }]);
+    setFlightHeightModal(null);
+    setFlightHeightInput('');
+    setFlightHeightError(null);
+  }, [flightHeightModal, flightHeightInput]);
+
+  const handleFlightHeightCancel = useCallback(() => {
+    setFlightHeightModal(null);
+    setFlightHeightInput('');
+    setFlightHeightError(null);
+  }, []);
 
   const handleEditPointRequest = useCallback((pointIndex: number) => {
     // Queue the operation instead of executing immediately
@@ -1435,6 +1452,80 @@ function App() {
           });
         }}
       />
+      {flightHeightModal && flightHeightModal.isOpen && (
+        <div className="quick-modal__backdrop" role="dialog" aria-modal="true" onClick={handleFlightHeightCancel}>
+          <div className="quick-modal__card" onClick={(e) => e.stopPropagation()}>
+            <div className="quick-modal__header">
+              <div className="quick-modal__title">הזן גובה טיסה (AGL במטרים) עבור נקודה {flightHeightModal.pointIndex + 1}</div>
+              <button
+                type="button"
+                className="quick-modal__close"
+                onClick={handleFlightHeightCancel}
+                aria-label="סגור"
+              >
+                ×
+              </button>
+            </div>
+            <div className="quick-modal__body">
+              <label className="quick-modal__label" htmlFor="flight-height-input">גובה (מ')</label>
+              <input
+                id="flight-height-input"
+                type="number"
+                min="0"
+                max="10000"
+                step="0.1"
+                required
+                inputMode="decimal"
+                aria-required="true"
+                value={flightHeightInput}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setFlightHeightInput(value);
+                  
+                  // Real-time validation
+                  if (value === '') {
+                    setFlightHeightError(null);
+                    return;
+                  }
+                  
+                  const numValue = parseFloat(value);
+                  if (Number.isNaN(numValue)) {
+                    setFlightHeightError('ערך חייב להיות מספר');
+                  } else if (numValue < 0) {
+                    setFlightHeightError('גובה חייב להיות מספר חיובי');
+                  } else if (numValue > 10000) {
+                    setFlightHeightError('גובה לא יכול להיות גדול מ-10000 מטרים');
+                  } else {
+                    setFlightHeightError(null);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleFlightHeightSubmit();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    handleFlightHeightCancel();
+                  }
+                }}
+                className={`quick-modal__input ${flightHeightError ? 'error' : ''}`}
+                autoFocus
+              />
+              {flightHeightError && (
+                <div className="quick-modal__error" role="alert">{flightHeightError}</div>
+              )}
+            </div>
+            <div className="quick-modal__actions">
+              <button type="button" className="btn btn-tertiary" onClick={handleFlightHeightCancel}>
+                ביטול
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleFlightHeightSubmit}>
+                החל
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

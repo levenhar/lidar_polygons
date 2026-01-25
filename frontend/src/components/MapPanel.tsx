@@ -769,6 +769,100 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setDialogError(null);
   };
 
+  // Real-time validation function for dialog inputs
+  const validateDialogInput = useCallback((type: string, value: string) => {
+    if (!value || value.trim() === '') {
+      setDialogError(null);
+      return;
+    }
+
+    const numValue = parseFloat(value);
+    const isNaN = Number.isNaN(numValue);
+
+    switch (type) {
+      case 'height':
+        if (isNaN || numValue < 0 || numValue > 10000) {
+          setDialogError('גובה חייב להיות בין 0 ל-10000 מטרים');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'azimuth':
+        if (isNaN || numValue < 0 || numValue > 360) {
+          setDialogError('אזימוט חייב להיות בין 0 ל-360 מעלות');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'distance':
+        if (isNaN || numValue < 0.1 || numValue > 100000) {
+          setDialogError('מרחק חייב להיות בין 0.1 ל-100000 מטרים');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'offset':
+        if (isNaN || numValue < -10000 || numValue > 10000) {
+          setDialogError('היסט חייב להיות בין -10000 ל-10000 מטרים');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'lng':
+        if (isNaN || numValue < -180 || numValue > 180) {
+          setDialogError('קו אורך חייב להיות בין -180 ל-180');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'lat':
+        if (isNaN || numValue < -90 || numValue > 90) {
+          setDialogError('קו רוחב חייב להיות בין -90 ל-90');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'easting':
+        if (isNaN || numValue < 0 || numValue > 999999) {
+          setDialogError('מזרחית חייבת להיות בין 0 ל-999999 מטרים');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'northing':
+        if (isNaN || numValue < 0 || numValue > 10000000) {
+          setDialogError('צפונית חייבת להיות בין 0 ל-10000000 מטרים');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'zone':
+        const zoneValue = parseInt(value, 10);
+        if (Number.isNaN(zoneValue) || zoneValue < 1 || zoneValue > 60) {
+          setDialogError('אזור חייב להיות בין 1 ל-60');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'radius':
+        if (isNaN || numValue === 0 || numValue < -1000 || numValue > 1000) {
+          setDialogError('רדיוס חייב להיות בין -1000 ל-1000 מטרים (לא אפס)');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      case 'distance-ut':
+        if (isNaN || numValue < 0.1 || numValue > 10000) {
+          setDialogError('מרווח חייב להיות בין 0.1 ל-10000 מטרים');
+        } else {
+          setDialogError(null);
+        }
+        break;
+      default:
+        setDialogError(null);
+    }
+  }, []);
+
   // ============================================================================
   // UNIFIED DTM LOADER FUNCTIONS
   // ============================================================================
@@ -4192,10 +4286,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <input
             id="height-input"
             type="number"
+            min="0"
+            max="10000"
             step="0.1"
+            required
+            inputMode="decimal"
+            aria-required="true"
             value={dialogValues.height ?? ''}
-            onChange={(e) => setDialogValues((prev) => ({ ...prev, height: e.target.value }))}
-            className="quick-modal__input"
+            onChange={(e) => {
+              setDialogValues((prev) => ({ ...prev, height: e.target.value }));
+              validateDialogInput('height', e.target.value);
+            }}
+            className={`quick-modal__input ${dialogError ? 'error' : ''}`}
           />
           <input type="hidden" value={dialogValues.pointIndex ?? ''} readOnly />
         </>
@@ -4210,10 +4312,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <input
             id="azimuth-input"
             type="number"
+            min="0"
+            max="360"
             step="0.1"
+            required
+            inputMode="decimal"
+            aria-required="true"
             value={dialogValues.azimuth ?? ''}
-            onChange={(e) => setDialogValues((prev) => ({ ...prev, azimuth: e.target.value }))}
-            className="quick-modal__input"
+            onChange={(e) => {
+              setDialogValues((prev) => ({ ...prev, azimuth: e.target.value }));
+              validateDialogInput('azimuth', e.target.value);
+            }}
+            className={`quick-modal__input ${dialogError ? 'error' : ''}`}
           />
           <label className="quick-modal__label" htmlFor="distance-input">
             מרחק (מ')
@@ -4221,10 +4331,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <input
             id="distance-input"
             type="number"
-            step="1"
+            min="0.1"
+            max="100000"
+            step="0.1"
+            required
+            inputMode="decimal"
+            aria-required="true"
             value={dialogValues.distance ?? ''}
-            onChange={(e) => setDialogValues((prev) => ({ ...prev, distance: e.target.value }))}
-            className="quick-modal__input"
+            onChange={(e) => {
+              setDialogValues((prev) => ({ ...prev, distance: e.target.value }));
+              validateDialogInput('distance', e.target.value);
+            }}
+            className={`quick-modal__input ${dialogError ? 'error' : ''}`}
           />
         </>
       );
@@ -4241,10 +4359,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <input
             id="offset-input"
             type="number"
-            step="1"
+            min="-10000"
+            max="10000"
+            step="0.1"
+            required
+            inputMode="decimal"
+            aria-required="true"
             value={dialogValues.offset ?? ''}
-            onChange={(e) => setDialogValues((prev) => ({ ...prev, offset: e.target.value }))}
-            className="quick-modal__input"
+            onChange={(e) => {
+              setDialogValues((prev) => ({ ...prev, offset: e.target.value }));
+              validateDialogInput('offset', e.target.value);
+            }}
+            className={`quick-modal__input ${dialogError ? 'error' : ''}`}
           />
         </>
       );
@@ -4275,19 +4401,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <input
                 id="lng-input"
                 type="number"
+                min="-180"
+                max="180"
                 step="0.000001"
+                required
+                inputMode="decimal"
+                aria-required="true"
                 value={dialogValues.lng ?? ''}
-                onChange={(e) => setDialogValues((prev) => ({ ...prev, lng: e.target.value }))}
-                className="quick-modal__input"
+                onChange={(e) => {
+                  setDialogValues((prev) => ({ ...prev, lng: e.target.value }));
+                  validateDialogInput('lng', e.target.value);
+                }}
+                className={`quick-modal__input ${dialogError ? 'error' : ''}`}
               />
               <label className="quick-modal__label" htmlFor="lat-input">קו רוחב</label>
               <input
                 id="lat-input"
                 type="number"
+                min="-90"
+                max="90"
                 step="0.000001"
+                required
+                inputMode="decimal"
+                aria-required="true"
                 value={dialogValues.lat ?? ''}
-                onChange={(e) => setDialogValues((prev) => ({ ...prev, lat: e.target.value }))}
-                className="quick-modal__input"
+                onChange={(e) => {
+                  setDialogValues((prev) => ({ ...prev, lat: e.target.value }));
+                  validateDialogInput('lat', e.target.value);
+                }}
+                className={`quick-modal__input ${dialogError ? 'error' : ''}`}
               />
             </>
           ) : (
@@ -4296,19 +4438,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <input
                 id="easting-input"
                 type="number"
-                step="1"
+                min="0"
+                max="999999"
+                step="0.01"
+                required
+                inputMode="decimal"
+                aria-required="true"
                 value={dialogValues.easting ?? ''}
-                onChange={(e) => setDialogValues((prev) => ({ ...prev, easting: e.target.value }))}
-                className="quick-modal__input"
+                onChange={(e) => {
+                  setDialogValues((prev) => ({ ...prev, easting: e.target.value }));
+                  validateDialogInput('easting', e.target.value);
+                }}
+                className={`quick-modal__input ${dialogError ? 'error' : ''}`}
               />
               <label className="quick-modal__label" htmlFor="northing-input">צפונית (מ')</label>
               <input
                 id="northing-input"
                 type="number"
-                step="1"
+                min="0"
+                max="10000000"
+                step="0.01"
+                required
+                inputMode="decimal"
+                aria-required="true"
                 value={dialogValues.northing ?? ''}
-                onChange={(e) => setDialogValues((prev) => ({ ...prev, northing: e.target.value }))}
-                className="quick-modal__input"
+                onChange={(e) => {
+                  setDialogValues((prev) => ({ ...prev, northing: e.target.value }));
+                  validateDialogInput('northing', e.target.value);
+                }}
+                className={`quick-modal__input ${dialogError ? 'error' : ''}`}
               />
               <div className="quick-modal__split">
                 <div>
@@ -4316,10 +4474,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <input
                     id="zone-input"
                     type="number"
+                    min="1"
+                    max="60"
                     step="1"
+                    required
+                    inputMode="numeric"
+                    aria-required="true"
                     value={dialogValues.zone ?? ''}
-                    onChange={(e) => setDialogValues((prev) => ({ ...prev, zone: e.target.value }))}
-                    className="quick-modal__input"
+                    onChange={(e) => {
+                      setDialogValues((prev) => ({ ...prev, zone: e.target.value }));
+                      validateDialogInput('zone', e.target.value);
+                    }}
+                    className={`quick-modal__input ${dialogError ? 'error' : ''}`}
                   />
                 </div>
                 <div>
@@ -4327,10 +4493,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <input
                     id="hemisphere-input"
                     type="text"
+                    pattern="[NnSs]"
                     maxLength={1}
+                    required
+                    aria-required="true"
                     value={dialogValues.hemisphere ?? 'N'}
-                    onChange={(e) => setDialogValues((prev) => ({ ...prev, hemisphere: e.target.value }))}
-                    className="quick-modal__input"
+                    onChange={(e) => {
+                      const value = e.target.value.toUpperCase();
+                      if (value === '' || value === 'N' || value === 'S') {
+                        setDialogValues((prev) => ({ ...prev, hemisphere: value }));
+                        if (value && value !== 'N' && value !== 'S') {
+                          setDialogError('חצי כדור חייב להיות N או S');
+                        } else {
+                          setDialogError(null);
+                        }
+                      } else {
+                        setDialogError('חצי כדור חייב להיות N או S');
+                      }
+                    }}
+                    className={`quick-modal__input ${dialogError ? 'error' : ''}`}
                   />
                 </div>
               </div>
@@ -4351,19 +4532,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <input
             id="radius-input"
             type="number"
-            step="1"
+            min="-1000"
+            max="1000"
+            step="0.1"
+            required
+            inputMode="decimal"
+            aria-required="true"
             value={dialogValues.radius ?? ''}
-            onChange={(e) => setDialogValues((prev) => ({ ...prev, radius: e.target.value }))}
-            className="quick-modal__input"
+            onChange={(e) => {
+              setDialogValues((prev) => ({ ...prev, radius: e.target.value }));
+              validateDialogInput('radius', e.target.value);
+            }}
+            className={`quick-modal__input ${dialogError ? 'error' : ''}`}
           />
           <label className="quick-modal__label" htmlFor="distance-ut-input">מרווח (מ')</label>
           <input
             id="distance-ut-input"
             type="number"
-            step="1"
+            min="0.1"
+            max="10000"
+            step="0.1"
+            required
+            inputMode="decimal"
+            aria-required="true"
             value={dialogValues.distance ?? ''}
-            onChange={(e) => setDialogValues((prev) => ({ ...prev, distance: e.target.value }))}
-            className="quick-modal__input"
+            onChange={(e) => {
+              setDialogValues((prev) => ({ ...prev, distance: e.target.value }));
+              validateDialogInput('distance-ut', e.target.value);
+            }}
+            className={`quick-modal__input ${dialogError ? 'error' : ''}`}
           />
         </>
       );
@@ -5441,6 +5638,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <input
                     type="text"
                     placeholder="חיפוש קובץ DTM..."
+                    maxLength={200}
                     value={dtmSearchQuery}
                     onChange={(e) => setDtmSearchQuery(e.target.value)}
                     autoFocus
@@ -5536,6 +5734,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <input
                 type="text"
                 placeholder="חיפוש קובץ DTM..."
+                maxLength={200}
                 value={dtmSearchQuery}
                 onChange={(e) => setDtmSearchQuery(e.target.value)}
                 autoFocus

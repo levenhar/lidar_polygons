@@ -400,87 +400,45 @@ export function useFlightPath(
     [updateActiveRoute]
   );
 
-  const exportKML = useCallback(
-    (
-      climbRequests?: { endDistance: number; climbAmount: number }[], 
-      climbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>,
-      selectedRouteIds?: string[],
-      nominalFlightHeight?: number,
-      firstTurnPointElevation?: number
-    ) => {
-      const active = activeRoute;
-      const routesWithPoints = state.routes.filter((route) => route.points.length >= 2);
+  /**
+   * Helper function to generate KML content for a single route
+   */
+  const generateKMLForRoute = useCallback((
+    route: FlightRoute,
+    routeClimbRequests: { endDistance: number; climbAmount: number }[],
+    nominalFlightHeight?: number
+  ): string => {
+    const folderName = route.name;
+    const folderId = escapeXml(folderName.replace(/\s+/g, '_'));
 
-      // If selectedRouteIds is provided, use those routes
-      let routesToExport: FlightRoute[];
-      if (selectedRouteIds && selectedRouteIds.length > 0) {
-        routesToExport = state.routes.filter(
-          (route) => selectedRouteIds.includes(route.id) && route.points.length >= 2
-        );
-      } else {
-        // Legacy behavior: show confirm dialog if multiple routes
-        if (!active || active.points.length < 2) {
-          if (routesWithPoints.length === 0) {
-            alert('No routes have 2+ points to export.');
-            return;
-          }
-        }
-
-        let exportAll = false;
-        if (routesWithPoints.length > 1) {
-          exportAll = window.confirm(
-            'Export all routes?\nOK: export routes with 2+ points. Cancel: active route only.'
-          );
-        }
-
-        routesToExport = exportAll ? routesWithPoints : active ? [active] : [];
-      }
-
-      if (routesToExport.length === 0 || routesToExport.every((r) => r.points.length < 2)) {
-        alert('Nothing to export. Add at least 2 points.');
-        return;
-      }
-
-      const exportAll = selectedRouteIds ? selectedRouteIds.length > 1 : routesToExport.length > 1;
-
-      // Get folder name from first route or default
-      const folderName = routesToExport.length > 0 ? routesToExport[0].name : 'Flight Path';
-      const folderId = escapeXml(folderName.replace(/\s+/g, '_'));
-
-      // Build KML content with Folder structure
-      let kmlContent = `<?xml version="1.0" encoding="utf-8"?>
+    // Build KML content with Folder structure
+    let kmlContent = `<?xml version="1.0" encoding="utf-8"?>
 <Folder id="${folderId}" xmlns="http://www.opengis.net/kml/2.2">
   <name>${escapeXml(folderName)}</name>
   <Document id="Point">
     <name>Point</name>
 `;
 
-      // Collect all climb points first to generate styles
-      const allClimbPoints: Array<{ route: FlightRoute; climb: { endDistance: number; climbAmount: number }; coord: Coordinate; index: number }> = [];
-      routesToExport.forEach((route) => {
-        const routeClimbRequests = exportAll && climbRequestsByRoute 
-          ? (climbRequestsByRoute[route.id] || [])
-          : (!exportAll && climbRequests && route.id === active?.id ? climbRequests : []);
-        
-        if (routeClimbRequests.length > 0) {
-          const cumulativeDistances = computeCumulativeDistances(route.points);
-          routeClimbRequests.forEach((climb, index) => {
-            const coord = distanceToCoordinate(climb.endDistance, route.points, cumulativeDistances);
-            if (coord) {
-              allClimbPoints.push({ route, climb, coord, index });
-            }
-          });
+    // Collect climb points for this route
+    const allClimbPoints: Array<{ climb: { endDistance: number; climbAmount: number }; coord: Coordinate; index: number }> = [];
+    if (routeClimbRequests.length > 0) {
+      const cumulativeDistances = computeCumulativeDistances(route.points);
+      routeClimbRequests.forEach((climb, index) => {
+        const coord = distanceToCoordinate(climb.endDistance, route.points, cumulativeDistances);
+        if (coord) {
+          allClimbPoints.push({ climb, coord, index });
         }
       });
+    }
 
-      // Always add entry point (גובה כניסה) at the first point with nominal flight height
-      const entryPointIndex = allClimbPoints.length;
-      const hasEntryPoint = nominalFlightHeight !== undefined && nominalFlightHeight !== null && routesToExport.length > 0 && routesToExport[0].points.length >= 1;
-      
-      // Generate Point styles (including entry point style if needed)
-      const totalPoints = allClimbPoints.length + (hasEntryPoint ? 1 : 0);
-      for (let index = 0; index < totalPoints; index++) {
-        kmlContent += `    <Style id="PointStyle${index}">
+    // Always add entry point (גובה כניסה) at the first point with nominal flight height
+    const entryPointIndex = allClimbPoints.length;
+    const hasEntryPoint = nominalFlightHeight !== undefined && nominalFlightHeight !== null && route.points.length >= 1;
+    
+    // Generate Point styles (including entry point style if needed)
+    const totalPoints = allClimbPoints.length + (hasEntryPoint ? 1 : 0);
+    for (let index = 0; index < totalPoints; index++) {
+      kmlContent += `    <Style id="PointStyle${index}">
       <IconStyle>
         <color>ffff0000</color>
         <colorMode>normal</colorMode>
@@ -491,12 +449,12 @@ export function useFlightPath(
       </LabelStyle>
     </Style>
 `;
-      }
+    }
 
-      // Export climb points
-      allClimbPoints.forEach(({ climb, coord, index }) => {
-        const climbName = climb.climbAmount >= 0 ? `+${Math.round(climb.climbAmount)}` : `${Math.round(climb.climbAmount)}`;
-        kmlContent += `    <Placemark>
+    // Export climb points
+    allClimbPoints.forEach(({ climb, coord, index }) => {
+      const climbName = climb.climbAmount >= 0 ? `+${Math.round(climb.climbAmount)}` : `${Math.round(climb.climbAmount)}`;
+      kmlContent += `    <Placemark>
       <name>${escapeXml(climbName)}</name>
       <description />
       <styleUrl>#PointStyle${index}</styleUrl>
@@ -591,15 +549,15 @@ export function useFlightPath(
       </Point>
     </Placemark>
 `;
-      });
+    });
 
-      // Always add entry point (גובה כניסה) at the first point (number 1)
-      // Entry height (nominalFlightHeight) is now ASL, so save it directly without adding ground elevation
-      if (hasEntryPoint) {
-        const firstPoint = routesToExport[0].points[0];
-        const absoluteAltitude = Math.round(nominalFlightHeight!);
-        const entryPointName = `גובה כניסה - ${absoluteAltitude}`;
-        kmlContent += `    <Placemark>
+    // Always add entry point (גובה כניסה) at the first point (number 1)
+    // Entry height (nominalFlightHeight) is now ASL, so save it directly without adding ground elevation
+    if (hasEntryPoint) {
+      const firstPoint = route.points[0];
+      const absoluteAltitude = Math.round(nominalFlightHeight!);
+      const entryPointName = `גובה כניסה - ${absoluteAltitude}`;
+      kmlContent += `    <Placemark>
       <name>${escapeXml(entryPointName)}</name>
       <description />
       <styleUrl>#PointStyle${entryPointIndex}</styleUrl>
@@ -694,9 +652,9 @@ export function useFlightPath(
       </Point>
     </Placemark>
 `;
-      }
+    }
 
-      kmlContent += `  </Document>
+    kmlContent += `  </Document>
   <Document id="PolyLine">
     <name>PolyLine</name>
     <Style id="PolylineStyle0">
@@ -707,7 +665,7 @@ export function useFlightPath(
       <LineStyle>
         <color>${(() => {
           // Convert #RRGGBB to AABBGGRR format for KML
-          const hex = routesToExport[0]?.color.slice(1) || '0000ff';
+          const hex = route.color.slice(1);
           const r = hex.slice(0, 2);
           const g = hex.slice(2, 4);
           const b = hex.slice(4, 6);
@@ -719,23 +677,21 @@ export function useFlightPath(
     </Style>
 `;
 
-      // Export routes as polylines
-      routesToExport.forEach((route) => {
-        if (route.points.length < 2) return;
+    // Export route as polyline
+    if (route.points.length >= 2) {
+      // Format coordinates with newlines between them
+      const coordinates = route.points
+        .map((p) => `${p.lng},${p.lat}${p.height !== undefined ? `,${p.height}` : ''}`)
+        .join('\n');
 
-        // Format coordinates with newlines between them
-        const coordinates = route.points
-          .map((p) => `${p.lng},${p.lat}${p.height !== undefined ? `,${p.height}` : ''}`)
-          .join('\n');
+      // Convert route color to KML format
+      const hex = route.color.slice(1);
+      const r = hex.slice(0, 2);
+      const g = hex.slice(2, 4);
+      const b = hex.slice(4, 6);
+      const colorKml = `ff${b}${g}${r}`;
 
-        // Convert route color to KML format
-        const hex = route.color.slice(1);
-        const r = hex.slice(0, 2);
-        const g = hex.slice(2, 4);
-        const b = hex.slice(4, 6);
-        const colorKml = `ff${b}${g}${r}`;
-
-        kmlContent += `    <Placemark>
+      kmlContent += `    <Placemark>
       <name>${escapeXml(route.name)}</name>
       <description />
       <styleUrl>#PolylineStyle0</styleUrl>
@@ -819,29 +775,101 @@ export function useFlightPath(
       </LineString>
     </Placemark>
 `;
-      });
+    }
 
-      kmlContent += `  </Document>
+    kmlContent += `  </Document>
 </Folder>`;
 
-      const filenameBase =
-        exportAll && routesToExport.length > 1
-          ? 'routes-all'
-          : (routesToExport[0]?.name || 'flight-path').toLowerCase().replace(/\s+/g, '-');
+    return kmlContent;
+  }, []);
 
-      const blob = new Blob([kmlContent], {
-        type: 'application/vnd.google-earth.kml+xml'
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${filenameBase}-${Date.now()}.kml`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+  /**
+   * Helper function to download a KML file
+   */
+  const downloadKML = useCallback((kmlContent: string, filename: string) => {
+    const blob = new Blob([kmlContent], {
+      type: 'application/vnd.google-earth.kml+xml'
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const exportKML = useCallback(
+    (
+      climbRequests?: { endDistance: number; climbAmount: number }[], 
+      climbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>,
+      selectedRouteIds?: string[],
+      nominalFlightHeight?: number,
+      firstTurnPointElevation?: number
+    ) => {
+      const active = activeRoute;
+      const routesWithPoints = state.routes.filter((route) => route.points.length >= 2);
+
+      // If selectedRouteIds is provided, use those routes
+      let routesToExport: FlightRoute[];
+      if (selectedRouteIds && selectedRouteIds.length > 0) {
+        routesToExport = state.routes.filter(
+          (route) => selectedRouteIds.includes(route.id) && route.points.length >= 2
+        );
+      } else {
+        // Legacy behavior: show confirm dialog if multiple routes
+        if (!active || active.points.length < 2) {
+          if (routesWithPoints.length === 0) {
+            alert('No routes have 2+ points to export.');
+            return;
+          }
+        }
+
+        let exportAll = false;
+        if (routesWithPoints.length > 1) {
+          exportAll = window.confirm(
+            'Export all routes?\nOK: export routes with 2+ points. Cancel: active route only.'
+          );
+        }
+
+        routesToExport = exportAll ? routesWithPoints : active ? [active] : [];
+      }
+
+      if (routesToExport.length === 0 || routesToExport.every((r) => r.points.length < 2)) {
+        alert('Nothing to export. Add at least 2 points.');
+        return;
+      }
+
+      // If multiple routes, export each to a separate KML file
+      if (routesToExport.length > 1) {
+        routesToExport.forEach((route, index) => {
+          const routeClimbRequests = climbRequestsByRoute 
+            ? (climbRequestsByRoute[route.id] || [])
+            : (climbRequests && route.id === active?.id ? climbRequests : []);
+          
+          const kmlContent = generateKMLForRoute(route, routeClimbRequests, nominalFlightHeight);
+          const filenameBase = route.name.toLowerCase().replace(/\s+/g, '-');
+          // Use base timestamp + index to ensure unique filenames and add delay between downloads
+          const timestamp = Date.now() + index;
+          
+          // Add a small delay between downloads to ensure browser handles them properly
+          setTimeout(() => {
+            downloadKML(kmlContent, `${filenameBase}-${timestamp}.kml`);
+          }, index * 100); // 100ms delay between each download
+        });
+      } else {
+        // Single route export - use existing logic
+        const route = routesToExport[0];
+        const routeClimbRequests = climbRequests && route.id === active?.id ? climbRequests : (climbRequestsByRoute ? (climbRequestsByRoute[route.id] || []) : []);
+        
+        const kmlContent = generateKMLForRoute(route, routeClimbRequests, nominalFlightHeight);
+        const filenameBase = route.name.toLowerCase().replace(/\s+/g, '-');
+        const timestamp = Date.now();
+        downloadKML(kmlContent, `${filenameBase}-${timestamp}.kml`);
+      }
     },
-    [activeRoute, state.routes]
+    [activeRoute, state.routes, generateKMLForRoute, downloadKML]
   );
 
   const importKML = useCallback(

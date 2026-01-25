@@ -153,6 +153,7 @@ interface ElevationProfileProps {
   setClimbRequests: React.Dispatch<React.SetStateAction<ClimbRequest[]>>;
   climbWarnings: string[];
   showMetadata: boolean;
+  activeRouteName?: string;
 }
 
 const ElevationProfile: React.FC<ElevationProfileProps> = ({
@@ -176,7 +177,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   climbRequests,
   setClimbRequests,
   climbWarnings,
-  showMetadata
+  showMetadata,
+  activeRouteName
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -2329,7 +2331,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             שרטט מסלול טיסה על המפה כדי לראות את פרופיל הגובה
           </div>
         ) : (
-          <svg ref={svgRef} className="elevation-chart"></svg>
+          <>
+            {activeRouteName && (
+              <div className="elevation-plot-title">
+                מסלול: {activeRouteName}
+              </div>
+            )}
+            <svg ref={svgRef} className="elevation-chart"></svg>
+          </>
         )}
       </div>
       {isClimbAmountOpen && (

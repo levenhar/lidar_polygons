@@ -132,9 +132,9 @@ const SplitPane: React.FC<SplitPaneProps> = ({
     setIsDragging(true);
     
     // Capture pointer to prevent map/graph interactions
-    if (dividerRef.current) {
-      dividerRef.current.setPointerCapture?.(e.pointerId ?? 0);
-    }
+    // Note: setPointerCapture is for PointerEvent, not MouseEvent
+    // For mouse events, pointer capture is handled via the global mouse event listeners
+    // We don't need to call setPointerCapture for mouse events
   }, []);
 
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -187,9 +187,7 @@ const SplitPane: React.FC<SplitPaneProps> = ({
   // Handle drag end
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
-    if (dividerRef.current) {
-      dividerRef.current.releasePointerCapture?.(0);
-    }
+    // No need to release pointer capture for mouse events
   }, []);
 
   // Set up global mouse/touch listeners during drag

@@ -2,8 +2,10 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  border-inline-end: 1px solid #e5e7eb;
+  /* Border removed - splitter handles the divider */
   position: relative;
+  width: 100%;
+  height: 100%;
 }
 
 .quick-modal__backdrop {

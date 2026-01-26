@@ -5,6 +5,7 @@ import ExportSettingsModal from './components/ExportSettingsModal';
 import SettingsModal, { GearIcon } from './components/SettingsModal';
 import AnchorPointWarningModal from './components/AnchorPointWarningModal';
 import MissingLocalDTMModal from './components/MissingLocalDTMModal';
+import SplitPane from './components/SplitPane';
 import { useFlightPath, FlightRoute } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
 import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
@@ -1812,90 +1813,99 @@ function AppContent() {
         </div>
       </div>
       <div className="app-panels">
-        <MapPanel
-          dtmSource={dtmSource}
-          clippedId={activeClippedId}
-          routes={routes}
-          activeRouteId={activeRouteId}
-          flightPath={flightPath}
-          onPathPointHover={handlePathPointHover}
-          onPathChange={setFlightPath}
-          onAddPoint={addPointWrapped}
-          onAddPoints={addPointsWrapped}
-          onInsertPoints={insertPointsWrapped}
-          onUpdatePoint={handleUpdatePoint}
-          onDeletePoint={handleDeletePoint}
-          onAddRoute={addRoute}
-          onActiveRouteChange={setActiveRoute}
-          onRenameRoute={renameRoute}
-          onToggleRouteVisibility={toggleRouteVisibility}
-          onDeleteRoute={(routeId) => {
-            deleteRoute(routeId);
-            // Climb requests are now automatically removed in deleteRoute via undo/redo
-          }}
-          onShowAllRoutes={showAllRoutes}
-          onHideNonActiveRoutes={hideNonActiveRoutes}
-          onResetToSingleRoute={resetToSingleRoute}
-          onDtmLoad={handleDtmLoad}
-          onDtmUnload={handleDtmUnload}
-          onDisplaySettingsChange={setDtmDisplaySettings}
-          initialDisplaySettings={dtmDisplaySettings}
-          climbMarkers={climbMarkers}
-          showClimbLabels={showClimbLabels}
-          onShowClimbLabelsChange={setShowClimbLabels}
-          nominalFlightHeight={nominalFlightHeight}
-          overlapPercentage={overlapPercentage}
-          fovDegrees={fovDegrees}
-          onUndo={handleUndo}
-          canUndo={globalUndoRedo.canUndo}
-          editPointIndex={editPointIndex}
-          onEditPointIndexChange={setEditPointIndex}
-          hoveredElevationPoint={hoveredElevationPoint}
-          hoverSource={hoverSource}
-          showMetadata={showMetadata}
-          onShowMetadataChange={setShowMetadata}
-          showNextLineSuggestions={showNextLineSuggestions}
-          onShowNextLineSuggestionsChange={setShowNextLineSuggestions}
-          climbRequests={climbRequests}
-          elevationProfile={fullProfileResult.points}
-          onExportClick={() => {
-            const routesWithPoints = routes.filter(route => route.points.length >= 2);
-            if (routesWithPoints.length > 1) {
-              setShowExportModal(true);
-            } else {
-              const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
-              exportKML(climbRequests, climbRequestsByRoute, undefined, nominalFlightHeight, firstTurnPointElevation);
-            }
-          }}
-          onImportKML={async (file: File) => {
-            await importKML(file, dtmSource);
-          }}
-          canExport={flightPath.length >= 2}
-        />
-        <ElevationProfile
-          elevationProfile={fullProfileResult.points}
-          loading={flightPath.length >= 2 && dtmSource !== null && (loading || isProcessingQueue || editQueue.length > 0 || !profileReady)}
-          nominalFlightHeight={nominalFlightHeight}
-          safetyHeight={safetyHeight}
-          resolutionHeight={resolutionHeight}
-          selectedPoint={selectedPoint}
-          flightPath={flightPath}
-          onDeletePoint={handleDeletePoint}
-          onUpdatePoint={handleUpdatePoint}
-          onSetFlightHeight={handleSetFlightHeight}
-          onEditPointRequest={handleEditPointRequest}
-          onElevationPointHover={handleElevationPointHover}
-          hoveredPoint={hoveredElevationPoint}
-          hoverSource={hoverSource}
-          climbPresets={CLIMB_PRESETS}
-          selectedClimbPresetId={selectedClimbPresetId}
-          climbConfig={climbConfig}
-          climbRequests={climbRequests}
-          setClimbRequests={setClimbRequests}
-          climbWarnings={fullProfileResult.warnings}
-          showMetadata={showMetadata}
-          activeRouteName={routes.find(r => r.id === activeRouteId)?.name}
-        />
+        <SplitPane
+          direction="horizontal"
+          initialRatio={0.6}
+          minSizeFirst="300px"
+          minSizeSecond="400px"
+          storageKey="mapElevationSplit"
+          className="app-split-pane"
+        >
+          <MapPanel
+            dtmSource={dtmSource}
+            clippedId={activeClippedId}
+            routes={routes}
+            activeRouteId={activeRouteId}
+            flightPath={flightPath}
+            onPathPointHover={handlePathPointHover}
+            onPathChange={setFlightPath}
+            onAddPoint={addPointWrapped}
+            onAddPoints={addPointsWrapped}
+            onInsertPoints={insertPointsWrapped}
+            onUpdatePoint={handleUpdatePoint}
+            onDeletePoint={handleDeletePoint}
+            onAddRoute={addRoute}
+            onActiveRouteChange={setActiveRoute}
+            onRenameRoute={renameRoute}
+            onToggleRouteVisibility={toggleRouteVisibility}
+            onDeleteRoute={(routeId) => {
+              deleteRoute(routeId);
+              // Climb requests are now automatically removed in deleteRoute via undo/redo
+            }}
+            onShowAllRoutes={showAllRoutes}
+            onHideNonActiveRoutes={hideNonActiveRoutes}
+            onResetToSingleRoute={resetToSingleRoute}
+            onDtmLoad={handleDtmLoad}
+            onDtmUnload={handleDtmUnload}
+            onDisplaySettingsChange={setDtmDisplaySettings}
+            initialDisplaySettings={dtmDisplaySettings}
+            climbMarkers={climbMarkers}
+            showClimbLabels={showClimbLabels}
+            onShowClimbLabelsChange={setShowClimbLabels}
+            nominalFlightHeight={nominalFlightHeight}
+            overlapPercentage={overlapPercentage}
+            fovDegrees={fovDegrees}
+            onUndo={handleUndo}
+            canUndo={globalUndoRedo.canUndo}
+            editPointIndex={editPointIndex}
+            onEditPointIndexChange={setEditPointIndex}
+            hoveredElevationPoint={hoveredElevationPoint}
+            hoverSource={hoverSource}
+            showMetadata={showMetadata}
+            onShowMetadataChange={setShowMetadata}
+            showNextLineSuggestions={showNextLineSuggestions}
+            onShowNextLineSuggestionsChange={setShowNextLineSuggestions}
+            climbRequests={climbRequests}
+            elevationProfile={fullProfileResult.points}
+            onExportClick={() => {
+              const routesWithPoints = routes.filter(route => route.points.length >= 2);
+              if (routesWithPoints.length > 1) {
+                setShowExportModal(true);
+              } else {
+                const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
+                exportKML(climbRequests, climbRequestsByRoute, undefined, nominalFlightHeight, firstTurnPointElevation);
+              }
+            }}
+            onImportKML={async (file: File) => {
+              await importKML(file, dtmSource);
+            }}
+            canExport={flightPath.length >= 2}
+          />
+          <ElevationProfile
+            elevationProfile={fullProfileResult.points}
+            loading={flightPath.length >= 2 && dtmSource !== null && (loading || isProcessingQueue || editQueue.length > 0 || !profileReady)}
+            nominalFlightHeight={nominalFlightHeight}
+            safetyHeight={safetyHeight}
+            resolutionHeight={resolutionHeight}
+            selectedPoint={selectedPoint}
+            flightPath={flightPath}
+            onDeletePoint={handleDeletePoint}
+            onUpdatePoint={handleUpdatePoint}
+            onSetFlightHeight={handleSetFlightHeight}
+            onEditPointRequest={handleEditPointRequest}
+            onElevationPointHover={handleElevationPointHover}
+            hoveredPoint={hoveredElevationPoint}
+            hoverSource={hoverSource}
+            climbPresets={CLIMB_PRESETS}
+            selectedClimbPresetId={selectedClimbPresetId}
+            climbConfig={climbConfig}
+            climbRequests={climbRequests}
+            setClimbRequests={setClimbRequests}
+            climbWarnings={fullProfileResult.warnings}
+            showMetadata={showMetadata}
+            activeRouteName={routes.find(r => r.id === activeRouteId)?.name}
+          />
+        </SplitPane>
       </div>
       <ExportSettingsModal
         isOpen={showExportModal}

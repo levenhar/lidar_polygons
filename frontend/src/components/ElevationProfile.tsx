@@ -187,6 +187,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const savedZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
   const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGRectElement, unknown> | null>(null);
   const overlayRef = useRef<d3.Selection<SVGRectElement, unknown, null, undefined> | null>(null);
+  // Track container width to trigger chart re-render when it changes (for export)
+  const [containerWidth, setContainerWidth] = useState<number>(0);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [isClimbAmountOpen, setIsClimbAmountOpen] = useState(false);
   const [pendingClimbEnd, setPendingClimbEnd] = useState<number | null>(null);
@@ -400,6 +402,28 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   );
 
   const activeClimbStartDistance = null;
+
+  // Update container width state when container resizes (for export functionality)
+  useEffect(() => {
+    if (!containerRef.current) return;
+    
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+      }
+    });
+    
+    resizeObserver.observe(containerRef.current);
+    
+    // Set initial width
+    if (containerRef.current) {
+      setContainerWidth(containerRef.current.clientWidth);
+    }
+    
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     if (!svgRef.current || !containerRef.current || elevationProfile.length === 0 || loading) {
@@ -1582,6 +1606,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     onEditPointRequest,
     onElevationPointHover,
     hoveredPoint,
+    containerWidth, // Include container width to trigger re-render when it changes (for export)
     activeClimbStartDistance,
     getPlannedAltitudeAtDistance,
     isLocationInForbiddenClimbArea,
@@ -1973,74 +1998,213 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   }, []);
 
   const exportPNG = () => {
-    if (!svgRef.current) return;
+    if (!svgRef.current || !containerRef.current) return;
 
-    // Calculate statistics based on flight altitude (planned altitude)
-    // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
-    let totalAscent = 0;
-    let totalDescent = 0;
-    for (let i = 1; i < elevationProfile.length; i++) {
-      const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? nominalFlightHeight;
-      const currAltitude = elevationProfile[i].plannedAltitude ?? nominalFlightHeight;
-      const altitudeDiff = currAltitude - prevAltitude;
-      if (altitudeDiff > 0) {
-        totalAscent += altitudeDiff;
-      } else if (altitudeDiff < 0) {
-        totalDescent += Math.abs(altitudeDiff);
+    // Calculate maximum width for export (window width - minimum map width - padding)
+    // Minimum map width is 300px, add some padding for splitter and margins
+    const minMapWidth = 300;
+    const splitterWidth = 8;
+    const padding = 20;
+    const maxExportWidth = window.innerWidth - minMapWidth - splitterWidth - padding;
+    // Use a reasonable minimum (at least 800px) and maximum (2000px) for export
+    const exportWidth = Math.max(800, Math.min(2000, maxExportWidth));
+    
+    // Store original container width and style
+    const originalStyleWidth = containerRef.current.style.width;
+    const originalStyleMinWidth = containerRef.current.style.minWidth;
+    
+    // Temporarily set container to maximum width for export
+    containerRef.current.style.width = `${exportWidth}px`;
+    containerRef.current.style.minWidth = `${exportWidth}px`;
+    
+    // Force a reflow to ensure the container resizes
+    containerRef.current.offsetHeight;
+    
+    // Calculate expected dimensions
+    const margin = { top: 20, right: 80, bottom: 110, left: 30 };
+    const legendWidth = 0;
+    const expectedChartWidth = exportWidth - margin.left - margin.right - legendWidth;
+    const expectedSvgWidth = expectedChartWidth + margin.left + margin.right + legendWidth;
+    
+    // Use ResizeObserver to detect when container actually resizes
+    // Then wait for chart to re-render
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.width >= exportWidth - 5) {
+          // Container has resized, now wait for chart to re-render
+          resizeObserver.disconnect();
+          
+          // Wait for the chart rendering useEffect to run
+          // Use multiple requestAnimationFrame calls and a delay
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              setTimeout(() => {
+                // Verify the chart has actually re-rendered at the new width
+                if (svgRef.current) {
+                  const currentSvgWidth = parseFloat(svgRef.current.getAttribute('width') || '0');
+                  if (Math.abs(currentSvgWidth - expectedSvgWidth) > 10) {
+                    // Chart hasn't re-rendered yet, wait a bit more
+                    setTimeout(() => {
+                      performExport();
+                    }, 300);
+                    return;
+                  }
+                }
+                
+                performExport();
+              }, 200);
+            });
+          });
+          return;
+        }
       }
-    }
-
-    const minElevation = Math.min(...elevationProfile.map(p => p.elevation));
-    const maxElevation = Math.max(...elevationProfile.map(p => p.elevation));
-    const elevationRange = maxElevation - minElevation;
-    const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
-
-    // Find minimum flight height across all points (considering climb points)
-    // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
-    const minFlightHeight = Math.min(
-      ...elevationProfile.map(p => {
-        const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
-        return plannedAlt - p.elevation;
-      })
-    );
-
-    // Find point with minimum elevation
-    const minElevationPoint = elevationProfile.reduce((min, p) => 
-      p.elevation < min.elevation ? p : min
-    );
-    const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? nominalFlightHeight;
-    const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
-
-    // Change legend text-anchor to 'start' for PNG export
-    const legendTexts = svgRef.current.querySelectorAll('.legend-text');
-    const originalTextAnchors: string[] = [];
-    legendTexts.forEach((text, index) => {
-      const svgText = text as SVGTextElement;
-      originalTextAnchors[index] = svgText.style.textAnchor || 'end';
-      svgText.style.textAnchor = 'start';
     });
+    
+    resizeObserver.observe(containerRef.current);
+    
+    // Fallback: if ResizeObserver doesn't fire within 1 second, proceed anyway
+    setTimeout(() => {
+      resizeObserver.disconnect();
+      performExport();
+    }, 1000);
+    
+    function performExport() {
+        // Calculate statistics based on flight altitude (planned altitude)
+        // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
+        let totalAscent = 0;
+        let totalDescent = 0;
+        for (let i = 1; i < elevationProfile.length; i++) {
+          const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? nominalFlightHeight;
+          const currAltitude = elevationProfile[i].plannedAltitude ?? nominalFlightHeight;
+          const altitudeDiff = currAltitude - prevAltitude;
+          if (altitudeDiff > 0) {
+            totalAscent += altitudeDiff;
+          } else if (altitudeDiff < 0) {
+            totalDescent += Math.abs(altitudeDiff);
+          }
+        }
 
-    const svgData = new XMLSerializer().serializeToString(svgRef.current);
+        const minElevation = Math.min(...elevationProfile.map(p => p.elevation));
+        const maxElevation = Math.max(...elevationProfile.map(p => p.elevation));
+        const elevationRange = maxElevation - minElevation;
+        const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
 
-    // Restore original text-anchor for web display
-    legendTexts.forEach((text, index) => {
-      const svgText = text as SVGTextElement;
-      svgText.style.textAnchor = originalTextAnchors[index];
-    });
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
+        // Find minimum flight height across all points (considering climb points)
+        // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
+        const minFlightHeight = Math.min(
+          ...elevationProfile.map(p => {
+            const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
+            return plannedAlt - p.elevation;
+          })
+        );
 
-    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(svgBlob);
+        // Find point with minimum elevation
+        const minElevationPoint = elevationProfile.reduce((min, p) => 
+          p.elevation < min.elevation ? p : min
+        );
+        const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? nominalFlightHeight;
+        const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
 
-    img.onload = () => {
-      // Add extra height for statistics
-      const statsHeight = 100;
-      canvas.width = img.width;
-      canvas.height = img.height + statsHeight;
+        // Change legend text-anchor to 'start' for PNG export
+        const legendTexts = svgRef.current!.querySelectorAll('.legend-text');
+        const originalTextAnchors: string[] = [];
+        legendTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          originalTextAnchors[index] = svgText.style.textAnchor || 'end';
+          svgText.style.textAnchor = 'start';
+        });
 
-      if (ctx) {
+        // Hide the vertical line for selected point (red dashed line) before export
+        const selectedPointLines = svgRef.current!.querySelectorAll('line[stroke="#ff0000"]');
+        const originalLineOpacities: string[] = [];
+        selectedPointLines.forEach((line, index) => {
+          const svgLine = line as SVGLineElement;
+          originalLineOpacities[index] = svgLine.style.opacity || svgLine.getAttribute('opacity') || '1';
+          svgLine.style.opacity = '0';
+          svgLine.setAttribute('opacity', '0');
+        });
+
+        // Also hide hover line (purple dashed line) if present
+        const hoverLines = svgRef.current!.querySelectorAll('line[stroke="#9B59B6"]');
+        const originalHoverLineOpacities: string[] = [];
+        hoverLines.forEach((line, index) => {
+          const svgLine = line as SVGLineElement;
+          originalHoverLineOpacities[index] = svgLine.style.opacity || svgLine.getAttribute('opacity') || '1';
+          svgLine.style.opacity = '0';
+          svgLine.setAttribute('opacity', '0');
+        });
+
+        // Hide hover point marker (purple circle) if present
+        const hoverMarkers = svgRef.current!.querySelectorAll('circle[fill="#9B59B6"]');
+        const originalHoverMarkerOpacities: string[] = [];
+        hoverMarkers.forEach((marker, index) => {
+          const svgCircle = marker as SVGCircleElement;
+          originalHoverMarkerOpacities[index] = svgCircle.style.opacity || svgCircle.getAttribute('opacity') || '1';
+          svgCircle.style.opacity = '0';
+          svgCircle.setAttribute('opacity', '0');
+        });
+
+        const svgData = new XMLSerializer().serializeToString(svgRef.current!);
+
+        // Restore original text-anchor for web display
+        legendTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          svgText.style.textAnchor = originalTextAnchors[index];
+        });
+
+        // Restore original line opacity for web display
+        selectedPointLines.forEach((line, index) => {
+          const svgLine = line as SVGLineElement;
+          svgLine.style.opacity = originalLineOpacities[index];
+          if (originalLineOpacities[index] === '1') {
+            svgLine.removeAttribute('opacity');
+          } else {
+            svgLine.setAttribute('opacity', originalLineOpacities[index]);
+          }
+        });
+
+        // Restore hover line opacity for web display
+        hoverLines.forEach((line, index) => {
+          const svgLine = line as SVGLineElement;
+          svgLine.style.opacity = originalHoverLineOpacities[index];
+          if (originalHoverLineOpacities[index] === '1') {
+            svgLine.removeAttribute('opacity');
+          } else {
+            svgLine.setAttribute('opacity', originalHoverLineOpacities[index]);
+          }
+        });
+
+        // Restore hover marker opacity for web display
+        hoverMarkers.forEach((marker, index) => {
+          const svgCircle = marker as SVGCircleElement;
+          svgCircle.style.opacity = originalHoverMarkerOpacities[index];
+          if (originalHoverMarkerOpacities[index] === '1') {
+            svgCircle.removeAttribute('opacity');
+          } else {
+            svgCircle.setAttribute('opacity', originalHoverMarkerOpacities[index]);
+          }
+        });
+        
+        // Restore original container width and style
+        if (containerRef.current) {
+          containerRef.current.style.width = originalStyleWidth;
+          containerRef.current.style.minWidth = originalStyleMinWidth;
+        }
+        
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+
+        const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(svgBlob);
+
+        img.onload = () => {
+          // Add extra height for statistics
+          const statsHeight = 100;
+          canvas.width = img.width;
+          canvas.height = img.height + statsHeight;
+
+          if (ctx) {
         // Fill canvas with white background
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -2109,30 +2273,31 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
           xPos -= statSpacing;
         });
-      }
+          }
 
-      canvas.toBlob((blob) => {
-        if (blob) {
-          const url = URL.createObjectURL(blob);
+          canvas.toBlob((blob) => {
+            if (blob) {
+              const url = URL.createObjectURL(blob);
 
-          // Open image in new tab
-          window.open(url, '_blank');
+              // Open image in new tab
+              window.open(url, '_blank');
 
-          // Also download the image
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `elevation-profile-${Date.now()}.png`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
+              // Also download the image
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `elevation-profile-${Date.now()}.png`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
 
-          // Clean up the URL after a delay to allow the new tab to load
-          setTimeout(() => URL.revokeObjectURL(url), 100);
-        }
-      });
-    };
+              // Clean up the URL after a delay to allow the new tab to load
+              setTimeout(() => URL.revokeObjectURL(url), 100);
+            }
+          });
+        };
 
-    img.src = url;
+        img.src = url;
+    }
   };
 
   const exportCSV = () => {

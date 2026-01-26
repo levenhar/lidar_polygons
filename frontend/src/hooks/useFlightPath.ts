@@ -806,7 +806,7 @@ export function useFlightPath(
       climbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>,
       selectedRouteIds?: string[],
       nominalFlightHeight?: number,
-      firstTurnPointElevation?: number
+      _firstTurnPointElevation?: number // Unused parameter, kept for API compatibility
     ) => {
       const active = activeRoute;
       const routesWithPoints = state.routes.filter((route) => route.points.length >= 2);

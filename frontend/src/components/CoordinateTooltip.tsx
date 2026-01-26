@@ -16,10 +16,10 @@ const CoordinateTooltip: React.FC<CoordinateTooltipProps> = ({ point, utm }) => 
             <span className="tooltip-label">אזור UTM:</span> {utm.zone}{utm.hemisphere}
           </div>
           <div className="tooltip-section">
-            <span className="tooltip-label">צפונית:</span> {utm.northing.toFixed(1)} מ'
+            <span className="tooltip-label">Northing:</span> {utm.northing.toFixed(1)} מ'
           </div>
           <div className="tooltip-section">
-            <span className="tooltip-label">מזרחית:</span> {utm.easting.toFixed(1)} מ'
+            <span className="tooltip-label">Easting:</span> {utm.easting.toFixed(1)} מ'
           </div>
         </>
       ) : (

@@ -806,7 +806,8 @@ export function useFlightPath(
       climbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>,
       selectedRouteIds?: string[],
       nominalFlightHeight?: number,
-      _firstTurnPointElevation?: number // Unused parameter, kept for API compatibility
+      _firstTurnPointElevation?: number, // Unused parameter, kept for API compatibility
+      filename?: string // Optional filename for single route export
     ) => {
       const active = activeRoute;
       const routesWithPoints = state.routes.filter((route) => route.points.length >= 2);
@@ -842,6 +843,7 @@ export function useFlightPath(
       }
 
       // If multiple routes, export each to a separate KML file
+      // Note: filename parameter is ignored for multiple routes (each gets its own name)
       if (routesToExport.length > 1) {
         routesToExport.forEach((route, index) => {
           const routeClimbRequests = climbRequestsByRoute 
@@ -864,9 +866,9 @@ export function useFlightPath(
         const routeClimbRequests = climbRequests && route.id === active?.id ? climbRequests : (climbRequestsByRoute ? (climbRequestsByRoute[route.id] || []) : []);
         
         const kmlContent = generateKMLForRoute(route, routeClimbRequests, nominalFlightHeight);
-        const filenameBase = route.name.toLowerCase().replace(/\s+/g, '-');
-        const timestamp = Date.now();
-        downloadKML(kmlContent, `${filenameBase}-${timestamp}.kml`);
+        // Use provided filename or generate default
+        const finalFilename = filename || `${route.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}.kml`;
+        downloadKML(kmlContent, finalFilename);
       }
     },
     [activeRoute, state.routes, generateKMLForRoute, downloadKML]

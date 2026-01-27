@@ -5,6 +5,9 @@ import ExportSettingsModal from './components/ExportSettingsModal';
 import SettingsModal, { GearIcon } from './components/SettingsModal';
 import AnchorPointWarningModal from './components/AnchorPointWarningModal';
 import MissingLocalDTMModal from './components/MissingLocalDTMModal';
+import SaveFileDialog from './components/SaveFileDialog';
+import SuccessNotification from './components/SuccessNotification';
+import { generateUniqueFilenames } from './utils/filenameSanitizer';
 import SplitPane from './components/SplitPane';
 import { useFlightPath, FlightRoute } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
@@ -16,12 +19,12 @@ import { computeCumulativeDistances } from './utils/constraints';
 import { 
   exportProject, 
   readProjectFile, 
-  downloadProjectFile, 
   PROJECT_FILE_EXTENSION,
   LocalDtmDescriptor,
   ProjectFileData,
   ProjectValidationError
 } from './utils/projectSerializer';
+import { generateKMLForRoute } from './utils/kmlGenerator';
 import './App.css';
 
 export interface Coordinate {
@@ -154,8 +157,20 @@ function App() {
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
   const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
   const [flightHeightModal, setFlightHeightModal] = useState<{ isOpen: boolean; pointIndex: number; currentHeight: number } | null>(null);
+  const [saveFileDialog, setSaveFileDialog] = useState<{
+    isOpen: boolean;
+    type: 'kml' | 'project';
+    defaultFilename: string;
+    fileContent: string | Blob;
+    mimeType?: string;
+    onSave?: (filename: string) => void; // Optional legacy callback
+  } | null>(null);
   const [flightHeightInput, setFlightHeightInput] = useState<string>('');
   const [flightHeightError, setFlightHeightError] = useState<string | null>(null);
+  const [successNotification, setSuccessNotification] = useState<{
+    isOpen: boolean;
+    message: string;
+  }>({ isOpen: false, message: '' });
   
   // Queue system for height profile edits
   type EditOperation = 
@@ -209,7 +224,6 @@ function App() {
     insertPoints,
     setFlightPath,
     resetToSingleRoute,
-    exportKML,
     importKML,
     importRoutes,
     setClimbRequestsByRoute,
@@ -1554,8 +1568,27 @@ function App() {
               if (routesWithPoints.length > 1) {
                 setShowExportModal(true);
               } else {
-                const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
-                exportKML(climbRequests, climbRequestsByRoute, undefined, nominalFlightHeight, firstTurnPointElevation);
+                // Single route - generate KML content and show save dialog
+                const activeRoute = routes.find(r => r.id === activeRouteId);
+                if (!activeRoute || activeRoute.points.length < 2) {
+                  alert('Nothing to export. Add at least 2 points.');
+                  return;
+                }
+                
+                const routeClimbRequests = climbRequestsByRoute 
+                  ? (climbRequestsByRoute[activeRoute.id] || [])
+                  : (climbRequests && activeRoute.id === activeRouteId ? climbRequests : []);
+                
+                const kmlContent = generateKMLForRoute(activeRoute, routeClimbRequests, nominalFlightHeight);
+                const defaultFilename = `${activeRoute.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
+                
+                setSaveFileDialog({
+                  isOpen: true,
+                  type: 'kml',
+                  defaultFilename,
+                  fileContent: kmlContent,
+                  mimeType: 'application/vnd.google-earth.kml+xml'
+                });
               }
             }}
             onImportKML={async (file: File) => {
@@ -1594,10 +1627,77 @@ function App() {
         routes={routes}
         activeRouteId={activeRouteId}
         onClose={() => setShowExportModal(false)}
-        onExport={(selectedRouteIds) => {
-          // Get elevation at first point (index 0) from elevation profile
-          const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
-          exportKML(climbRequests, climbRequestsByRoute, selectedRouteIds, nominalFlightHeight, firstTurnPointElevation);
+        onExport={async (selectedRouteIds) => {
+          // Filter routes that have at least 2 points
+          const routesToExport = routes.filter(r => 
+            selectedRouteIds.includes(r.id) && r.points.length >= 2
+          );
+          
+          if (routesToExport.length === 0) {
+            alert('No routes with at least 2 points selected.');
+            return;
+          }
+          
+          // Close the export modal first
+          setShowExportModal(false);
+          
+          // If only one route, show save dialog with name and location
+          if (routesToExport.length === 1) {
+            const route = routesToExport[0];
+            const routeClimbRequests = climbRequestsByRoute 
+              ? (climbRequestsByRoute[route.id] || [])
+              : (climbRequests && route.id === activeRouteId ? climbRequests : []);
+            
+            const kmlContent = generateKMLForRoute(route, routeClimbRequests, nominalFlightHeight);
+            const defaultFilename = `${route.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
+            
+            setSaveFileDialog({
+              isOpen: true,
+              type: 'kml',
+              defaultFilename,
+              fileContent: kmlContent,
+              mimeType: 'application/vnd.google-earth.kml+xml'
+            });
+            return;
+          }
+          
+          // Multiple routes: export as a single ZIP file
+          try {
+            // Generate KML content for all routes
+            const routesWithKml = routesToExport.map(route => {
+              const routeClimbRequests = climbRequestsByRoute 
+                ? (climbRequestsByRoute[route.id] || [])
+                : (climbRequests && route.id === activeRouteId ? climbRequests : []);
+              
+              const kmlContent = generateKMLForRoute(route, routeClimbRequests, nominalFlightHeight);
+              return { route, kmlContent };
+            });
+
+            // Generate unique, sanitized filenames for each route
+            const routeNames = routesWithKml.map((r: { route: FlightRoute; kmlContent: string }) => r.route.name);
+            const baseNames = generateUniqueFilenames(routeNames);
+            const files = routesWithKml.map((r: { route: FlightRoute; kmlContent: string }, i: number) => ({
+              filename: `${baseNames[i]}.kml`,
+              content: r.kmlContent
+            }));
+
+            // Create ZIP blob
+            const { createKmlZip } = await import('./utils/kmlZip');
+            const zipBlob = await createKmlZip(files);
+
+            // Show save dialog for ZIP file (user chooses name and location)
+            const defaultZipName = `routes_${new Date().toISOString().split('T')[0]}.zip`;
+            setSaveFileDialog({
+              isOpen: true,
+              type: 'kml', // Use 'kml' type for styling, but it's actually a ZIP
+              defaultFilename: defaultZipName,
+              fileContent: zipBlob,
+              mimeType: 'application/zip'
+            });
+          } catch (error: any) {
+            console.error('Error creating ZIP:', error);
+            alert(`שגיאה ביצוא המסלולים: ${error.message || 'שגיאה לא ידועה'}`);
+          }
         }}
       />
       <SettingsModal
@@ -1730,6 +1830,55 @@ function App() {
           }}
         />
       )}
+      {saveFileDialog && (
+        <SaveFileDialog
+          isOpen={saveFileDialog.isOpen}
+          defaultFilename={saveFileDialog.defaultFilename}
+          fileExtension={
+            saveFileDialog.mimeType === 'application/zip' 
+              ? '.zip' 
+              : saveFileDialog.type === 'kml' 
+                ? '.kml' 
+                : PROJECT_FILE_EXTENSION
+          }
+          title={
+            saveFileDialog.mimeType === 'application/zip'
+              ? 'שמור קובץ ZIP'
+              : saveFileDialog.type === 'kml' 
+                ? 'שמור קובץ KML' 
+                : 'שמור פרויקט'
+          }
+          description={
+            saveFileDialog.mimeType === 'application/zip'
+              ? 'הזן שם קובץ לשמירת כל המסלולים בקובץ ZIP'
+              : saveFileDialog.type === 'kml' 
+                ? 'הזן שם קובץ לשמירת מסלול הטיסה' 
+                : 'הזן שם קובץ לשמירת הפרויקט'
+          }
+          fileContent={saveFileDialog.fileContent}
+          mimeType={saveFileDialog.mimeType}
+          onClose={() => setSaveFileDialog(null)}
+          onSave={async (filename: string) => {
+            // If it's a ZIP file, show success notification after save
+            if (saveFileDialog.mimeType === 'application/zip') {
+              setSuccessNotification({
+                isOpen: true,
+                message: `נשמרו כל המסלולים בקובץ ZIP`
+              });
+            }
+            // Call legacy callback if provided
+            if (saveFileDialog.onSave) {
+              saveFileDialog.onSave(filename);
+            }
+          }}
+        />
+      )}
+      <SuccessNotification
+        isOpen={successNotification.isOpen}
+        message={successNotification.message}
+        onClose={() => setSuccessNotification({ isOpen: false, message: '' })}
+        autoCloseDelay={3000}
+      />
     </div>
   );
 }

@@ -1,8 +1,4 @@
 // Simple utility to create a ZIP file containing multiple KML files
-// Uses JSZip; make sure to install the dependency:
-// npm install jszip
-
-// @ts-ignore - JSZip may not have TypeScript types installed
 import JSZip from 'jszip';
 
 export interface KmlZipFile {

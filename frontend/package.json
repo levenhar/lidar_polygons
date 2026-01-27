@@ -14,15 +14,16 @@
     "dotenv": "^17.2.3",
     "geotiff": "^2.1.1",
     "https": "^1.0.0",
+    "jszip": "^3.10.1",
     "leaflet": "^1.9.4",
     "proj4": "^2.11.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-leaflet": "^4.2.1",
-    "jszip": "^3.10.1"
+    "react-leaflet": "^4.2.1"
   },
   "devDependencies": {
     "@types/d3": "^7.4.3",
+    "@types/jszip": "^3.4.0",
     "@types/node": "^24.10.2",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",

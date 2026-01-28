@@ -686,6 +686,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const hoveredPointRef = useRef<number | null>(null);
   const justFinishedDraggingRef = useRef<boolean>(false);
   const lastRightClickTimeRef = useRef<number>(0);
+  // Multi-select state
+  const [selectedPointIndices, setSelectedPointIndices] = useState<Set<number>>(new Set());
+  const dragStartPositionsRef = useRef<Map<number, Coordinate>>(new Map());
+  const isGroupDraggingRef = useRef<boolean>(false);
   const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const viewshedImageOverlayRef = useRef<L.ImageOverlay | null>(null);
@@ -2129,7 +2133,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
         return;
       }
 
-      // Otherwise, add new point if drawing
+      // If there are selected points, a click on the map should ONLY clear the selection
+      // and NOT create a new point.
+      if (selectedPointIndices.size > 0 && !justFinishedDraggingRef.current) {
+        setSelectedPointIndices(new Set());
+        return;
+      }
+
+      // Add new point if drawing and there is no active selection
       if (isDrawing && dtmLoaded) {
         // Skip creating a new point if we just finished dragging a point
         if (justFinishedDraggingRef.current) {
@@ -2194,7 +2205,38 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current.off('contextmenu', handleContextMenu);
       }
     };
-  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints, isAoiSelectionMode]);
+  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints, isAoiSelectionMode, setSelectedPointIndices]);
+
+  // Multi-select helper functions
+  const togglePointSelection = useCallback((index: number) => {
+    setSelectedPointIndices((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  }, []);
+
+  const selectAllPoints = useCallback(() => {
+    setSelectedPointIndices(new Set(flightPath.map((_, i) => i)));
+  }, [flightPath]);
+
+  // Clear selection when flight path changes (points added/removed)
+  useEffect(() => {
+    // Only clear if indices are out of bounds
+    setSelectedPointIndices((prev) => {
+      const valid = new Set<number>();
+      prev.forEach((idx) => {
+        if (idx >= 0 && idx < flightPath.length) {
+          valid.add(idx);
+        }
+      });
+      return valid;
+    });
+  }, [flightPath.length]);
 
   // Reset info mode when DTM is unloaded or not available
   useEffect(() => {
@@ -2917,9 +2959,47 @@ const MapPanel: React.FC<MapPanelProps> = ({
         draggable: false // Disable default dragging
       }).addTo(map.current!);
 
+      // Update visual state based on selection - will be updated via useEffect
+      const updateMarkerVisualState = () => {
+        const isSelected = selectedPointIndices.has(index);
+        if (isSelected) {
+          el.classList.add('is-selected');
+        } else {
+          el.classList.remove('is-selected');
+        }
+      };
+      updateMarkerVisualState();
+      
+      // Store update function for later use
+      (marker as any).__updateSelection = updateMarkerVisualState;
+
       // Store the last valid position for this marker
       let lastValidPosition: [number, number] = [point.lat, point.lng];
       let isDraggingWithLeftClick = false;
+      let dragStartLatLng: L.LatLng | null = null;
+      let hasStartedDragging = false; // Track if we've actually started dragging
+
+      // Handle marker click for selection
+      el.addEventListener('click', (e) => {
+        // Only handle left mouse button (button 0)
+        if (e.button !== 0) return;
+        
+        // Check for Ctrl (Windows/Linux) or Cmd (macOS) modifier
+        const isModifierPressed = e.ctrlKey || e.metaKey;
+        
+        if (isModifierPressed) {
+          // Toggle selection
+          e.preventDefault();
+          e.stopPropagation();
+          togglePointSelection(index);
+        } else {
+          // Single click: select only this point (clear others)
+          // But don't clear if we're about to drag
+          if (!isDrawing) {
+            setSelectedPointIndices(new Set([index]));
+          }
+        }
+      });
 
       // Handle marker left-click to start dragging
       el.addEventListener('mousedown', (e) => {
@@ -2931,22 +3011,52 @@ const MapPanel: React.FC<MapPanelProps> = ({
         e.preventDefault();
         e.stopPropagation();
 
-        // Start left-click drag mode
+        const isModifierPressed = e.ctrlKey || e.metaKey;
+
+        // If clicking on a point while holding Ctrl/Cmd, extend selection
+        // without clearing existing selected points.
+        if (isModifierPressed) {
+          if (!selectedPointIndices.has(index)) {
+            setSelectedPointIndices((prev) => {
+              const next = new Set(prev);
+              next.add(index);
+              return next;
+            });
+          }
+        } else {
+          // No modifier: clicking a non-selected point should select ONLY that point
+          if (!selectedPointIndices.has(index)) {
+            setSelectedPointIndices(new Set([index]));
+          }
+        }
+
+        // Start left-click drag mode (but don't disable interactions yet - wait for actual drag)
         isDraggingWithLeftClick = true;
+        hasStartedDragging = false; // Reset drag flag
         lastValidPosition = [point.lat, point.lng];
         el.style.cursor = 'grabbing';
         el.classList.add('is-dragging');
         marker.setZIndexOffset(1000);
 
-        // Prevent all map interactions while dragging
-        if (map.current) {
-          map.current.dragging.disable();
-          map.current.touchZoom.disable();
-          map.current.doubleClickZoom.disable();
-          map.current.scrollWheelZoom.disable();
-          map.current.boxZoom.disable();
-          map.current.keyboard.disable();
+        // Store drag start position
+        dragStartLatLng = marker.getLatLng();
+
+        // Store original positions of all selected points for group drag
+        if (selectedPointIndices.size > 0) {
+          isGroupDraggingRef.current = true;
+          dragStartPositionsRef.current.clear();
+          selectedPointIndices.forEach((idx) => {
+            if (idx >= 0 && idx < flightPath.length) {
+              dragStartPositionsRef.current.set(idx, { ...flightPath[idx] });
+            }
+          });
+        } else {
+          isGroupDraggingRef.current = false;
+          dragStartPositionsRef.current.clear();
+          dragStartPositionsRef.current.set(index, { ...point });
         }
+
+        // Don't disable map interactions on mousedown - only disable when actual dragging starts (on mousemove)
       });
 
       // Re-add context menu for right-click
@@ -2962,24 +3072,61 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       // Handle mouse move to update marker position during drag
       const handleMouseMove = (e: MouseEvent) => {
-        if (!isDraggingWithLeftClick || !map.current) return;
+        if (!isDraggingWithLeftClick || !map.current || !dragStartLatLng) return;
+
+        // Disable map interactions only when dragging actually starts (first mousemove)
+        if (!hasStartedDragging) {
+          hasStartedDragging = true;
+          if (map.current) {
+            map.current.dragging.disable();
+            map.current.touchZoom.disable();
+            map.current.doubleClickZoom.disable();
+            map.current.scrollWheelZoom.disable();
+            map.current.boxZoom.disable();
+            map.current.keyboard.disable();
+          }
+        }
 
         e.preventDefault();
         e.stopPropagation();
 
         // Use Leaflet's helper to convert the mouse event to map coordinates
-        const latlng = map.current.mouseEventToLatLng(e as any);
-        const lng = latlng.lng;
-        const lat = latlng.lat;
+        const currentLatLng = map.current.mouseEventToLatLng(e as any);
+        const currentLng = currentLatLng.lng;
+        const currentLat = currentLatLng.lat;
 
-        // Check if point is within DTM bounds
-        if (!isPointWithinBounds(lng, lat)) {
-          return; // Don't update if outside bounds
+        // Calculate delta from drag start
+        const deltaLng = currentLng - dragStartLatLng.lng;
+        const deltaLat = currentLat - dragStartLatLng.lat;
+
+        // If group dragging, update all selected markers
+        if (isGroupDraggingRef.current && selectedPointIndices.size > 0) {
+          selectedPointIndices.forEach((idx) => {
+            const originalPos = dragStartPositionsRef.current.get(idx);
+            if (originalPos && idx >= 0 && idx < markersRef.current.length) {
+              const newLng = originalPos.lng + deltaLng;
+              const newLat = originalPos.lat + deltaLat;
+              
+              // Check bounds before updating
+              if (isPointWithinBounds(newLng, newLat)) {
+                const targetMarker = markersRef.current[idx];
+                if (targetMarker) {
+                  targetMarker.setLatLng([newLat, newLng]);
+                }
+              }
+            }
+          });
+        } else {
+          // Single point drag
+          // Check if point is within DTM bounds
+          if (!isPointWithinBounds(currentLng, currentLat)) {
+            return; // Don't update if outside bounds
+          }
+
+          // Update marker position
+          marker.setLatLng([currentLat, currentLng]);
+          lastValidPosition = [currentLat, currentLng];
         }
-
-        // Update marker position
-        marker.setLatLng([lat, lng]);
-        lastValidPosition = [lat, lng];
       };
 
       // Handle mouse up to end drag
@@ -2989,30 +3136,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
         e.preventDefault();
         e.stopPropagation();
 
-        // On release, ALWAYS drop the point exactly where the mouse was released
-        // (even if there were few/no mousemove events).
-        if (map.current) {
-          const dropLatLng = map.current.mouseEventToLatLng(e as any);
-          const dropLng = dropLatLng.lng;
-          const dropLat = dropLatLng.lat;
-
-          if (isPointWithinBounds(dropLng, dropLat)) {
-            // Position change check and warning is now handled in App.tsx via handleUpdatePoint
-            // which checks for anchor points and shows the warning modal
-            marker.setLatLng([dropLat, dropLng]);
-            lastValidPosition = [dropLat, dropLng];
-            // Update React state ONCE at the end to avoid re-rendering/remounting markers mid-drag
-            onUpdatePoint(index, { lng: dropLng, lat: dropLat, height: point.height });
-          }
-        }
-
-        isDraggingWithLeftClick = false;
-        el.style.cursor = 'pointer';
-        el.classList.remove('is-dragging');
-        marker.setZIndexOffset(0);
-
-        // Re-enable all map interactions
-        if (map.current) {
+        // Re-enable map interactions if they were disabled (only if we actually dragged)
+        if (hasStartedDragging && map.current) {
           map.current.dragging.enable();
           map.current.touchZoom.enable();
           map.current.doubleClickZoom.enable();
@@ -3021,14 +3146,92 @@ const MapPanel: React.FC<MapPanelProps> = ({
           map.current.keyboard.enable();
         }
 
-        // Validate final position
-        const finalLatLng = marker.getLatLng();
-        if (!isPointWithinBounds(finalLatLng.lng, finalLatLng.lat)) {
-          // Reset to last valid position if outside bounds
-          marker.setLatLng(lastValidPosition);
-          onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
-          alert('לא ניתן להזיז נקודה מחוץ לתיבת התוחם של ה-DTM. הנקודה אופסה למיקום החוקי הקודם.');
+        if (!map.current || !dragStartLatLng) {
+          isDraggingWithLeftClick = false;
+          hasStartedDragging = false;
+          return;
         }
+
+        // On release, ALWAYS drop the point exactly where the mouse was released
+        const dropLatLng = map.current.mouseEventToLatLng(e as any);
+        const dropLng = dropLatLng.lng;
+        const dropLat = dropLatLng.lat;
+
+        // Calculate final delta
+        const deltaLng = dropLng - dragStartLatLng.lng;
+        const deltaLat = dropLat - dragStartLatLng.lat;
+
+        // If group dragging, update all selected points
+        if (isGroupDraggingRef.current && selectedPointIndices.size > 0) {
+          const updatedPath = [...flightPath];
+          let allValid = true;
+          const updates: Array<{ index: number; point: Coordinate }> = [];
+
+          selectedPointIndices.forEach((idx) => {
+            if (idx >= 0 && idx < flightPath.length) {
+              const originalPos = dragStartPositionsRef.current.get(idx);
+              if (originalPos) {
+                const newLng = originalPos.lng + deltaLng;
+                const newLat = originalPos.lat + deltaLat;
+                
+                if (isPointWithinBounds(newLng, newLat)) {
+                  updatedPath[idx] = {
+                    ...originalPos,
+                    lng: newLng,
+                    lat: newLat
+                  };
+                  updates.push({ index: idx, point: updatedPath[idx] });
+                } else {
+                  allValid = false;
+                }
+              }
+            }
+          });
+
+          if (allValid && updates.length > 0) {
+            // Batch update using onPathChange for single undo entry
+            onPathChange(updatedPath);
+          } else {
+            // Revert all markers to original positions
+            selectedPointIndices.forEach((idx) => {
+              const originalPos = dragStartPositionsRef.current.get(idx);
+              if (originalPos && idx < markersRef.current.length) {
+                const targetMarker = markersRef.current[idx];
+                if (targetMarker) {
+                  targetMarker.setLatLng([originalPos.lat, originalPos.lng]);
+                }
+              }
+            });
+            alert('לא ניתן להזיז נקודות מחוץ לתיבת התוחם של ה-DTM. כל הנקודות אופסו למיקום החוקי הקודם.');
+          }
+        } else {
+          // Single point drag
+          if (isPointWithinBounds(dropLng, dropLat)) {
+            marker.setLatLng([dropLat, dropLng]);
+            lastValidPosition = [dropLat, dropLng];
+            // Update React state ONCE at the end to avoid re-rendering/remounting markers mid-drag
+            onUpdatePoint(index, { lng: dropLng, lat: dropLat, height: point.height });
+          }
+
+          // Validate final position
+          const finalLatLng = marker.getLatLng();
+          if (!isPointWithinBounds(finalLatLng.lng, finalLatLng.lat)) {
+            // Reset to last valid position if outside bounds
+            marker.setLatLng(lastValidPosition);
+            onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
+            alert('לא ניתן להזיז נקודה מחוץ לתיבת התוחם של ה-DTM. הנקודה אופסה למיקום החוקי הקודם.');
+          }
+        }
+
+        isDraggingWithLeftClick = false;
+        hasStartedDragging = false;
+        el.style.cursor = 'pointer';
+        el.classList.remove('is-dragging');
+        marker.setZIndexOffset(0);
+        isGroupDraggingRef.current = false;
+        dragStartPositionsRef.current.clear();
+
+        // Map interactions are already re-enabled above if they were disabled
 
         // Set flag to prevent map click handler from creating a new point
         justFinishedDraggingRef.current = true;
@@ -3065,6 +3268,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         onPathPointHover(null);
       });
 
+      // Store marker and element for selection updates
       markersRef.current.push(marker);
     });
 
@@ -3085,8 +3289,97 @@ const MapPanel: React.FC<MapPanelProps> = ({
     externalEditPointIndex,
     activeRouteColor,
     climbMarkers,
-    showClimbLabels
+    showClimbLabels,
+    selectedPointIndices,
+    togglePointSelection
   ]);
+
+  // Update marker visual state when selection changes
+  useEffect(() => {
+    markersRef.current.forEach((marker) => {
+      const updateFn = (marker as any).__updateSelection;
+      if (updateFn && typeof updateFn === 'function') {
+        updateFn();
+      }
+    });
+  }, [selectedPointIndices]);
+
+  // Keyboard shortcuts for multi-select
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Escape: cancel active drag and revert to original positions
+      if (e.key === 'Escape' && isGroupDraggingRef.current) {
+        // Revert all selected markers to original positions
+        selectedPointIndices.forEach((idx) => {
+          const originalPos = dragStartPositionsRef.current.get(idx);
+          if (originalPos && idx < markersRef.current.length) {
+            const targetMarker = markersRef.current[idx];
+            if (targetMarker) {
+              targetMarker.setLatLng([originalPos.lat, originalPos.lng]);
+            }
+          }
+        });
+        isGroupDraggingRef.current = false;
+        dragStartPositionsRef.current.clear();
+        
+        // Re-enable map interactions
+        if (map.current) {
+          map.current.dragging.enable();
+          map.current.touchZoom.enable();
+          map.current.doubleClickZoom.enable();
+          map.current.scrollWheelZoom.enable();
+          map.current.boxZoom.enable();
+          map.current.keyboard.enable();
+        }
+        
+        // Remove dragging class from all markers
+        markersRef.current.forEach((marker) => {
+          const icon = marker.getIcon();
+          if (icon && (icon as any).options?.html) {
+            const el = (icon as any).options.html as HTMLElement;
+            if (el && el.classList) {
+              el.classList.remove('is-dragging');
+              el.style.cursor = 'pointer';
+            }
+          }
+          marker.setZIndexOffset(0);
+        });
+      }
+      
+      // Delete: delete all selected points (only if not in input/textarea)
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedPointIndices.size > 0) {
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+          return; // Don't delete if user is typing
+        }
+        
+        e.preventDefault();
+        
+        // Confirm deletion if multiple points
+        if (selectedPointIndices.size > 1) {
+          if (!confirm(`האם למחוק ${selectedPointIndices.size} נקודות?`)) {
+            return;
+          }
+        }
+        
+        // Delete points in reverse order to maintain indices
+        const sortedIndices = Array.from(selectedPointIndices).sort((a, b) => b - a);
+        sortedIndices.forEach((idx) => {
+          if (idx >= 0 && idx < flightPath.length) {
+            onDeletePoint(idx);
+          }
+        });
+        
+        // Clear selection
+        setSelectedPointIndices(new Set());
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedPointIndices, flightPath.length, onDeletePoint, setSelectedPointIndices]);
 
   // Handle zoom-dependent buffer width
   useEffect(() => {
@@ -5477,8 +5770,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">פרסה</span>
                 </button>
               </Tooltip>
+              <Tooltip tooltip="בחר את כל הנקודות">
+                <button
+                  onClick={selectAllPoints}
+                  className="btn btn-secondary btn-icon"
+                  disabled={!dtmLoaded || flightPath.length === 0}
+                  aria-label="בחר את כל הנקודות"
+                  type="button"
+                >
+                  <Icon name="checklist" />
+                  <span className="sr-only">בחר הכל</span>
+                </button>
+              </Tooltip>
             </div>
           </div>
+          {selectedPointIndices.size > 0 && (
+            <div className="selection-indicator" style={{ marginTop: '8px', padding: '4px 8px', backgroundColor: '#f0f9ff', borderRadius: '4px', fontSize: '0.875rem', color: '#0369a1' }}>
+              נבחרו: {selectedPointIndices.size}
+            </div>
+          )}
         </div>
 
         <div className="control-group">
@@ -6530,3 +6840,4 @@ const MapPanel: React.FC<MapPanelProps> = ({
 };
 
 export default MapPanel;
+

@@ -715,6 +715,17 @@
   pointer-events: none;
 }
 
+.flight-point-marker.is-selected {
+  border: 3px solid #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.4), 0 4px 8px rgba(0, 0, 0, 0.3);
+  transform: scale(1.1);
+}
+
+.flight-point-marker.is-selected.is-dragging {
+  border-color: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.5), 0 10px 22px rgba(0, 0, 0, 0.35);
+}
+
 .hovered-elevation-marker {
   pointer-events: none !important;
 }

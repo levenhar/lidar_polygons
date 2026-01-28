@@ -585,6 +585,7 @@ interface MapPanelProps {
   nominalFlightHeight: number;
   overlapPercentage: number;
   fovDegrees: number;
+  resolutionHeight: number;
   onUndo: () => void;
   canUndo: boolean;
   editPointIndex?: number | null;
@@ -631,6 +632,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   nominalFlightHeight,
   overlapPercentage,
   fovDegrees,
+  resolutionHeight,
   onUndo,
   canUndo,
   climbMarkers,
@@ -4668,7 +4670,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           dtmPath: dtmSource,
           clippedId: propClippedId ?? undefined,
           coordinates: trajectory,
-          samplingIntervalMeters: 50
+          samplingIntervalMeters: 50,
+          outputHeight: resolutionHeight,
+          fovDegrees: fovDegrees
         })
       });
 
@@ -4734,7 +4738,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         setIsViewshedProcessing(false);
       }
     }
-  }, [dtmSource, dtmLoaded, flightPath, isViewshedProcessing, nominalFlightHeight, propClippedId, stopViewshedPolling, viewshedStatus, loadViewshedFromArrayBuffer, flightPathSignature]);
+  }, [dtmSource, dtmLoaded, flightPath, isViewshedProcessing, nominalFlightHeight, propClippedId, stopViewshedPolling, viewshedStatus, loadViewshedFromArrayBuffer, flightPathSignature, resolutionHeight, fovDegrees]);
 
   const handleViewshedButtonClick = useCallback(() => {
     if (hasViewshedResult) {

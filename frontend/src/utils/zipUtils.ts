@@ -1,4 +1,3 @@
-// @ts-ignore - JSZip may not have TypeScript types installed
 import JSZip from 'jszip';
 
 /**

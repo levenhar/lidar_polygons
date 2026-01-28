@@ -1551,6 +1551,7 @@ function App() {
             nominalFlightHeight={nominalFlightHeight}
             overlapPercentage={overlapPercentage}
             fovDegrees={fovDegrees}
+            resolutionHeight={resolutionHeight}
             onUndo={handleUndo}
             canUndo={globalUndoRedo.canUndo}
             editPointIndex={editPointIndex}

@@ -23,14 +23,17 @@ from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from enum import Enum
 
+# Import constants
+import constants as C
+
 logger = logging.getLogger("dtm_lease_manager")
 
 # Default lease duration in seconds (5 minutes)
-DEFAULT_LEASE_DURATION_SECONDS = 300
+DEFAULT_LEASE_DURATION_SECONDS = C.DEFAULT_LEASE_DURATION_SECONDS
 # Grace period after lease expires before cleanup (30 seconds)
-LEASE_GRACE_PERIOD_SECONDS = 30
+LEASE_GRACE_PERIOD_SECONDS = C.LEASE_GRACE_PERIOD_SECONDS
 # Background cleanup interval (60 seconds)
-CLEANUP_INTERVAL_SECONDS = 60
+CLEANUP_INTERVAL_SECONDS = C.CLEANUP_INTERVAL_SECONDS
 
 
 class LeaseStatus(str, Enum):
@@ -133,14 +136,14 @@ class DtmLeaseManager:
         if not hasattr(self._local, 'connection') or self._local.connection is None:
             conn = sqlite3.connect(
                 self.db_path,
-                timeout=30.0,  # Wait up to 30 seconds for locks
+                timeout=C.SQLITE_TIMEOUT_SECONDS,  # Wait up to 30 seconds for locks
                 isolation_level=None,  # Autocommit mode for explicit transaction control
                 check_same_thread=False
             )
             conn.row_factory = sqlite3.Row
             # Enable WAL mode for better concurrency
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute(f"PRAGMA busy_timeout={C.SQLITE_BUSY_TIMEOUT_MS}")
             self._local.connection = conn
         return self._local.connection
 
@@ -284,7 +287,7 @@ class DtmLeaseManager:
                 (dtm_id, storage_path, status, created_at, last_accessed_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (dtm_id, storage_path, DtmStatus.AVAILABLE.value, now, now)
+                (dtm_id, storage_path, C.DTM_STATUS_AVAILABLE, now, now)
             )
         
         self._log_audit(
@@ -312,12 +315,12 @@ class DtmLeaseManager:
             SELECT r.*, 
                    (SELECT COUNT(*) FROM dtm_leases l 
                     WHERE l.dtm_id = r.dtm_id 
-                    AND l.status = 'active' 
+                    AND l.status = ? 
                     AND l.expires_at > ?) as active_lease_count
             FROM dtm_records r
             WHERE r.dtm_id = ?
             """,
-            (time.time(), dtm_id)
+            (C.LEASE_STATUS_ACTIVE, time.time(), dtm_id)
         ).fetchone()
         
         if row is None:
@@ -376,9 +379,9 @@ class DtmLeaseManager:
                 """
                 SELECT * FROM dtm_leases
                 WHERE dtm_id = ? AND client_id = ? AND session_id IS ?
-                AND status = 'active' AND expires_at > ?
+                AND status = ? AND expires_at > ?
                 """,
-                (dtm_id, client_id, session_id, now)
+                (dtm_id, client_id, session_id, C.LEASE_STATUS_ACTIVE, now)
             ).fetchone()
             
             if existing:
@@ -422,7 +425,7 @@ class DtmLeaseManager:
                 (lease_id, dtm_id, client_id, session_id, created_at, expires_at, last_renewed_at, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (lease_id, dtm_id, client_id, session_id, now, expires_at, now, LeaseStatus.ACTIVE.value)
+                (lease_id, dtm_id, client_id, session_id, now, expires_at, now, C.LEASE_STATUS_ACTIVE)
             )
             
             # Ensure DTM record exists (auto-register if accessed without explicit registration)
@@ -432,7 +435,7 @@ class DtmLeaseManager:
                 (dtm_id, storage_path, status, created_at, last_accessed_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (dtm_id, "", DtmStatus.AVAILABLE.value, now, now)
+                (dtm_id, "", C.DTM_STATUS_AVAILABLE, now, now)
             )
             
             # Update last access time
@@ -560,7 +563,7 @@ class DtmLeaseManager:
             
             conn.execute(
                 "UPDATE dtm_leases SET status = ? WHERE lease_id = ?",
-                (LeaseStatus.RELEASED.value, lease_id)
+                (C.LEASE_STATUS_RELEASED, lease_id)
             )
         
         self._log_audit(
@@ -603,10 +606,10 @@ class DtmLeaseManager:
         rows = conn.execute(
             """
             SELECT * FROM dtm_leases
-            WHERE dtm_id = ? AND status = 'active' AND expires_at > ?
+            WHERE dtm_id = ? AND status = ? AND expires_at > ?
             ORDER BY expires_at DESC
             """,
-            (dtm_id, now)
+            (dtm_id, C.LEASE_STATUS_ACTIVE, now)
         ).fetchall()
         
         return [
@@ -630,9 +633,9 @@ class DtmLeaseManager:
         row = conn.execute(
             """
             SELECT COUNT(*) as count FROM dtm_leases
-            WHERE dtm_id = ? AND status = 'active' AND expires_at > ?
+            WHERE dtm_id = ? AND status = ? AND expires_at > ?
             """,
-            (dtm_id, now)
+            (dtm_id, C.LEASE_STATUS_ACTIVE, now)
         ).fetchone()
         return row["count"] if row else 0
 
@@ -708,7 +711,7 @@ class DtmLeaseManager:
                 # Mark as deleting (will be cleaned up when leases expire)
                 conn.execute(
                     "UPDATE dtm_records SET status = ? WHERE dtm_id = ?",
-                    (DtmStatus.DELETING.value, dtm_id)
+                    (C.DTM_STATUS_DELETING, dtm_id)
                 )
                 self._log_audit(
                     dtm_id=dtm_id,
@@ -722,7 +725,7 @@ class DtmLeaseManager:
             else:
                 conn.execute(
                     "UPDATE dtm_records SET status = ? WHERE dtm_id = ?",
-                    (DtmStatus.DELETED.value, dtm_id)
+                    (C.DTM_STATUS_DELETED, dtm_id)
                 )
                 self._log_audit(
                     dtm_id=dtm_id,
@@ -743,7 +746,7 @@ class DtmLeaseManager:
         with self._transaction() as conn:
             conn.execute(
                 "UPDATE dtm_records SET status = ? WHERE dtm_id = ?",
-                (DtmStatus.DELETED.value, dtm_id)
+                (C.DTM_STATUS_DELETED, dtm_id)
             )
             # Clean up leases for deleted DTM
             conn.execute(
@@ -779,9 +782,9 @@ class DtmLeaseManager:
                 """
                 UPDATE dtm_leases 
                 SET status = ?
-                WHERE status = 'active' AND expires_at < ?
+                WHERE status = ? AND expires_at < ?
                 """,
-                (LeaseStatus.EXPIRED.value, grace_time)
+                (C.LEASE_STATUS_EXPIRED, C.LEASE_STATUS_ACTIVE, grace_time)
             )
             expired_count = result.rowcount
             
@@ -789,14 +792,14 @@ class DtmLeaseManager:
             pending_deletions = conn.execute(
                 """
                 SELECT dtm_id FROM dtm_records
-                WHERE status = 'deleting'
+                WHERE status = ?
                 AND NOT EXISTS (
                     SELECT 1 FROM dtm_leases
                     WHERE dtm_leases.dtm_id = dtm_records.dtm_id
-                    AND status = 'active' AND expires_at > ?
+                    AND status = ? AND expires_at > ?
                 )
                 """,
-                (now,)
+                (C.DTM_STATUS_DELETING, C.LEASE_STATUS_ACTIVE, now)
             ).fetchall()
             
             for row in pending_deletions:
@@ -815,14 +818,14 @@ class DtmLeaseManager:
         rows = conn.execute(
             """
             SELECT dtm_id FROM dtm_records
-            WHERE status = 'deleting'
+            WHERE status = ?
             AND NOT EXISTS (
                 SELECT 1 FROM dtm_leases
                 WHERE dtm_leases.dtm_id = dtm_records.dtm_id
-                AND status = 'active' AND expires_at > ?
+                AND status = ? AND expires_at > ?
             )
             """,
-            (now,)
+            (C.DTM_STATUS_DELETING, C.LEASE_STATUS_ACTIVE, now)
         ).fetchall()
         
         return [row["dtm_id"] for row in rows]
@@ -858,7 +861,7 @@ class DtmLeaseManager:
                 logger.error(f"Error in cleanup loop: {e}", exc_info=True)
             
             # Wait for next interval or shutdown
-            self._shutdown_event.wait(timeout=CLEANUP_INTERVAL_SECONDS)
+            self._shutdown_event.wait(timeout=C.CLEANUP_INTERVAL_SECONDS)
 
     # =========================================================================
     # Metrics and Observability
@@ -871,8 +874,8 @@ class DtmLeaseManager:
         
         # Active leases count
         active_leases = conn.execute(
-            "SELECT COUNT(*) as count FROM dtm_leases WHERE status = 'active' AND expires_at > ?",
-            (now,)
+            "SELECT COUNT(*) as count FROM dtm_leases WHERE status = ? AND expires_at > ?",
+            (C.LEASE_STATUS_ACTIVE, now)
         ).fetchone()["count"]
         
         # Total DTMs
@@ -884,14 +887,15 @@ class DtmLeaseManager:
         protected_dtms = conn.execute(
             """
             SELECT COUNT(DISTINCT dtm_id) as count FROM dtm_leases 
-            WHERE status = 'active' AND expires_at > ?
+            WHERE status = ? AND expires_at > ?
             """,
-            (now,)
+            (C.LEASE_STATUS_ACTIVE, now)
         ).fetchone()["count"]
         
         # Pending deletions
         pending_deletions = conn.execute(
-            "SELECT COUNT(*) as count FROM dtm_records WHERE status = 'deleting'"
+            "SELECT COUNT(*) as count FROM dtm_records WHERE status = ?",
+            (C.DTM_STATUS_DELETING,)
         ).fetchone()["count"]
         
         # Recent audit log counts (last hour)

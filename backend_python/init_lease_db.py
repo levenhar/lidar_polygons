@@ -15,6 +15,9 @@ import sys
 import sqlite3
 from datetime import datetime
 
+# Import constants
+import constants as C
+
 
 def get_default_db_path():
     """Get the default database path."""
@@ -114,8 +117,8 @@ def init_database(db_path: str, verify: bool = False):
         dtm_count = conn.execute("SELECT COUNT(*) FROM dtm_records").fetchone()[0]
         lease_count = conn.execute("SELECT COUNT(*) FROM dtm_leases").fetchone()[0]
         active_lease_count = conn.execute(
-            "SELECT COUNT(*) FROM dtm_leases WHERE status = 'active' AND expires_at > ?",
-            (datetime.now().timestamp(),)
+            "SELECT COUNT(*) FROM dtm_leases WHERE status = ? AND expires_at > ?",
+            (C.LEASE_STATUS_ACTIVE, datetime.now().timestamp())
         ).fetchone()[0]
         audit_count = conn.execute("SELECT COUNT(*) FROM dtm_audit_log").fetchone()[0]
         

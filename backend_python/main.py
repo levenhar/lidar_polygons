@@ -22,6 +22,9 @@ import threading
 import uuid
 import atexit
 
+# Import constants
+import constants as C
+
 # Import DTM lease manager for protection
 from dtm_lease_manager import (
     get_lease_manager, 
@@ -74,7 +77,7 @@ else:
     # Default to a path relative to the backend_python directory, independent of uploads
     backend_python_dir = os.path.dirname(os.path.abspath(__file__))
     # Use correct on-disk casing ('Cache') to work on case-sensitive filesystems (Linux prod)
-    DTM_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, "DTM_TIFF/Cache"))
+    DTM_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, f"{C.DIR_DTM_TIFF}/{C.DIR_CACHE}"))
 
 # Subsampled cache directory - where subsampled versions for display are stored
 DTM_SUBSAMPLED_CACHE_DIR_ENV = os.environ.get("DTM_SUBSAMPLED_CACHE_DIR")
@@ -90,20 +93,17 @@ if VIEWSHED_CACHE_DIR_ENV:
     VIEWSHED_CACHE_DIR = os.path.abspath(VIEWSHED_CACHE_DIR_ENV)
 else:
     backend_python_dir = os.path.dirname(os.path.abspath(__file__))
-    VIEWSHED_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, "DTM_TIFF/Viewshed"))
+    VIEWSHED_CACHE_DIR = os.path.abspath(os.path.join(backend_python_dir, f"{C.DIR_DTM_TIFF}/{C.DIR_VIEWSHED}"))
 
 # Ensure cache directories exist
 os.makedirs(DTM_CACHE_DIR, exist_ok=True)
 os.makedirs(DTM_SUBSAMPLED_CACHE_DIR, exist_ok=True)
 os.makedirs(VIEWSHED_CACHE_DIR, exist_ok=True)
 
-# Maximum dimension for subsampled display versions
-MAX_DISPLAY_DIM = 2048
-
 def get_subsampled_filename(filename: str) -> str:
     """Add 'subsample' to the filename before the extension"""
     name, ext = os.path.splitext(filename)
-    return f"{name}_subsample{ext}"
+    return f"{name}{C.SUFFIX_SUBSAMPLE}{ext}"
 
 logger.info(f"UPLOADS_DIR: {UPLOADS_DIR}")
 logger.info(f"DTM_DATA_DIR: {DTM_DATA_DIR}")
@@ -113,8 +113,8 @@ logger.info(f"DTM_SUBSAMPLED_CACHE_DIR: {DTM_SUBSAMPLED_CACHE_DIR}")
 class ElevationProfileRequest(BaseModel):
     coordinates: List[List[float]]
     dtmPath: str
-    safetyRadiusMeters: Optional[float] = 50.0
-    resolutionRadiusMeters: Optional[float] = 50.0
+    safetyRadiusMeters: Optional[float] = C.DEFAULT_SAFETY_RADIUS_METERS
+    resolutionRadiusMeters: Optional[float] = C.DEFAULT_RESOLUTION_RADIUS_METERS
     clippedId: Optional[str] = None
 
 class AOI(BaseModel):
@@ -142,9 +142,11 @@ class ViewshedRequest(BaseModel):
     coordinates: List[ViewshedPoint]
     dtmPath: str
     clippedId: Optional[str] = None
-    samplingIntervalMeters: Optional[float] = 50.0
+    samplingIntervalMeters: Optional[float] = C.DEFAULT_SAMPLING_INTERVAL_METERS
     maxDistanceMeters: Optional[float] = None
-    useSubsampled: Optional[bool] = True
+    useSubsampled: Optional[bool] = C.DEFAULT_VIEWSHED_USE_SUBSAMPLED
+    outputHeight: Optional[float] = None
+    fovDegrees: Optional[float] = None
 
 # ============================================================================
 # DTM LEASE API MODELS
@@ -184,7 +186,7 @@ def cleanup_on_shutdown():
 # ============================================================================
 
 # Duration for implicit leases (shorter than explicit - 2 minutes)
-IMPLICIT_LEASE_DURATION_SECONDS = 120
+IMPLICIT_LEASE_DURATION_SECONDS = C.IMPLICIT_LEASE_DURATION_SECONDS
 
 
 def implicitly_acquire_or_renew_lease(
@@ -255,8 +257,7 @@ def haversine(lon1, lat1, lon2, lat2):
     dlat = lat2 - lat1 
     a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
     c = 2 * asin(sqrt(a)) 
-    r = 6371000 # Radius of earth in meters. Use 3956 for miles
-    return c * r
+    return c * C.EARTH_RADIUS_METERS
 
 def interpolate_segment(start, end, interval_meters):
     dist = haversine(start[0], start[1], end[0], end[1])
@@ -328,7 +329,7 @@ def is_visible_line(data, row0, col0, row1, col1, obs_elev, res_x, res_y, meters
     if target_dist <= 0:
         return True
     target_angle = (target_elev - obs_elev) / target_dist
-    max_angle = -1e9
+    max_angle = C.VIEWSHED_MIN_ANGLE_INIT
     for r, c in line[1:-1]:
         elev = data[r, c]
         if np.isnan(elev):
@@ -383,9 +384,9 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
             src_crs = src.crs
             if not src_crs:
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs = "EPSG:32636" if is_projected else "EPSG:4326"
+                src_crs = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
 
-            transformer = Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
+            transformer = Transformer.from_crs(C.EPSG_WGS84, src_crs, always_xy=True)
             data = src.read(1).astype(np.float32)
             nodata = src.nodata
 
@@ -430,8 +431,8 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                     continue
                 obs_elev = float(obs_elev) + float(height_agl)
 
-                meters_per_deg_lat = 111320.0
-                meters_per_deg_lon = 111320.0 * cos(radians(lat))
+                meters_per_deg_lat = C.METERS_PER_DEGREE_LATITUDE
+                meters_per_deg_lon = C.METERS_PER_DEGREE_LATITUDE * cos(radians(lat))
 
                 row_min, row_max = 0, src.height - 1
                 col_min, col_max = 0, src.width - 1
@@ -472,17 +473,17 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                         if job_id in viewshed_jobs:
                             viewshed_jobs[job_id]["progress"] = progress
 
-            viewshed[np.isnan(data)] = -1
+            viewshed[np.isnan(data)] = C.VIEWSHED_NODATA_VALUE
 
             out_meta = src.meta.copy()
             out_meta.update({
-                "driver": "GTiff",
+                "driver": C.RASTER_DRIVER_GTIFF,
                 "height": viewshed.shape[0],
                 "width": viewshed.shape[1],
                 "count": 1,
                 "dtype": rasterio.int32,
-                "nodata": -1,
-                "compress": "lzw"
+                "nodata": C.VIEWSHED_NODATA_VALUE,
+                "compress": C.RASTER_COMPRESSION_LZW
             })
 
             output_name = f"viewshed_{int(time.time() * 1000)}.tif"
@@ -572,12 +573,15 @@ async def get_elevation_profile(
             if not src_crs:
                 # Heuristic fallback if CRS is missing
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs = "EPSG:32636" if is_projected else "EPSG:4326"
+                src_crs = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
             
-            transformer = Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
+            transformer = Transformer.from_crs(C.EPSG_WGS84, src_crs, always_xy=True)
             
-            # Generate sampling points
-            sampling_interval = 5.0 # meters
+            # Generate sampling points along the route
+            # IMPORTANT: Always use ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS for ground elevation sampling,
+            # regardless of safety radius or resolution radius values. The safety radius is only used
+            # for calculating min/max elevation within a radius, not for determining sampling density.
+            sampling_interval = C.ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS
             all_points = [request.coordinates[0]]
             
             for i in range(len(request.coordinates) - 1):
@@ -660,8 +664,8 @@ async def get_elevation_profile(
                 else:
                     # Geographic CRS (units are degrees)
                     # Convert degrees to meters approximately at this latitude
-                    meters_per_degree_lat = 111320.0
-                    meters_per_degree_lon = 111320.0 * cos(radians(lat))
+                    meters_per_degree_lat = C.METERS_PER_DEGREE_LATITUDE
+                    meters_per_degree_lon = C.METERS_PER_DEGREE_LATITUDE * cos(radians(lat))
                     dist_sq = ((rows - rel_row) * abs(res_y) * meters_per_degree_lat)**2 + \
                               ((cols - rel_col) * abs(res_x) * meters_per_degree_lon)**2
                 
@@ -751,9 +755,9 @@ async def get_elevation_at_point(
             if not src_crs:
                 # Heuristic fallback if CRS is missing
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs = "EPSG:32636" if is_projected else "EPSG:4326"
+                src_crs = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
             
-            transformer = Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
+            transformer = Transformer.from_crs(C.EPSG_WGS84, src_crs, always_xy=True)
             
             # Transform to DTM CRS
             x, y = transformer.transform(request.longitude, request.latitude)
@@ -1114,7 +1118,7 @@ async def get_dtm_options():
         
         # Scan for TIFF files
         for filename in os.listdir(DTM_DATA_DIR):
-            if filename.lower().endswith(('.tif', '.tiff', '.geotiff')):
+            if filename.lower().endswith(C.DTM_EXTENSIONS):
                 file_path = os.path.join(DTM_DATA_DIR, filename)
                 
                 # Skip if it's not a file
@@ -1225,8 +1229,8 @@ async def upload_dtm(dtm: UploadFile = File(...)):
         subsampled_filename = get_subsampled_filename(filename)
         subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
         with rasterio.open(cache_file_path) as src:
-            if src.width > MAX_DISPLAY_DIM or src.height > MAX_DISPLAY_DIM:
-                scale = max(src.width, src.height) / MAX_DISPLAY_DIM
+            if src.width > C.MAX_DISPLAY_DIM or src.height > C.MAX_DISPLAY_DIM:
+                scale = max(src.width, src.height) / C.MAX_DISPLAY_DIM
                 new_width = int(src.width / scale)
                 new_height = int(src.height / scale)
                 logger.info(f"Creating subsampled version for uploaded DTM: {src.width}x{src.height} -> {new_width}x{new_height}")
@@ -1931,8 +1935,8 @@ async def get_dtm_raster(filename: str):
             # Fallback: if subsampled version doesn't exist, create on-the-fly from original
             logger.info(f"Subsampled version not found, creating on-the-fly for display")
             with rasterio.open(file_path) as src:  # file_path is already the original from cache
-                if src_width > MAX_DISPLAY_DIM or src_height > MAX_DISPLAY_DIM:
-                    scale = max(src_width, src_height) / MAX_DISPLAY_DIM
+                if src_width > C.MAX_DISPLAY_DIM or src_height > C.MAX_DISPLAY_DIM:
+                    scale = max(src_width, src_height) / C.MAX_DISPLAY_DIM
                     new_width = int(src_width / scale)
                     new_height = int(src_height / scale)
                     logger.info(f"On-the-fly subsampling: {src_width}x{src_height} -> {new_width}x{new_height} (factor {scale:.2f})")
@@ -2002,7 +2006,7 @@ async def clip_dtm(request: ClipRequest):
             if not src_crs:
                 # Try to infer CRS from bounds
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs_str = "EPSG:32636" if is_projected else "EPSG:4326"
+                src_crs_str = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
                 src_crs = pyproj.CRS.from_string(src_crs_str)
             else:
                 # Ensure src_crs is a pyproj.CRS object
@@ -2050,11 +2054,11 @@ async def clip_dtm(request: ClipRequest):
             
             # Update metadata
             out_meta.update({
-                "driver": "GTiff",
+                "driver": C.RASTER_DRIVER_GTIFF,
                 "height": out_image.shape[1],
                 "width": out_image.shape[2],
                 "transform": out_transform,
-                "compress": "lzw"
+                "compress": C.RASTER_COMPRESSION_LZW
             })
             
             # Calculate bounds from transform
@@ -2064,7 +2068,7 @@ async def clip_dtm(request: ClipRequest):
             bottom = top + out_transform[4] * out_meta["height"]
             
             # Transform bounds to WGS84
-            out_bounds = rasterio.warp.transform_bounds(src_crs, "EPSG:4326", left, bottom, right, top)
+            out_bounds = rasterio.warp.transform_bounds(src_crs, C.EPSG_WGS84, left, bottom, right, top)
             
             # Write full-resolution clipped raster (for calculations)
             with rasterio.open(clipped_file_path, "w", **out_meta) as dest:
@@ -2075,8 +2079,8 @@ async def clip_dtm(request: ClipRequest):
             os.makedirs(DTM_SUBSAMPLED_CACHE_DIR, exist_ok=True)
             subsampled_filename = get_subsampled_filename(f"{clipped_id}.tif")
             subsampled_file_path = os.path.join(DTM_SUBSAMPLED_CACHE_DIR, subsampled_filename)
-            if out_meta["width"] > MAX_DISPLAY_DIM or out_meta["height"] > MAX_DISPLAY_DIM:
-                scale = max(out_meta["width"], out_meta["height"]) / MAX_DISPLAY_DIM
+            if out_meta["width"] > C.MAX_DISPLAY_DIM or out_meta["height"] > C.MAX_DISPLAY_DIM:
+                scale = max(out_meta["width"], out_meta["height"]) / C.MAX_DISPLAY_DIM
                 new_width = int(out_meta["width"] / scale)
                 new_height = int(out_meta["height"] / scale)
                 logger.info(f"Creating subsampled version: {out_meta['width']}x{out_meta['height']} -> {new_width}x{new_height}")
@@ -2175,7 +2179,7 @@ async def get_clipped_dtm_metadata(clipped_id: str):
         with rasterio.open(clipped_file_path) as src:
             bounds = src.bounds
             # Transform bounds to WGS84
-            wgs84_bounds = rasterio.warp.transform_bounds(src.crs, "EPSG:4326", *bounds)
+            wgs84_bounds = rasterio.warp.transform_bounds(src.crs, C.EPSG_WGS84, *bounds)
             
             return {
                 "clippedId": clipped_id,
@@ -2277,7 +2281,7 @@ async def get_clipped_dtm_raster(
             render_width = src_width
             render_height = src_height
         
-        wgs84_bounds = rasterio.warp.transform_bounds(src_crs, "EPSG:4326", *bounds) if src_crs else bounds
+        wgs84_bounds = rasterio.warp.transform_bounds(src_crs, C.EPSG_WGS84, *bounds) if src_crs else bounds
         flat_data = display_data.flatten()
         
         res = {

@@ -4831,17 +4831,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     map.current.setView([31.0461, 34.8516], 6); // Israel default
   };
 
-  const handleSetFlightHeight = (pointIndex: number) => {
-    const currentPoint = flightPath[pointIndex];
-    const currentHeight = currentPoint.height ?? nominalFlightHeight;
-    setDialog({
-      type: 'height',
-      title: `גובה נקודה ${pointIndex + 1}`
-    });
-    setDialogValues({ height: currentHeight.toString(), pointIndex: pointIndex.toString() });
-    setDialogError(null);
-  };
-
   const handleCreatePointFromAzimuthDistance = () => {
     if (flightPath.length === 0) {
       alert('הוסף נקודה תחילה.');
@@ -5984,10 +5973,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
           onClose={() => setContextMenu(null)}
           onDelete={() => {
             onDeletePoint(contextMenu.pointIndex);
-            setContextMenu(null);
-          }}
-          onSetHeight={() => {
-            handleSetFlightHeight(contextMenu.pointIndex);
             setContextMenu(null);
           }}
         />

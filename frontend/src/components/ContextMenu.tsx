@@ -7,7 +7,6 @@ interface ContextMenuProps {
   onClose: () => void;
   onDelete: () => void;
   onEdit?: () => void;
-  onSetHeight?: () => void;
 }
 
 const ContextMenu: React.FC<ContextMenuProps> = ({
@@ -15,8 +14,7 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
   y,
   onClose,
   onDelete,
-  onEdit,
-  onSetHeight
+  onEdit
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
 

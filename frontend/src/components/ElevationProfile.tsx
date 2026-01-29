@@ -2334,10 +2334,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const handleSetFlightHeight = (pointIndex: number) => {
-    onSetFlightHeight(pointIndex);
-  };
-
   // Clear hover state when mouse leaves the entire panel
   useEffect(() => {
     if (!panelRef.current) return;
@@ -2380,10 +2376,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           }}
           onEdit={() => {
             onEditPointRequest(contextMenu.pointIndex);
-            setContextMenu(null);
-          }}
-          onSetHeight={() => {
-            handleSetFlightHeight(contextMenu.pointIndex);
             setContextMenu(null);
           }}
         />

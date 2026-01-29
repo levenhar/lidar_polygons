@@ -3408,17 +3408,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const midpointLat = (start.lat + end.lat) / 2;
       const midpointLng = (start.lng + end.lng) / 2;
 
-      const bearingDeg = (calculateBearing(start, end) * 180) / Math.PI;
+      const bearingRad = calculateBearing(start, end);
+      const bearingDeg = (bearingRad * 180) / Math.PI;
       const normalizedBearing = ((bearingDeg % 360) + 360) % 360;
+      const azimuthDeg = Math.round(normalizedBearing);
       let displayAngle = normalizedBearing <= 270 ? bearingDeg - 90 : bearingDeg + 90;
       // Add extra 180 degree rotation for azimuth between 180-270
       if (normalizedBearing >= 180 && normalizedBearing <= 270) {
         displayAngle += 180;
       }
 
+      // Offset label by constant pixel amount perpendicular to the line
+      // Transform order (applied right-to-left): center, rotate, then offset perpendicular
+      const offsetPixels = 12; // pixels
       const labelIcon = L.divIcon({
         className: 'segment-length-label',
-        html: `<span style="transform: translate(-50%, -50%) rotate(${displayAngle}deg);">${formatSegmentLength(distanceMeters)}</span>`
+        html: `<span style="transform: translateY(-${offsetPixels}px) rotate(${displayAngle}deg) translate(-50%, -50%); direction: ltr; text-align: left;">${formatSegmentLength(distanceMeters)} | ${azimuthDeg}°</span>`
       });
 
       const labelMarker = L.marker([midpointLat, midpointLng], {

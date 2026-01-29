@@ -12,6 +12,7 @@ import CoordinateTooltip from './CoordinateTooltip';
 import SuccessNotification from './SuccessNotification';
 import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, samplePointsAlongLine } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
+import { debug } from '../utils/debug';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 
@@ -1437,7 +1438,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               throw new Error(data.error || 'Upload failed');
             }
           } catch (parseError) {
-            console.error('Error parsing response:', parseError);
+            debug.error('Error parsing response:', parseError);
             setLocalFileError('Failed to parse server response');
           }
         } else {
@@ -1456,7 +1457,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       });
       
       xhr.addEventListener('error', () => {
-        console.error('Error uploading DTM:', xhr.statusText);
+        debug.error('Error uploading DTM:', xhr.statusText);
         setLocalFileError('Failed to upload DTM file. Please try again.');
         setIsLocalUploading(false);
         setLocalUploadProgress(0);
@@ -1470,7 +1471,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       xhr.open('POST', '/api/upload-dtm');
       xhr.send(formData);
     } catch (error) {
-      console.error('Error uploading DTM:', error);
+      debug.error('Error uploading DTM:', error);
       setLocalFileError('Failed to upload DTM file. Please try again.');
       setIsLocalUploading(false);
       setLocalUploadProgress(0);
@@ -1489,7 +1490,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const data = await response.json();
       setDtmOptions(data.options || []);
     } catch (error) {
-      console.error('Error fetching DTM options:', error);
+      debug.error('Error fetching DTM options:', error);
       setDtmOptionsError(error instanceof Error ? error.message : 'Error loading DTM list');
     } finally {
       setDtmOptionsLoading(false);
@@ -1688,7 +1689,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       });
 
     } catch (error) {
-      console.error('Error clipping DTM:', error);
+      debug.error('Error clipping DTM:', error);
       alert(`שגיאה בחיתוך DTM: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
     } finally {
       setIsClipping(false);
@@ -1705,9 +1706,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       await fetch(`/api/dtm/clipped/${targetId}`, {
         method: 'DELETE'
       });
-      console.log(`Deleted clipped DTM: ${targetId}`);
     } catch (error) {
-      console.error('Error deleting clipped DTM:', error);
+      debug.error('Error deleting clipped DTM:', error);
     }
   }, [activeClippedId]);
   */
@@ -1857,20 +1857,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const switchBaseMap = useCallback((nextBaseMapId: string) => {
     if (!map.current || !tileLayerOptionsRef.current) {
-      console.warn('⚠️ Cannot switch basemap - missing dependencies');
       return;
     }
     const nextBaseMap = baseMaps.find((entry) => entry.id === nextBaseMapId);
     if (!nextBaseMap) {
-      console.warn('⚠️ Basemap not found:', nextBaseMapId);
       return;
     }
     if (nextBaseMap.id === activeBaseMapId) {
-      console.log('ℹ️ Already on basemap:', nextBaseMapId);
       return;
     }
-
-    console.log('🔄 Switching basemap to:', nextBaseMap.name);
 
     if (baseLayerRef.current) {
       baseLayerRef.current.remove();
@@ -1884,10 +1879,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       urlWithToken = `${nextBaseMap.url}${separator}token=${mapTokenRef.current}`;
     }
 
-    console.log('🗺️ New basemap URL:', urlWithToken);
     baseLayerRef.current = L.tileLayer(urlWithToken, tileLayerOptionsRef.current).addTo(map.current);
     setActiveBaseMapId(nextBaseMap.id);
-    console.log('✅ Basemap switched successfully');
   }, [activeBaseMapId, baseMaps]);
 
   const handleCycleBaseMap = useCallback(() => {
@@ -1931,7 +1924,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (L.CRS[crsKey]) {
           leafletCrs = L.CRS[crsKey];
         } else {
-          console.warn(`Unknown CRS: ${crsString}. Defaulting to EPSG3857.`);
+          debug.warn(`Unknown CRS: ${crsString}. Defaulting to EPSG3857.`);
           leafletCrs = L.CRS.EPSG3857;
         }
       }
@@ -1983,8 +1976,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const previewData: BaseMapPreviewResponse = await response_preview.json();
       setPreviewConfig(previewData);
 
-      console.log('🗺️ Map URLs received:', { primaryUrl, alternateUrl });
-
       const availableBaseMaps: BaseMapConfig[] = [];
       if (primaryUrl) {
         availableBaseMaps.push({
@@ -2001,15 +1992,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
         });
       }
 
-      console.log('🗺️ Available basemaps:', availableBaseMaps);
-
-      console.log('🔍 Checking dependencies:', {
-        mapExists: !!map.current,
-        baseMapsCount: availableBaseMaps.length,
-        tileOptionsExists: !!tileLayerOptionsRef.current,
-        token: mapTokenRef.current || '(empty)'
-      });
-
       if (map.current && availableBaseMaps.length > 0 && tileLayerOptionsRef.current) {
         const initialBaseMap = availableBaseMaps[0];
         let initialUrl = initialBaseMap.url;
@@ -2020,12 +2002,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
           initialUrl = `${initialBaseMap.url}${separator}token=${mapTokenRef.current}`;
         }
 
-        console.log('🗺️ Initializing basemap:', { id: initialBaseMap.id, url: initialUrl });
         baseLayerRef.current = L.tileLayer(initialUrl, tileLayerOptionsRef.current).addTo(map.current);
         setActiveBaseMapId(initialBaseMap.id);
-        console.log('✅ Basemap layer added to map');
       } else {
-        console.error('❌ Cannot add basemap - missing dependencies');
+        debug.error('Cannot add basemap - missing dependencies');
       }
 
       setBaseMaps(availableBaseMaps);
@@ -2388,7 +2368,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           map.current.fitBounds(aoiPolygonRef.current.getBounds(), { padding: [50, 50] });
         }
       } catch (error) {
-        console.error('Error parsing KML:', error);
+        debug.error('Error parsing KML:', error);
         alert('שגיאה בקריאת קובץ KML');
       }
     };
@@ -2741,29 +2721,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (avgAGLCacheRef.current.has(cacheKey) && hasPlannedAltitudes) {
       const cached = avgAGLCacheRef.current.get(cacheKey);
       if (cached !== undefined) {
-        console.log(`[avgAGL] Cache hit for segment ${startIndex}-${endIndex}: ${cached !== null ? cached.toFixed(1) + 'm' : 'null'} (profile has planned altitudes)`);
         return cached;
       }
     } else if (avgAGLCacheRef.current.has(cacheKey) && !hasPlannedAltitudes) {
       // Clear cache if we don't have planned altitudes yet (profile might be updating)
-      console.log(`[avgAGL] Cache exists but elevation profile lacks planned altitudes - recalculating`);
       avgAGLCacheRef.current.delete(cacheKey);
     }
 
     // Get point heights
     const startHeight = start.height ?? nominalFlightHeight;
     const endHeight = end.height ?? nominalFlightHeight;
-    console.log(`[avgAGL] Computing for segment ${startIndex}-${endIndex}: startHeight=${startHeight}m, endHeight=${endHeight}m, nominalFlightHeight=${nominalFlightHeight}m`);
 
     // Check if DTM is available
     if (!dtmRasterDataRef.current) {
-      console.warn(`[avgAGL] DTM unavailable for segment ${startIndex}-${endIndex} - will use fallback (avg height: ${((startHeight + endHeight) / 2).toFixed(1)}m)`);
       avgAGLCacheRef.current.set(cacheKey, null);
       return null;
     }
-
-    console.log(`[avgAGL] DTM available, sampling points for segment ${startIndex}-${endIndex}`);
-    console.log(`[avgAGL] Elevation profile status: length=${elevationProfile?.length || 0}, hasPlannedAltitudes=${elevationProfile?.some(p => p.plannedAltitude !== undefined) || false}`);
 
     // Calculate cumulative distances for the entire flight path to get accurate distance along path
     const cumulativeDistances: number[] = [];
@@ -2783,7 +2756,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     // Sample points along the line (increase to 50 samples for better accuracy)
     const numSamples = 50;
     const samplePoints = samplePointsAlongLine(start, end, numSamples);
-    console.log(`[avgAGL] Sampled ${samplePoints.length} points along segment ${startIndex}-${endIndex} (segment length: ${segmentLength.toFixed(1)}m)`);
     
     const aglValues: number[] = [];
     let validSamples = 0;
@@ -2800,7 +2772,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
       
       // Get planned altitude from elevation profile if available, otherwise interpolate between start and end heights
       let plannedAltitude: number;
-      let altitudeSource = 'fallback';
       if (elevationProfile && elevationProfile.length > 0) {
         // Find the two adjacent points in elevation profile for interpolation
         let pointBefore: ElevationPoint | null = null;
@@ -2826,14 +2797,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           const altBefore = pointBefore.plannedAltitude ?? pointBefore.baseAltitude ?? nominalFlightHeight;
           const altAfter = pointAfter.plannedAltitude ?? pointAfter.baseAltitude ?? nominalFlightHeight;
           plannedAltitude = altBefore + (altAfter - altBefore) * interpolationFactor;
-          altitudeSource = pointBefore.plannedAltitude !== undefined || pointAfter.plannedAltitude !== undefined 
-            ? 'elevationProfile-planned' 
-            : 'elevationProfile-base';
           
-          // Debug logging for first and middle samples
-          if (i === 0 || i === Math.floor(samplePoints.length / 2)) {
-            console.debug(`[avgAGL] Sample ${i}: dist=${distanceAlongPath.toFixed(1)}m, before=${pointBefore.distance.toFixed(1)}m (plannedAlt=${pointBefore.plannedAltitude?.toFixed(1) ?? 'N/A'}, baseAlt=${pointBefore.baseAltitude?.toFixed(1) ?? 'N/A'}), after=${pointAfter.distance.toFixed(1)}m (plannedAlt=${pointAfter.plannedAltitude?.toFixed(1) ?? 'N/A'}, baseAlt=${pointAfter.baseAltitude?.toFixed(1) ?? 'N/A'}), interpolated=${plannedAltitude.toFixed(1)}m (${altitudeSource})`);
-          }
         } else {
           // Distance is outside profile range, use closest point
           let closestPoint = elevationProfile[0];
@@ -2848,13 +2812,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
           }
           
           plannedAltitude = closestPoint.plannedAltitude ?? closestPoint.baseAltitude ?? nominalFlightHeight;
-          altitudeSource = closestPoint.plannedAltitude !== undefined ? 'elevationProfile-closest-planned' : 'elevationProfile-closest-base';
         }
       } else {
         // No elevation profile: interpolate between start and end heights (both are ASL)
         // Entry height (nominalFlightHeight) is ASL, so startHeight and endHeight are ASL
         plannedAltitude = startHeight + (endHeight - startHeight) * t;
-        altitudeSource = 'interpolated-heights';
       }
       
       // Query DTM elevation at this point
@@ -2877,11 +2839,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const agl = plannedAltitude - groundElevation;
       sampleDetails.push({ t, distance: distanceAlongPath, plannedAlt: plannedAltitude, groundElev: groundElevation, agl });
       
-      // Log first and last samples for debugging
-      if (i === 0 || i === samplePoints.length - 1) {
-        console.debug(`[avgAGL] Sample ${i} (t=${t.toFixed(3)}, dist=${distanceAlongPath.toFixed(1)}m): plannedAlt=${plannedAltitude.toFixed(1)}m (${altitudeSource}), groundElev=${groundElevation.toFixed(1)}m, agl=${agl.toFixed(1)}m`);
-      }
-      
       // Accept any finite AGL value (even negative) - the user's flight path might be below ground
       // which is a valid scenario to detect, but we'll still calculate spacing based on the absolute difference
       if (isFinite(agl)) {
@@ -2892,28 +2849,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
         validSamples++;
         if (agl <= 0) {
           negativeAGLCount++;
-          console.warn(`[avgAGL] Sample ${i} (t=${t.toFixed(2)}, dist=${distanceAlongPath.toFixed(1)}m): Flight below ground - plannedAlt=${plannedAltitude.toFixed(1)}m, groundElev=${groundElevation.toFixed(1)}m, agl=${agl.toFixed(1)}m (using abs value: ${aglForSpacing.toFixed(1)}m)`);
         }
       } else {
         dtmNullCount++;
-        console.debug(`[avgAGL] Sample ${i} (t=${t.toFixed(2)}, dist=${distanceAlongPath.toFixed(1)}m): invalid AGL - plannedAlt=${plannedAltitude.toFixed(1)}m, groundElev=${groundElevation.toFixed(1)}m, agl=${agl}`);
       }
     }
-
-    console.log(`[avgAGL] Segment ${startIndex}-${endIndex} analysis:
-  - Total samples: ${samplePoints.length}
-  - Valid AGL samples: ${validSamples}
-  - DTM null/invalid: ${dtmNullCount}
-  - Negative AGL: ${negativeAGLCount}
-  - Required valid samples: ${Math.ceil(samplePoints.length * 0.5)}`);
 
     // If we don't have enough valid samples, return null
     const requiredSamples = Math.ceil(samplePoints.length * 0.5);
     if (validSamples < requiredSamples) {
-      console.warn(`[avgAGL] Insufficient valid samples for segment ${startIndex}-${endIndex}: ${validSamples}/${samplePoints.length} (need ${requiredSamples}) - will use fallback (avg height: ${((startHeight + endHeight) / 2).toFixed(1)}m)`);
-      if (sampleDetails.length > 0 && sampleDetails.length <= 5) {
-        console.log(`[avgAGL] Sample details:`, sampleDetails);
-      }
       avgAGLCacheRef.current.set(cacheKey, null);
       return null;
     }
@@ -2921,12 +2865,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
     // Calculate average AGL
     const avgAGL = aglValues.reduce((sum, agl) => sum + agl, 0) / aglValues.length;
     
-    // Calculate min/max AGL for debugging
-    const minAGL = Math.min(...aglValues);
-    const maxAGL = Math.max(...aglValues);
-    
     if (!isFinite(avgAGL) || avgAGL <= 0) {
-      console.error(`[avgAGL] Invalid avgAGL for segment ${startIndex}-${endIndex}: ${avgAGL} - will use fallback (avg height: ${((startHeight + endHeight) / 2).toFixed(1)}m)`);
+      debug.error(`[avgAGL] Invalid avgAGL for segment ${startIndex}-${endIndex}: ${avgAGL}`);
       avgAGLCacheRef.current.set(cacheKey, null);
       return null;
     }
@@ -2935,9 +2875,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const hasPlannedAltitudesForCache = elevationProfile && elevationProfile.some(p => p.plannedAltitude !== undefined);
     if (hasPlannedAltitudesForCache) {
       avgAGLCacheRef.current.set(cacheKey, avgAGL);
-      console.log(`[avgAGL] ✓ Segment ${startIndex}-${endIndex}: avgAGL=${avgAGL.toFixed(1)}m (min=${minAGL.toFixed(1)}m, max=${maxAGL.toFixed(1)}m, ${validSamples}/${samplePoints.length} valid samples, elevationProfile.length=${elevationProfile?.length || 0}, CACHED)`);
-    } else {
-      console.log(`[avgAGL] ✓ Segment ${startIndex}-${endIndex}: avgAGL=${avgAGL.toFixed(1)}m (min=${minAGL.toFixed(1)}m, max=${maxAGL.toFixed(1)}m, ${validSamples}/${samplePoints.length} valid samples, elevationProfile.length=${elevationProfile?.length || 0}, NOT CACHED - no planned altitudes)`);
     }
     
     return avgAGL;
@@ -2949,14 +2886,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (currentSignature !== flightPathSignatureRef.current) {
       avgAGLCacheRef.current.clear();
       flightPathSignatureRef.current = currentSignature;
-      console.debug('[avgAGL] Cache invalidated: flightPath changed');
     }
   }, [flightPath]);
 
   // Invalidate cache when DTM changes
   useEffect(() => {
     avgAGLCacheRef.current.clear();
-    console.debug('[avgAGL] Cache invalidated: DTM changed');
   }, [dtmSource, dtmLoaded]);
 
   // Invalidate cache when elevation profile changes (especially when planned altitudes are added)
@@ -2979,21 +2914,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
         avgAGLCacheRef.current.clear();
         (avgAGLCacheRef.current as any).__lastProfileSignature = profileSignature;
         (avgAGLCacheRef.current as any).__lastHadPlannedAltitudes = hasPlanned;
-        console.debug(`[avgAGL] Cache invalidated: elevation profile changed (hasPlannedAltitudes=${hasPlanned}, signature changed=${profileSignature !== lastSignature}, plannedAltitudes just added=${hasPlanned && !lastHadPlanned})`);
       }
     } else if (elevationProfile && elevationProfile.length === 0) {
       // Profile cleared
       avgAGLCacheRef.current.clear();
       (avgAGLCacheRef.current as any).__lastProfileSignature = undefined;
       (avgAGLCacheRef.current as any).__lastHadPlannedAltitudes = false;
-      console.debug('[avgAGL] Cache invalidated: elevation profile cleared');
     }
   }, [elevationProfile]);
 
   // Invalidate cache when entry height (nominalFlightHeight) changes
   useEffect(() => {
     avgAGLCacheRef.current.clear();
-    console.debug(`[avgAGL] Cache invalidated: entry height (nominalFlightHeight) changed to ${nominalFlightHeight}m`);
   }, [nominalFlightHeight]);
 
   // Invalidate cache when climb requests change (climb points added/removed/modified)
@@ -3003,7 +2935,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (climbSignature !== lastClimbSignature) {
       avgAGLCacheRef.current.clear();
       (avgAGLCacheRef.current as any).__lastClimbSignature = climbSignature;
-      console.debug(`[avgAGL] Cache invalidated: climb requests changed (count: ${_climbRequests.length})`);
     }
   }, [_climbRequests]);
 
@@ -3910,21 +3841,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const startHeight = start.height ?? nominalFlightHeight;
         const endHeight = end.height ?? nominalFlightHeight;
         const fallbackAGL = (startHeight + endHeight) / 2;
-        console.log(`[suggestions] Segment ${i}-${i + 1}: avgAGL is null, using fallback AGL=${fallbackAGL.toFixed(1)}m (startHeight=${startHeight}m, endHeight=${endHeight}m)`);
         return fallbackAGL;
       })();
-
-      console.log(`[suggestions] Segment ${i}-${i + 1}: effectiveAGL=${effectiveAGL.toFixed(1)}m (from ${avgAGL !== null ? 'avgAGL' : 'fallback'})`);
 
       // Use shared spacing calculation function with line-specific avgAGL (or fallback)
       const spacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
       
       if (spacing === null || spacing <= 0) {
-        console.warn(`[suggestions] Segment ${i}-${i + 1}: Invalid spacing=${spacing} (overlap=${overlapPercentage}%, fov=${fovDegrees}°, effectiveAGL=${effectiveAGL.toFixed(1)}m), skipping`);
         continue;
       }
-      
-      console.log(`[suggestions] Segment ${i}-${i + 1}: spacing=${spacing.toFixed(1)}m`);
 
       [spacing, -spacing].forEach((offset) => {
         const [parallelStart, parallelEnd] = calculateParallelLine(start, end, offset);
@@ -4038,9 +3963,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           padding: [50, 50],
           maxZoom: 18 // Don't zoom in too much
         });
-        console.log('MapPanel: Fitted bounds to show', visibleRoutes.length, 'route(s)');
       } catch (error) {
-        console.warn('Failed to fit bounds to routes:', error);
+        debug.warn('Failed to fit bounds to routes:', error);
       }
     }, 100);
   }, [routes, activeRouteId]);
@@ -4325,7 +4249,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (dtmSource.startsWith('/api/dtm/clipped/')) {
           // For clipped DTMs, dtmSource is already the API endpoint path (e.g., /api/dtm/clipped/{clippedId}/raster)
           rasterUrl = dtmSource;
-          console.log('Loading clipped DTM from API path:', rasterUrl);
         } else {
           // For uploaded DTMs, extract filename and construct API path
           const filename = dtmSource.split('/').pop();
@@ -4334,7 +4257,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
             return;
           }
           rasterUrl = `/api/dtm/${filename}/raster`;
-          console.log('Loading uploaded DTM from filename:', filename, 'API path:', rasterUrl);
         }
 
         // Fetch raster data
@@ -4345,15 +4267,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
 
         const rasterData = await response.json();
-        console.log('DTM raster data received:', {
-          width: rasterData.width,
-          height: rasterData.height,
-          dataLength: rasterData.data?.length,
-          min: rasterData.min,
-          max: rasterData.max,
-          bounds: rasterData.bounds
-        });
-
         const { width, height, data, min, max, bounds, isProjected, epsg, crs } = rasterData;
 
         if (!data || !Array.isArray(data) || data.length === 0) {
@@ -4369,41 +4282,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const isClippedDtm = dtmSource.startsWith('/api/dtm/clipped/');
         let transformedBounds = bounds;
 
-        if (isClippedDtm) {
-          console.log('Clipped DTM - bounds already in WGS84 (transformed by backend), skipping transformation');
-        }
-
         if (isProjected && !isClippedDtm) {
-          console.log('DTM uses projected coordinates. Attempting coordinate transformation...');
-          console.log('EPSG Code:', epsg);
-          console.log('CRS Info:', crs);
-
           // Try to determine source projection from EPSG code
           let sourceProj: string | null = null;
 
           if (epsg) {
             // Use the EPSG code directly
             sourceProj = `EPSG:${epsg}`;
-            console.log('Using source projection from EPSG:', sourceProj);
           } else if (crs?.projectedCSType) {
             // Try to use projected CRS type
             sourceProj = `EPSG:${crs.projectedCSType}`;
-            console.log('Using source projection from CRS:', sourceProj);
           }
 
           if (!sourceProj) {
             // Default to UTM Zone 36N (EPSG:32636) when no coordinate system is detected
             sourceProj = 'EPSG:32636';
-            console.warn('Could not determine EPSG code from GeoTIFF metadata.');
-            console.warn('Assuming UTM Zone 36N (EPSG:32636) as default coordinate system.');
+            debug.warn('Could not determine EPSG code from GeoTIFF metadata. Assuming UTM Zone 36N (EPSG:32636) as default.');
           }
 
           if (sourceProj) {
             try {
               // Transform bounds from projected to WGS84
               const [minX, minY, maxX, maxY] = bounds;
-
-              console.log(`Transforming from ${sourceProj} to EPSG:4326 (WGS84)...`);
 
               // Transform all four corners
               const topLeft = proj4(sourceProj, 'EPSG:4326', [minX, maxY]);
@@ -4418,19 +4318,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
               const transformedMaxY = Math.max(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
 
               transformedBounds = [transformedMinX, transformedMinY, transformedMaxX, transformedMaxY];
-
-              console.log('Original bounds (projected):', bounds);
-              console.log('Transformed bounds (WGS84):', transformedBounds);
-              console.log('✅ Coordinate transformation successful!');
             } catch (transformError) {
-              console.error('Error transforming coordinates:', transformError);
-              console.error('Source projection:', sourceProj);
+              debug.error('Error transforming coordinates:', transformError);
+              debug.error('Source projection:', sourceProj);
               alert(`Transform failed: ${transformError instanceof Error ? transformError.message : 'Unknown error'}\nSource projection: ${sourceProj}\nCheck the EPSG in your GeoTIFF.`);
               throw new Error(`Coordinate transformation failed: ${transformError instanceof Error ? transformError.message : 'Unknown error'}`);
             }
           }
-        } else {
-          console.log('DTM already uses geographic coordinates (WGS84) - no transformation needed');
         }
 
         // Store raster data for client-side elevation calculation
@@ -4482,18 +4376,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
 
         ctx.putImageData(imageData, 0, 0);
-        console.log('Canvas rendered, creating image...');
 
         // Helper function to add DTM layer
         // @ts-ignore
         const addDTMLayer = (img: HTMLImageElement, bounds: number[]) => {
           if (!map.current) {
-            console.error('Map not initialized');
+            debug.error('Map not initialized');
             return;
           }
-
-          console.log('Adding DTM layer to map...');
-          console.log('Bounds (WGS84):', bounds);
 
           // Remove existing DTM overlay if present
           if (dtmImageOverlayRef.current) {
@@ -4511,8 +4401,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
           try {
             const imageUrl = canvas.toDataURL();
-            console.log('Image URL length:', imageUrl.length);
-            console.log('Canvas dimensions:', canvas.width, 'x', canvas.height);
 
             // Create image overlay bounds in Leaflet format (southwest, northeast)
             const imageBounds: L.LatLngBoundsExpression = [
@@ -4533,30 +4421,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
               opacity: 1.0
             }).addTo(map.current);
 
-            console.log('DTM layer added successfully');
             setDtmLoaded(true);
             setDtmBounds(bounds); // Store bounds for the "Fit to DTM" button
             setIsDtmProcessing(false);
 
             // Fit map to DTM bounds (now in WGS84)
-            console.log('Fitting map to DTM bounds (WGS84):', bounds);
             try {
               map.current.fitBounds(imageBounds, {
                 padding: [50, 50],
                 maxZoom: 18
               });
-              console.log('Map fitted to DTM bounds successfully');
             } catch (fitError) {
-              console.error('Error fitting map to bounds:', fitError);
+              debug.error('Error fitting map to bounds:', fitError);
               // Fallback: try to center on the middle of the bounds
               const centerLng = (minX + maxX) / 2;
               const centerLat = (minY + maxY) / 2;
-              console.log('Falling back to center:', centerLng, centerLat);
               map.current.setView([centerLat, centerLng], 13);
             }
           } catch (sourceError) {
-            console.error('Error adding DTM source/layer:', sourceError);
-            console.error('Error details:', sourceError);
+            debug.error('Error adding DTM source/layer:', sourceError);
             setDtmLoaded(false);
             setIsDtmProcessing(false);
             alert(`Can't add DTM: ${sourceError instanceof Error ? sourceError.message : 'Unknown error'}\nSee console for details.`);
@@ -4566,12 +4449,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         // Convert canvas to image
         const img = new Image();
         img.onload = () => {
-          console.log('DTM image loaded successfully, dimensions:', img.width, 'x', img.height);
-          console.log('Image src length:', img.src.length);
-
           // Wait for map to be fully loaded
           if (!map.current) {
-            console.error('Map not initialized');
+            debug.error('Map not initialized');
             return;
           }
 
@@ -4579,20 +4459,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
         };
 
         img.onerror = (error) => {
-          console.error('Error loading DTM image:', error);
+          debug.error('Error loading DTM image:', error);
           setDtmLoaded(false);
           setIsDtmProcessing(false);
           alert('לא ניתן ליצור תמונת DTM. ראה קונסולה.');
         };
 
         const dataUrl = canvas.toDataURL();
-        console.log('Canvas data URL created, length:', dataUrl.length);
         if (dataUrl.length < 100) {
-          console.error('Canvas data URL seems too short, might be empty!');
+          debug.error('Canvas data URL seems too short, might be empty!');
         }
         img.src = dataUrl;
       } catch (error) {
-        console.error('Error loading DTM:', error);
+        debug.error('Error loading DTM:', error);
         const errorMessage = error instanceof Error ? error.message : 'שגיאה לא ידועה';
         setDtmLoaded(false);
         setIsDtmProcessing(false);

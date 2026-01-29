@@ -11,6 +11,7 @@ import { ClimbConfig, computeClimbProfile, BaseAltitudeSample, ClimbPreset } fro
 import { latLngToUTM } from '../utils/coordinates';
 import { computeCumulativeDistances, getNearestConstraints } from '../utils/constraints';
 import { findAnchorPointsForClimb, ClimbRequest } from '../utils/climbAnchors';
+import { debug } from '../utils/debug';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   const common = {
@@ -201,14 +202,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   // Track the climb being edited to exclude it from constraint checks
   const [editingClimb, setEditingClimb] = useState<{ endDistance: number; climbAmount: number } | null>(null);
 
-  // Log state changes for debugging
-  useEffect(() => {
-    console.log('[STATE] contextMenu changed:', contextMenu ? { x: contextMenu.x, y: contextMenu.y, pointIndex: contextMenu.pointIndex } : null);
-  }, [contextMenu]);
-
-  useEffect(() => {
-    console.log('[STATE] climbContextMenu changed:', climbContextMenu ? { x: climbContextMenu.x, y: climbContextMenu.y, endDistance: climbContextMenu.endDistance, climbAmount: climbContextMenu.climbAmount } : null);
-  }, [climbContextMenu]);
   const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number } | null>(null);
@@ -356,28 +349,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
   useEffect(() => {
     if (!climbContextMenu) {
-      console.log('[CLIMB_MENU] useEffect: climbContextMenu is null, not setting up listeners');
       return;
     }
-    console.log('[CLIMB_MENU] useEffect: climbContextMenu is set, setting up global close listeners');
     const handleGlobalClose = (event: MouseEvent) => {
       const target = event.target as Node;
       const contains = climbContextMenuRef.current?.contains(target);
-      console.log('[CLIMB_MENU] Global close handler triggered', {
-        eventType: event.type,
-        target: (target as any)?.tagName,
-        contains: contains,
-        willClose: !contains
-      });
       if (climbContextMenuRef.current && !climbContextMenuRef.current.contains(target)) {
-        console.log('[CLIMB_MENU] Closing climb context menu (clicked outside)');
         setClimbContextMenu(null);
       }
     };
     document.addEventListener('mousedown', handleGlobalClose);
     document.addEventListener('contextmenu', handleGlobalClose);
     return () => {
-      console.log('[CLIMB_MENU] useEffect cleanup: removing global close listeners');
       document.removeEventListener('mousedown', handleGlobalClose);
       document.removeEventListener('contextmenu', handleGlobalClose);
     };
@@ -877,18 +860,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Add right-click handler for ground points
     groundPoints.on('contextmenu', function (event: any, d: { point: ElevationPoint; index: number }) {
-      console.log('[GROUND_POINT] Ground point contextmenu event fired', {
-        pointIndex: d.index,
-        distance: d.point.distance,
-        elevation: d.point.elevation,
-        eventType: event.type
-      });
       event.preventDefault();
       event.stopPropagation();
       // Get the click position in screen coordinates
       const clickX = event.clientX || (event as MouseEvent).clientX;
       const clickY = event.clientY || (event as MouseEvent).clientY;
-      console.log('[GROUND_POINT] Closing climb context menu, opening regular context menu');
       // Close climb context menu if open
       setClimbContextMenu(null);
       setContextMenu({
@@ -896,7 +872,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         y: clickY,
         pointIndex: d.index
       });
-      console.log('[GROUND_POINT] Regular context menu set for point index:', d.index);
     });
 
     const flightPoints = chartArea.selectAll<SVGCircleElement, { point: ElevationPoint; index: number }>('.flight-point')
@@ -912,18 +887,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Add right-click handler for flight points
     flightPoints.on('contextmenu', function (event: any, d: { point: ElevationPoint; index: number }) {
-      console.log('[FLIGHT_POINT] Flight point contextmenu event fired', {
-        pointIndex: d.index,
-        distance: d.point.distance,
-        elevation: d.point.elevation,
-        eventType: event.type
-      });
       event.preventDefault();
       event.stopPropagation();
       // Get the click position in screen coordinates
       const clickX = event.clientX || (event as MouseEvent).clientX;
       const clickY = event.clientY || (event as MouseEvent).clientY;
-      console.log('[FLIGHT_POINT] Closing climb context menu, opening regular context menu');
       // Close climb context menu if open
       setClimbContextMenu(null);
       setContextMenu({
@@ -931,7 +899,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         y: clickY,
         pointIndex: d.index
       });
-      console.log('[FLIGHT_POINT] Regular context menu set for point index:', d.index);
     });
 
     // Add point number labels only for original vertices
@@ -1043,21 +1010,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .append('g')
       .attr('class', 'climb-end-marker')
       .on('contextmenu', (event, d) => {
-        console.log('[CLIMB_MARKER] Direct climb marker contextmenu event fired', {
-          endDistance: d.endDistance,
-          climbAmount: d.climbAmount,
-          eventType: event.type,
-          target: (event.target as any)?.tagName
-        });
         event.preventDefault();
         event.stopPropagation();
         const clickX = (event as MouseEvent).clientX;
         const clickY = (event as MouseEvent).clientY;
-        console.log('[CLIMB_MARKER] Setting climb context menu, closing regular context menu');
         // Close regular context menu if open
         setContextMenu(null);
         setClimbContextMenu({ x: clickX, y: clickY, endDistance: d.endDistance, climbAmount: d.climbAmount });
-        console.log('[CLIMB_MARKER] Climb context menu set:', { x: clickX, y: clickY, endDistance: d.endDistance, climbAmount: d.climbAmount });
       });
 
     climbEndMarkers.append('circle')
@@ -1385,66 +1344,40 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Allow right-click to open the existing point context menu even with the overlay present
     overlay.on('contextmenu', function (event: MouseEvent) {
-      console.log('[OVERLAY] Overlay contextmenu event fired', {
-        clientX: event.clientX,
-        clientY: event.clientY,
-        target: (event.target as any)?.tagName,
-        currentTarget: (event.currentTarget as any)?.tagName
-      });
-      
       // Check if we're clicking on a climb marker first - if so, show climb context menu
       // Use a larger threshold (15px) to ensure we catch clicks on climb markers even if slightly off
       const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
-      console.log('[OVERLAY] Mouse position in SVG coordinates:', { mouseX, mouseY });
       
       let clickedClimb: { endDistance: number; climbAmount: number } | null = null;
 
       // Check for climb end markers with higher priority and larger threshold
-      console.log('[OVERLAY] Checking', climbRequests.length, 'climb requests for proximity');
       for (const climb of climbRequests) {
         const climbX = currentXScale(climb.endDistance);
         const climbY = currentYScale(getPlannedAltitudeAtDistance(climb.endDistance));
         const distToClimb = Math.sqrt(Math.pow(climbX - mouseX, 2) + Math.pow(climbY - mouseY, 2));
         
-        console.log('[OVERLAY] Climb check:', {
-          endDistance: climb.endDistance,
-          climbAmount: climb.climbAmount,
-          climbX,
-          climbY,
-          distToClimb,
-          threshold: 15,
-          withinThreshold: distToClimb < 15
-        });
-        
         // Use 15px threshold to ensure we catch clicks on climb markers
         if (distToClimb < 15) {
           clickedClimb = { endDistance: climb.endDistance, climbAmount: climb.climbAmount };
-          console.log('[OVERLAY] ✓ Click detected on climb marker:', clickedClimb);
           break;
         }
       }
 
       // If clicking on a climb marker, show the climb context menu and prevent regular menu
       if (clickedClimb) {
-        console.log('[OVERLAY] Processing climb marker click - preventing default and showing climb menu');
         event.preventDefault();
         event.stopPropagation();
         const clickX = event.clientX || (event as MouseEvent).clientX;
         const clickY = event.clientY || (event as MouseEvent).clientY;
         // Close regular context menu if open
-        console.log('[OVERLAY] Closing regular context menu, opening climb context menu');
         setContextMenu(null);
         setClimbContextMenu({ x: clickX, y: clickY, endDistance: clickedClimb.endDistance, climbAmount: clickedClimb.climbAmount });
-        console.log('[OVERLAY] Climb context menu set, returning early');
         return; // Don't show regular context menu
-      } else {
-        console.log('[OVERLAY] No climb marker detected, checking for regular points');
       }
 
       // Check if we're clicking on an input point
       let clickedInputPoint: { point: ElevationPoint; index: number; isFlight: boolean } | null = null;
 
-      console.log('[OVERLAY] Checking', originalVertices.length, 'original vertices for proximity');
       if (originalVertices.length > 0) {
         for (const vertex of originalVertices) {
           const pointX = currentXScale(vertex.point.distance);
@@ -1455,25 +1388,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           const distToGround = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(groundY - mouseY, 2));
           const distToFlight = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(flightY - mouseY, 2));
 
-          console.log('[OVERLAY] Vertex check:', {
-            index: vertex.index,
-            distance: vertex.point.distance,
-            pointX,
-            groundY,
-            flightY,
-            distToGround,
-            distToFlight,
-            withinGroundThreshold: distToGround < 10,
-            withinFlightThreshold: distToFlight < 10
-          });
-
           if (distToGround < 10) {
             clickedInputPoint = { point: vertex.point, index: vertex.index, isFlight: false };
-            console.log('[OVERLAY] ✓ Click detected on ground point, index:', vertex.index);
             break;
           } else if (distToFlight < 10) {
             clickedInputPoint = { point: vertex.point, index: vertex.index, isFlight: true };
-            console.log('[OVERLAY] ✓ Click detected on flight point, index:', vertex.index);
             break;
           }
         }
@@ -1481,23 +1400,19 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
       // If clicking on an input point, trigger the context menu for that point
       if (clickedInputPoint) {
-        console.log('[OVERLAY] Processing regular point click - showing regular context menu');
         event.preventDefault();
         event.stopPropagation();
         const clickX = event.clientX || (event as MouseEvent).clientX;
         const clickY = event.clientY || (event as MouseEvent).clientY;
         // Close climb context menu if open
-        console.log('[OVERLAY] Closing climb context menu, opening regular context menu for point index:', clickedInputPoint.index);
         setClimbContextMenu(null);
         setContextMenu({
           x: clickX,
           y: clickY,
           pointIndex: clickedInputPoint.index
         });
-        console.log('[OVERLAY] Regular context menu set');
       } else {
         // If not clicking on an input point, prevent default to avoid browser context menu
-        console.log('[OVERLAY] No point detected, preventing default browser menu');
         event.preventDefault();
       }
     });

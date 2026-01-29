@@ -2415,7 +2415,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         <div className="climb-modal__backdrop" role="dialog" aria-modal="true">
           <div className="climb-modal__card">
             <div className="climb-modal__header">
-              <div className="climb-modal__title">החל עלייה</div>
+              <div className="climb-modal__title">{parseFloat(climbAmountInput) < 0 ? 'החל ירידה' : 'החל עלייה'}</div>
               <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); setEditingClimb(null); }}>×</button>
             </div>
             <div className="climb-modal__body">
@@ -2502,7 +2502,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </div>
             <div className="climb-modal__actions">
               <button className="btn btn-tertiary" type="button" onClick={() => { setIsClimbAmountOpen(false); setEditingClimb(null); }}>ביטול</button>
-              <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>החל עלייה</button>
+              <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>{parseFloat(climbAmountInput) < 0 ? 'החל ירידה' : 'החל עלייה'}</button>
             </div>
           </div>
         </div>

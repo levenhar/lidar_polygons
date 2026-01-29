@@ -11,7 +11,6 @@ import { ClimbConfig, computeClimbProfile, BaseAltitudeSample, ClimbPreset } fro
 import { latLngToUTM } from '../utils/coordinates';
 import { computeCumulativeDistances, getNearestConstraints } from '../utils/constraints';
 import { findAnchorPointsForClimb, ClimbRequest } from '../utils/climbAnchors';
-import { debug } from '../utils/debug';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   const common = {
@@ -353,7 +352,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     }
     const handleGlobalClose = (event: MouseEvent) => {
       const target = event.target as Node;
-      const contains = climbContextMenuRef.current?.contains(target);
       if (climbContextMenuRef.current && !climbContextMenuRef.current.contains(target)) {
         setClimbContextMenu(null);
       }

@@ -2,6 +2,7 @@ import os
 from fastapi import FastAPI, HTTPException, File, UploadFile, Request, Header, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import rasterio
 import rasterio.features
 import rasterio.warp
@@ -43,7 +44,87 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backend_python")
 
-app = FastAPI()
+# Global cache for TIF footprints (populated on startup)
+tif_footprints_cache: Dict[str, Dict[str, Any]] = {}
+tif_footprints_cache_lock = threading.Lock()
+
+def build_tif_footprints_cache():
+    """Scan DTM_DATA_DIR and cache TIF file footprints for fast overlap queries"""
+    global tif_footprints_cache
+    logger.info(f"Building TIF footprints cache from: {DTM_DATA_DIR}")
+    
+    if not os.path.exists(DTM_DATA_DIR):
+        logger.warning(f"DTM_DATA_DIR does not exist: {DTM_DATA_DIR}")
+        return
+    
+    cache = {}
+    scanned_count = 0
+    cached_count = 0
+    
+    try:
+        for filename in os.listdir(DTM_DATA_DIR):
+            if filename.lower().endswith(C.DTM_EXTENSIONS):
+                file_path = os.path.join(DTM_DATA_DIR, filename)
+                
+                if not os.path.isfile(file_path):
+                    continue
+                
+                scanned_count += 1
+                
+                try:
+                    with rasterio.open(file_path) as src:
+                        bounds = src.bounds
+                        stats = os.stat(file_path)
+                        
+                        # Calculate resolution (pixel size in meters, approximate)
+                        # Use transform to get pixel size
+                        transform = src.transform
+                        pixel_width = abs(transform[0])  # Usually in meters for projected CRS
+                        pixel_height = abs(transform[4])  # Usually in meters for projected CRS
+                        # Average pixel size for resolution estimate
+                        resolution_meters = (pixel_width + pixel_height) / 2.0
+                        
+                        cache[filename] = {
+                            "id": filename,
+                            "filename": filename,
+                            "displayName": filename,
+                            "footprintBBox": {
+                                "minX": bounds.left,
+                                "minY": bounds.bottom,
+                                "maxX": bounds.right,
+                                "maxY": bounds.top
+                            },
+                            "crs": src.crs.to_string() if src.crs else None,
+                            "resolution": {
+                                "width": src.width,
+                                "height": src.height
+                            },
+                            "resolutionMeters": resolution_meters,
+                            "sizeMB": round(stats.st_size / (1024 * 1024), 2),
+                            "sizeBytes": stats.st_size,
+                            "modifiedAt": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stats.st_mtime))
+                        }
+                        cached_count += 1
+                except Exception as e:
+                    logger.warning(f"Could not read footprint for {filename}: {e}")
+                    continue
+        
+        with tif_footprints_cache_lock:
+            tif_footprints_cache = cache
+        
+        logger.info(f"TIF footprints cache built: {cached_count}/{scanned_count} files cached")
+    except Exception as e:
+        logger.error(f"Error building TIF footprints cache: {e}", exc_info=True)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: build TIF footprints cache
+    build_tif_footprints_cache()
+    yield
+    # Shutdown: cleanup if needed
+    pass
+
+app = FastAPI(lifespan=lifespan)
 
 # Viewshed job state
 viewshed_jobs = {}
@@ -126,6 +207,10 @@ class AOI(BaseModel):
 class ClipRequest(BaseModel):
     dtmId: str
     aoi: AOI
+
+class AvailableTifsRequest(BaseModel):
+    aoi: AOI
+    bufferMeters: Optional[float] = 0.0
 
 class ElevationAtPointRequest(BaseModel):
     longitude: float
@@ -1160,6 +1245,138 @@ async def get_dtm_options():
         
     except Exception as e:
         logger.error(f"Error listing DTM options: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/dtm/available")
+async def get_available_tifs(request: AvailableTifsRequest):
+    """Return TIF files that overlap with the given AOI"""
+    logger.info(f"POST /api/dtm/available called with AOI type: {request.aoi.type}")
+    
+    try:
+        # Get cached footprints
+        with tif_footprints_cache_lock:
+            footprints = dict(tif_footprints_cache)  # Copy for thread safety
+        
+        if not footprints:
+            logger.warning("TIF footprints cache is empty - rebuilding...")
+            build_tif_footprints_cache()
+            with tif_footprints_cache_lock:
+                footprints = dict(tif_footprints_cache)
+        
+        # Convert AOI to a geometry we can use for intersection
+        aoi_crs = pyproj.CRS.from_string(request.aoi.crs)
+        
+        # Create AOI bbox from request
+        if request.aoi.type == "bbox" and request.aoi.bbox:
+            min_lon, min_lat, max_lon, max_lat = request.aoi.bbox
+            aoi_bbox = (min_lon, min_lat, max_lon, max_lat)
+        elif request.aoi.type == "polygon" and request.aoi.coordinates:
+            # Calculate bbox from polygon coordinates
+            lons = [coord[0] for coord in request.aoi.coordinates]
+            lats = [coord[1] for coord in request.aoi.coordinates]
+            aoi_bbox = (min(lons), min(lats), max(lons), max(lats))
+        else:
+            raise HTTPException(status_code=400, detail="Invalid AOI: must have bbox for bbox type or coordinates for polygon type")
+        
+        # Apply buffer if specified (convert meters to degrees approximately)
+        if request.bufferMeters and request.bufferMeters > 0:
+            # Approximate conversion: 1 degree latitude ≈ 111320 meters
+            buffer_deg_lat = request.bufferMeters / 111320.0
+            # Longitude buffer depends on latitude - use average of min/max
+            avg_lat = (aoi_bbox[1] + aoi_bbox[3]) / 2.0
+            buffer_deg_lon = request.bufferMeters / (111320.0 * abs(cos(radians(avg_lat))))
+            aoi_bbox = (
+                aoi_bbox[0] - buffer_deg_lon,
+                aoi_bbox[1] - buffer_deg_lat,
+                aoi_bbox[2] + buffer_deg_lon,
+                aoi_bbox[3] + buffer_deg_lat
+            )
+        
+        overlapping_files = []
+        
+        # Check each TIF footprint for overlap
+        for filename, footprint in footprints.items():
+            tif_bbox = footprint["footprintBBox"]
+            tif_crs_str = footprint.get("crs")
+            
+            if not tif_crs_str:
+                # Skip files without CRS
+                continue
+            
+            try:
+                tif_crs = pyproj.CRS.from_string(tif_crs_str)
+                
+                # Transform AOI bbox to TIF CRS for intersection test
+                transformer = Transformer.from_crs(aoi_crs, tif_crs, always_xy=True)
+                
+                # Transform AOI bbox corners
+                min_x, min_y = transformer.transform(aoi_bbox[0], aoi_bbox[1])
+                max_x, max_y = transformer.transform(aoi_bbox[2], aoi_bbox[3])
+                
+                # Normalize bbox (min/max might be swapped after transform)
+                aoi_min_x, aoi_max_x = min(min_x, max_x), max(min_x, max_x)
+                aoi_min_y, aoi_max_y = min(min_y, max_y), max(min_y, max_y)
+                
+                # Check bbox intersection
+                tif_min_x = tif_bbox["minX"]
+                tif_min_y = tif_bbox["minY"]
+                tif_max_x = tif_bbox["maxX"]
+                tif_max_y = tif_bbox["maxY"]
+                
+                # Bbox intersection test
+                intersects = not (
+                    aoi_max_x < tif_min_x or
+                    aoi_min_x > tif_max_x or
+                    aoi_max_y < tif_min_y or
+                    aoi_min_y > tif_max_y
+                )
+                
+                if intersects:
+                    # Calculate overlap area (for sorting by best match)
+                    overlap_min_x = max(aoi_min_x, tif_min_x)
+                    overlap_max_x = min(aoi_max_x, tif_max_x)
+                    overlap_min_y = max(aoi_min_y, tif_min_y)
+                    overlap_max_y = min(aoi_max_y, tif_max_y)
+                    
+                    overlap_area = (overlap_max_x - overlap_min_x) * (overlap_max_y - overlap_min_y)
+                    tif_area = (tif_max_x - tif_min_x) * (tif_max_y - tif_min_y)
+                    
+                    # Calculate how much of the TIF extends beyond the AOI (smaller is better match)
+                    excess_area = tif_area - overlap_area
+                    
+                    overlapping_files.append({
+                        **footprint,
+                        "excessArea": excess_area,  # For sorting
+                        "overlapArea": overlap_area
+                    })
+            except Exception as e:
+                logger.warning(f"Error checking overlap for {filename}: {e}")
+                continue
+        
+        # Sort by smallest excess area (best match first), then by highest resolution
+        overlapping_files.sort(key=lambda x: (x["excessArea"], -x.get("resolutionMeters", 0)))
+        
+        # Format response (remove internal sorting fields)
+        result_files = []
+        for f in overlapping_files:
+            result_files.append({
+                "id": f["id"],
+                "filename": f["filename"],
+                "displayName": f.get("displayName", f["filename"]),
+                "footprintBBox": f["footprintBBox"],
+                "resolution": f["resolution"],
+                "sizeMB": f.get("sizeMB"),
+                "sizeBytes": f.get("sizeBytes", 0),
+                "modifiedAt": f.get("modifiedAt")
+            })
+        
+        logger.info(f"Found {len(result_files)} overlapping TIF files for AOI")
+        return {"files": result_files}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error finding available TIFs: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/dtm/{filename}/metadata")

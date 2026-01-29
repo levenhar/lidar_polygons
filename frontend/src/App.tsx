@@ -126,7 +126,7 @@ function App() {
   const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
   const resolutionSearchRadius = 50;
   const [overlapPercentage, setOverlapPercentage] = useState<number>(50);
-  const [fovDegrees, setFovDegrees] = useState<number>(100);
+  const [fovDegrees, setFovDegrees] = useState<number>(75);
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
   const [editPointIndex, setEditPointIndex] = useState<number | null>(null);
   const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);

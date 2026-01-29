@@ -2353,6 +2353,67 @@ async def get_clipped_dtm_file(clipped_id: str):
         logger.error(f"Error serving clipped DTM file: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/dtm/clipped/{clipped_id}/ready")
+async def check_clipped_dtm_ready(clipped_id: str):
+    """Check if a clipped DTM is fully ready for elevation queries"""
+    try:
+        clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
+        # Resolve to absolute path
+        clipped_file_path = os.path.abspath(clipped_file_path)
+        
+        # Check if file exists
+        if not os.path.exists(clipped_file_path):
+            # Try to find the file with any extension
+            if os.path.exists(DTM_CACHE_DIR):
+                cache_files = os.listdir(DTM_CACHE_DIR)
+                matching_files = [f for f in cache_files if f.startswith(clipped_id)]
+                if matching_files:
+                    clipped_file_path = os.path.abspath(os.path.join(DTM_CACHE_DIR, matching_files[0]))
+                else:
+                    return {
+                        "ready": False,
+                        "message": f"Clipped DTM not found: {clipped_id}"
+                    }
+            else:
+                return {
+                    "ready": False,
+                    "message": f"DTM cache directory not found"
+                }
+        
+        # Try to open and read from the file to verify it's fully written and readable
+        try:
+            with rasterio.open(clipped_file_path) as src:
+                # Verify we can read basic metadata
+                _ = src.width
+                _ = src.height
+                _ = src.crs
+                _ = src.bounds
+                
+                # Try to read a small sample to ensure file is fully written
+                # Read a 1x1 pixel window from the center
+                center_row = src.height // 2
+                center_col = src.width // 2
+                sample = src.read(1, window=rasterio.windows.Window(center_col, center_row, 1, 1))
+                _ = sample[0, 0]  # Access the value to ensure it's readable
+                
+                return {
+                    "ready": True,
+                    "message": "DTM is ready for elevation queries"
+                }
+        except Exception as e:
+            logger.warning(f"Clipped DTM file exists but is not fully readable: {e}")
+            return {
+                "ready": False,
+                "message": f"DTM file exists but is not ready: {str(e)}"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error checking clipped DTM readiness: {e}", exc_info=True)
+        return {
+            "ready": False,
+            "message": f"Error checking readiness: {str(e)}"
+        }
+
 @app.delete("/api/dtm/clipped/{clipped_id}")
 async def delete_clipped_dtm(
     clipped_id: str,

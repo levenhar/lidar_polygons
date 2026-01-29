@@ -63,6 +63,9 @@ type DtmLoaderStep =
 
 type DtmSourceType = 'local' | 'server' | null;
 
+// DTM loading state machine
+type DtmLoadState = 'IDLE' | 'LOADING' | 'READY' | 'FAILED';
+
 interface ViewshedRasterData {
   width: number;
   height: number;
@@ -682,8 +685,117 @@ const MapPanel: React.FC<MapPanelProps> = ({
     isOpen: false,
     message: ''
   });
-  const [dtmLoaded, setDtmLoaded] = useState(false);
+  // DTM loading state machine (replaces dtmLoaded boolean)
+  const [dtmLoadState, setDtmLoadState] = useState<DtmLoadState>('IDLE');
+  const [dtmLoadError, setDtmLoadError] = useState<string | null>(null);
   const [dtmBounds, setDtmBounds] = useState<number[] | null>(null);
+  
+  // Backward compatibility: dtmLoaded is true only when state is READY
+  const dtmLoaded = dtmLoadState === 'READY';
+  
+  // Polling refs to track and cancel polling
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pollingAbortRef = useRef<AbortController | null>(null);
+  
+  // Helper function to poll DTM readiness for clipped DTMs
+  const pollDtmReadiness = useCallback(async (clippedId: string, maxAttempts: number = 120, initialDelay: number = 500): Promise<boolean> => {
+    // Clear any existing polling
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    if (pollingAbortRef.current) {
+      pollingAbortRef.current.abort();
+    }
+    
+    const abortController = new AbortController();
+    pollingAbortRef.current = abortController;
+    
+    let attempt = 0;
+    let delay = initialDelay;
+    const maxDelay = 2000; // Maximum delay between polls
+    
+    const checkReadiness = async (): Promise<boolean> => {
+      if (abortController.signal.aborted) {
+        return false;
+      }
+      
+      try {
+        const response = await fetch(`/api/dtm/clipped/${clippedId}/ready`, {
+          signal: abortController.signal
+        });
+        
+        if (!response.ok) {
+          if (attempt < maxAttempts) {
+            return false; // Continue polling
+          }
+          throw new Error(`Readiness check failed: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        if (data.ready === true) {
+          debug.log(`DTM ${clippedId} is ready after ${attempt + 1} attempts`);
+          return true;
+        }
+        
+        return false; // Not ready yet, continue polling
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') {
+          return false; // Polling was cancelled
+        }
+        
+        if (attempt >= maxAttempts - 1) {
+          throw error;
+        }
+        return false; // Continue polling on error
+      }
+    };
+    
+    // Poll with exponential backoff
+    return new Promise((resolve, reject) => {
+      const poll = async () => {
+        if (abortController.signal.aborted) {
+          resolve(false);
+          return;
+        }
+        
+        const isReady = await checkReadiness();
+        
+        if (isReady) {
+          resolve(true);
+          return;
+        }
+        
+        attempt++;
+        if (attempt >= maxAttempts) {
+          reject(new Error(`DTM readiness timeout after ${maxAttempts} attempts (${(maxAttempts * delay) / 1000}s)`));
+          return;
+        }
+        
+        // Exponential backoff: increase delay gradually, but cap at maxDelay
+        delay = Math.min(delay * 1.1, maxDelay);
+        
+        pollingIntervalRef.current = setTimeout(poll, delay);
+      };
+      
+      // Start polling
+      poll();
+    });
+  }, []);
+  
+  // Cleanup polling on unmount or when DTM source changes
+  useEffect(() => {
+    return () => {
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      if (pollingAbortRef.current) {
+        pollingAbortRef.current.abort();
+        pollingAbortRef.current = null;
+      }
+    };
+  }, []);
   const [dtmOpacity, setDtmOpacity] = useState<number>(initialDisplaySettings?.opacity ?? 0.1); // Default 90% transparency (10% opacity)
   const [dtmColorPalette, setDtmColorPalette] = useState<'gray' | 'jet'>(initialDisplaySettings?.palette ?? 'gray');
   const [dtmColorInverted, setDtmColorInverted] = useState<boolean>(initialDisplaySettings?.inverted ?? false);
@@ -4312,7 +4424,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
-      setDtmLoaded(false);
+      setDtmLoadState('IDLE');
+      setDtmLoadError(null);
       setDtmBounds(null);
       setIsDtmProcessing(false);
       setActiveDtmName(null);
@@ -4328,18 +4441,58 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
 
     const loadDTM = async () => {
-      setDtmLoaded(false); // Reset loading state when starting to load
+      setDtmLoadState('LOADING'); // Set loading state when starting to load
+      setDtmLoadError(null);
       setIsDtmProcessing(true);
+      
+      // Clear any existing polling
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
+      if (pollingAbortRef.current) {
+        pollingAbortRef.current.abort();
+        pollingAbortRef.current = null;
+      }
+      
       try {
         // Check if dtmSource is a clipped DTM API path or a filename
         let rasterUrl: string;
-        if (dtmSource.startsWith('/api/dtm/clipped/')) {
+        let clippedId: string | null = null;
+        const isClippedDtm = dtmSource.startsWith('/api/dtm/clipped/');
+        
+        if (isClippedDtm) {
           // For clipped DTMs, dtmSource is already the API endpoint path (e.g., /api/dtm/clipped/{clippedId}/raster)
           rasterUrl = dtmSource;
+          // Extract clippedId from the path
+          const match = dtmSource.match(/\/api\/dtm\/clipped\/([^\/]+)/);
+          if (match) {
+            clippedId = match[1];
+          }
+          
+          // For clipped DTMs, poll readiness before proceeding
+          if (clippedId) {
+            debug.log(`Polling DTM readiness for clipped DTM: ${clippedId}`);
+            try {
+              const isReady = await pollDtmReadiness(clippedId, 120, 500);
+              if (!isReady) {
+                throw new Error('DTM readiness check failed or timed out');
+              }
+              debug.log(`DTM ${clippedId} is ready, proceeding with load`);
+            } catch (pollError) {
+              const errorMsg = pollError instanceof Error ? pollError.message : 'DTM readiness check failed';
+              setDtmLoadState('FAILED');
+              setDtmLoadError(errorMsg);
+              setIsDtmProcessing(false);
+              alert(`DTM is still preparing. Please wait a moment and try again.\n\nError: ${errorMsg}`);
+              return;
+            }
+          }
         } else {
           // For uploaded DTMs, extract filename and construct API path
           const filename = dtmSource.split('/').pop();
           if (!filename) {
+            setDtmLoadState('IDLE');
             setIsDtmProcessing(false);
             return;
           }
@@ -4366,7 +4519,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
         // Transform projected coordinates to WGS84 (lat/lon) if needed
         // Note: Clipped DTMs already have bounds in WGS84 (transformed by backend), so skip transformation
-        const isClippedDtm = dtmSource.startsWith('/api/dtm/clipped/');
         let transformedBounds = bounds;
 
         if (isProjected && !isClippedDtm) {
@@ -4508,9 +4660,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
               opacity: 1.0
             }).addTo(map.current);
 
-            setDtmLoaded(true);
+            // Only set READY state after DTM is fully rendered and ready
+            setDtmLoadState('READY');
+            setDtmLoadError(null);
             setDtmBounds(bounds); // Store bounds for the "Fit to DTM" button
             setIsDtmProcessing(false);
+            
+            debug.log('DTM loaded and ready for elevation queries');
 
             // Fit map to DTM bounds (now in WGS84)
             try {
@@ -4527,7 +4683,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
             }
           } catch (sourceError) {
             debug.error('Error adding DTM source/layer:', sourceError);
-            setDtmLoaded(false);
+            setDtmLoadState('FAILED');
+            setDtmLoadError(sourceError instanceof Error ? sourceError.message : 'Unknown error');
             setIsDtmProcessing(false);
             alert(`Can't add DTM: ${sourceError instanceof Error ? sourceError.message : 'Unknown error'}\nSee console for details.`);
           }
@@ -4547,7 +4704,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
         img.onerror = (error) => {
           debug.error('Error loading DTM image:', error);
-          setDtmLoaded(false);
+          setDtmLoadState('FAILED');
+          setDtmLoadError('Failed to create DTM image');
           setIsDtmProcessing(false);
           alert('לא ניתן ליצור תמונת DTM. ראה קונסולה.');
         };
@@ -4560,7 +4718,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       } catch (error) {
         debug.error('Error loading DTM:', error);
         const errorMessage = error instanceof Error ? error.message : 'שגיאה לא ידועה';
-        setDtmLoaded(false);
+        setDtmLoadState('FAILED');
+        setDtmLoadError(errorMessage);
         setIsDtmProcessing(false);
         alert(`טעינת DTM נכשלה: ${errorMessage}\nוודא שהקובץ הוא GeoTIFF תקין.`);
       }
@@ -6589,9 +6748,34 @@ const MapPanel: React.FC<MapPanelProps> = ({
             </div>
           </div>
         )}
-        {isDtmProcessing && !isUploading && (
+        {(isDtmProcessing || dtmLoadState === 'LOADING') && !isUploading && (
           <div className="upload-progress-overlay">
-            <div className="loading-spinner" />
+            <div className="upload-progress-container">
+              <div className="loading-spinner" />
+              <div className="upload-progress-label">
+                {dtmLoadState === 'LOADING' ? 'מכין DTM... אנא המתן' : 'טוען DTM...'}
+              </div>
+            </div>
+          </div>
+        )}
+        {dtmLoadState === 'FAILED' && dtmLoadError && (
+          <div className="upload-progress-overlay">
+            <div className="upload-progress-container" style={{ background: '#fee', borderColor: '#f00' }}>
+              <div className="upload-progress-label" style={{ color: '#c00' }}>
+                שגיאה בטעינת DTM: {dtmLoadError}
+              </div>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setDtmLoadState('IDLE');
+                  setDtmLoadError(null);
+                }}
+                style={{ marginTop: '10px' }}
+              >
+                סגור
+              </button>
+            </div>
           </div>
         )}
         {viewshedRaster && viewshedVisible && (
@@ -7337,7 +7521,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         <div className="upload-progress-overlay">
           <div className="upload-progress-container">
             <div className="loading-spinner" />
-            <div className="upload-progress-label">חותך DTM לאזור הנבחר...</div>
+            <div className="upload-progress-label">חותך DTM לאזור הנבחר... זה עשוי לקחת כמה רגעים</div>
           </div>
         </div>
       )}

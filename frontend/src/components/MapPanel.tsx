@@ -9,6 +9,7 @@ import { FlightRoute } from '../hooks/useFlightPath';
 import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import CoordinateTooltip from './CoordinateTooltip';
+import SuccessNotification from './SuccessNotification';
 import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, samplePointsAlongLine } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
 import './MapPanel.css';
@@ -662,6 +663,24 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [isFadingOut, setIsFadingOut] = useState(false);
   const drawModeNoteTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [isParallelLineMode, setIsParallelLineMode] = useState(false);
+  // Ordered selection to preserve click order
+  const [selectedLineIds, setSelectedLineIds] = useState<string[]>([]);
+  const [parallelBatchOffset, setParallelBatchOffset] = useState<string>('');
+  const [parallelBatchDirection, setParallelBatchDirection] = useState<'right' | 'left'>('right');
+  const [isParallelBatchOffsetOverridden, setIsParallelBatchOffsetOverridden] = useState(false);
+  const [parallelBatchError, setParallelBatchError] = useState<string | null>(null);
+  
+  // Draggable window state
+  const [parallelWindowPosition, setParallelWindowPosition] = useState<{ x: number; y: number } | null>(null);
+  const [isDraggingParallelWindow, setIsDraggingParallelWindow] = useState(false);
+  const dragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+  const parallelWindowRef = useRef<HTMLDivElement | null>(null);
+  const lastParallelOffsetRef = useRef<number | null>(null);
+  const lastParallelOffsetByLineIdRef = useRef<Map<string, number>>(new Map());
+  const [successNotification, setSuccessNotification] = useState<{ isOpen: boolean; message: string }>({
+    isOpen: false,
+    message: ''
+  });
   const [dtmLoaded, setDtmLoaded] = useState(false);
   const [dtmBounds, setDtmBounds] = useState<number[] | null>(null);
   const [dtmOpacity, setDtmOpacity] = useState<number>(initialDisplaySettings?.opacity ?? 0.1); // Default 90% transparency (10% opacity)
@@ -684,6 +703,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const flightPathLineRef = useRef<L.Polyline | null>(null);
   const flightPathClickableLineRef = useRef<L.Polyline | null>(null);
   const flightPathBufferRef = useRef<L.Polyline | null>(null);
+  const selectedLineHalosRef = useRef<L.Polyline[]>([]);
   const segmentLengthLabelsRef = useRef<L.Marker[]>([]);
   const hoveredPointRef = useRef<number | null>(null);
   const justFinishedDraggingRef = useRef<boolean>(false);
@@ -824,6 +844,331 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setDialogValues({});
     setDialogError(null);
   };
+
+  const segmentIdByIndex = useMemo(() => {
+    const ids: string[] = [];
+    for (let i = 0; i < flightPath.length - 1; i++) {
+      const a = flightPath[i];
+      const b = flightPath[i + 1];
+      const aId = a?.id ?? `idx-${i}`;
+      const bId = b?.id ?? `idx-${i + 1}`;
+      ids.push(`${aId}->${bId}`);
+    }
+    return ids;
+  }, [flightPath]);
+
+  const segmentIndexById = useMemo(() => {
+    const m = new Map<string, number>();
+    segmentIdByIndex.forEach((id, idx) => m.set(id, idx));
+    return m;
+  }, [segmentIdByIndex]);
+
+  const computeDefaultOffsetForSegmentIndex = useCallback(
+    (segmentIndex: number): number => {
+      const segmentStart = flightPath[segmentIndex];
+      const segmentEnd = flightPath[segmentIndex + 1];
+      if (!segmentStart || !segmentEnd) return 50;
+
+      const avgAGL = computeAvgAGLForSegment(
+        segmentStart,
+        segmentEnd,
+        segmentIndex,
+        segmentIndex + 1,
+        nominalFlightHeight
+      );
+
+      const effectiveAGL =
+        avgAGL !== null
+          ? avgAGL
+          : (() => {
+              const startHeight = segmentStart.height ?? nominalFlightHeight;
+              const endHeight = segmentEnd.height ?? nominalFlightHeight;
+              return (startHeight + endHeight) / 2;
+            })();
+
+      const calculatedSpacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
+      return calculatedSpacing !== null && calculatedSpacing > 0
+        ? Math.round(calculatedSpacing * 10) / 10
+        : 50;
+    },
+    // NOTE: computeAvgAGLForSegment is declared later in this file.
+    // We intentionally don't include it in deps to avoid TDZ issues and because it's a stable callback.
+    [flightPath, fovDegrees, nominalFlightHeight, overlapPercentage]
+  );
+
+  const getSuggestedDistanceForLine = useCallback(
+    (lineId: string): number => {
+      const perLine = lastParallelOffsetByLineIdRef.current.get(lineId);
+      if (typeof perLine === 'number' && isFinite(perLine)) return perLine;
+      if (lastParallelOffsetRef.current !== null && isFinite(lastParallelOffsetRef.current)) {
+        return lastParallelOffsetRef.current;
+      }
+      const idx = segmentIndexById.get(lineId);
+      if (idx === undefined) return 50;
+      return computeDefaultOffsetForSegmentIndex(idx);
+    },
+    [computeDefaultOffsetForSegmentIndex, segmentIndexById]
+  );
+
+  // Load parallel window position from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('parallelLinesWindowPosition');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+          // Clamp to viewport on load
+          const clampedX = Math.max(0, Math.min(parsed.x, window.innerWidth - 300));
+          const clampedY = Math.max(0, Math.min(parsed.y, window.innerHeight - 200));
+          setParallelWindowPosition({ x: clampedX, y: clampedY });
+        }
+      }
+    } catch (e) {
+      // Ignore parse errors
+    }
+  }, []);
+
+  // Save parallel window position to localStorage when it changes
+  useEffect(() => {
+    if (parallelWindowPosition) {
+      try {
+        localStorage.setItem('parallelLinesWindowPosition', JSON.stringify(parallelWindowPosition));
+      } catch (e) {
+        // Ignore storage errors
+      }
+    }
+  }, [parallelWindowPosition]);
+
+  // Keep batch distance default in sync with selection (unless user overrides)
+  useEffect(() => {
+    if (!isParallelLineMode) return;
+    if (selectedLineIds.length === 0) {
+      setParallelBatchError(null);
+      setParallelBatchOffset('');
+      setIsParallelBatchOffsetOverridden(false);
+      return;
+    }
+    if (isParallelBatchOffsetOverridden) return;
+    // Use absolute values for averaging
+    const offsets = selectedLineIds.map(getSuggestedDistanceForLine).map(Math.abs).filter((n) => isFinite(n));
+    if (offsets.length === 0) {
+      // Fallback to global default (absolute)
+      const defaultOffset = Math.abs(lastParallelOffsetRef.current ?? 50);
+      setParallelBatchOffset(defaultOffset.toFixed(1));
+      return;
+    }
+    const avg = offsets.reduce((sum, n) => sum + n, 0) / offsets.length;
+    setParallelBatchOffset((Math.round(avg * 10) / 10).toFixed(1));
+  }, [
+    getSuggestedDistanceForLine,
+    isParallelBatchOffsetOverridden,
+    isParallelLineMode,
+    selectedLineIds
+  ]);
+
+  // Reset selection state when leaving parallel tool
+  useEffect(() => {
+    if (!isParallelLineMode) {
+      setSelectedLineIds([]);
+      setParallelBatchError(null);
+      setParallelBatchOffset('');
+      setParallelBatchDirection('right');
+      setIsParallelBatchOffsetOverridden(false);
+    }
+  }, [isParallelLineMode]);
+
+  const createParallelLineForSegmentIndex = useCallback(
+    (segmentIndex: number, offset: number): { ok: true; points: Coordinate[] } | { ok: false; error: string } => {
+      if (segmentIndex < 0 || segmentIndex >= flightPath.length - 1) {
+        return { ok: false, error: 'בחר מקטע שוב.' };
+      }
+      if (!isFinite(offset)) {
+        return { ok: false, error: 'נדרש היסט.' };
+      }
+      const segmentStart = flightPath[segmentIndex];
+      const segmentEnd = flightPath[segmentIndex + 1];
+      if (!segmentStart || !segmentEnd) {
+        return { ok: false, error: 'בחר מקטע שוב.' };
+      }
+      const [parallelStart, parallelEnd] = calculateParallelLine(segmentStart, segmentEnd, offset);
+      if (
+        isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
+        isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
+      ) {
+        // Keep existing behavior: add two points forming the parallel segment
+        return { ok: true, points: [parallelEnd, parallelStart] };
+      }
+      return { ok: false, error: 'היסט יוצא מ-DTM.' };
+    },
+    // NOTE: isPointWithinBounds is declared later in this file; omit from deps to avoid TDZ issues.
+    [flightPath]
+  );
+
+  const clearSelectedLines = useCallback(() => {
+    setSelectedLineIds([]);
+    setParallelBatchError(null);
+    setParallelBatchOffset('');
+    setIsParallelBatchOffsetOverridden(false);
+  }, []);
+
+  // Reset parallel window position to default
+  const resetParallelWindowPosition = useCallback(() => {
+    const defaultX = window.innerWidth - 320; // Right side with some margin
+    const defaultY = 100; // Top with some margin
+    setParallelWindowPosition({ x: defaultX, y: defaultY });
+  }, []);
+
+  // Handle drag start for parallel lines window
+  const handleParallelWindowDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    
+    const currentX = parallelWindowPosition?.x ?? (window.innerWidth - 320);
+    const currentY = parallelWindowPosition?.y ?? 100;
+    
+    setIsDraggingParallelWindow(true);
+    dragStartRef.current = {
+      x: clientX,
+      y: clientY,
+      startX: currentX,
+      startY: currentY
+    };
+  }, [parallelWindowPosition]);
+
+  // Handle drag move for parallel lines window
+  const handleParallelWindowDragMove = useCallback((e: MouseEvent | TouchEvent) => {
+    if (!isDraggingParallelWindow || !dragStartRef.current) return;
+    
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    
+    const deltaX = clientX - dragStartRef.current.x;
+    const deltaY = clientY - dragStartRef.current.y;
+    
+    let newX = dragStartRef.current.startX + deltaX;
+    let newY = dragStartRef.current.startY + deltaY;
+    
+    // Clamp to viewport bounds
+    const windowWidth = parallelWindowRef.current?.offsetWidth || 300;
+    const windowHeight = parallelWindowRef.current?.offsetHeight || 200;
+    
+    newX = Math.max(0, Math.min(newX, window.innerWidth - windowWidth));
+    newY = Math.max(0, Math.min(newY, window.innerHeight - windowHeight));
+    
+    setParallelWindowPosition({ x: newX, y: newY });
+  }, [isDraggingParallelWindow]);
+
+  // Handle drag end for parallel lines window
+  const handleParallelWindowDragEnd = useCallback(() => {
+    setIsDraggingParallelWindow(false);
+    dragStartRef.current = null;
+  }, []);
+
+  // Set up global drag handlers
+  useEffect(() => {
+    if (isDraggingParallelWindow) {
+      const handleMove = (e: MouseEvent | TouchEvent) => handleParallelWindowDragMove(e);
+      const handleEnd = () => handleParallelWindowDragEnd();
+      
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleEnd);
+      window.addEventListener('touchmove', handleMove, { passive: false });
+      window.addEventListener('touchend', handleEnd);
+      
+      return () => {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleEnd);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('touchend', handleEnd);
+      };
+    }
+  }, [isDraggingParallelWindow, handleParallelWindowDragMove, handleParallelWindowDragEnd]);
+
+  const createParallelLinesBatch = useCallback(
+    (lineIds: string[], distanceOverride?: number) => {
+      const offset = distanceOverride ?? parseFloat(parallelBatchOffset || '');
+      const failed: string[] = [];
+      const createdLineIds: string[] = [];
+      const newPoints: Coordinate[] = [];
+
+      for (const lineId of lineIds) {
+        const segmentIndex = segmentIndexById.get(lineId);
+        if (segmentIndex === undefined) {
+          failed.push(lineId);
+          continue;
+        }
+        const result = createParallelLineForSegmentIndex(segmentIndex, offset);
+        if (!result.ok) {
+          failed.push(`seg-${segmentIndex + 1}`);
+          continue;
+        }
+        newPoints.push(...result.points);
+        createdLineIds.push(lineId);
+      }
+
+      return {
+        offset,
+        createdLineIds,
+        failed,
+        newPoints
+      };
+    },
+    [createParallelLineForSegmentIndex, parallelBatchOffset, segmentIndexById]
+  );
+
+  const handleCreateParallelLinesBatch = useCallback(() => {
+    if (!dtmLoaded) {
+      setParallelBatchError('טען DTM תחילה.');
+      return;
+    }
+    if (selectedLineIds.length === 0) {
+      setParallelBatchError('בחר לפחות קטע אחד.');
+      return;
+    }
+    const distance = parseFloat(parallelBatchOffset || '');
+    if (!isFinite(distance) || distance <= 0) {
+      setParallelBatchError('נדרש מרחק חיובי.');
+      return;
+    }
+    
+    // Convert to signed distance based on direction
+    const signedOffset = parallelBatchDirection === 'right' ? distance : -distance;
+
+    const { createdLineIds, failed, newPoints } = createParallelLinesBatch(selectedLineIds, signedOffset);
+
+    if (newPoints.length > 0) {
+      // Single history entry: one onAddPoints call
+      onAddPoints(newPoints);
+      // Remember last-used offsets (global + per-line) - store signed value
+      lastParallelOffsetRef.current = signedOffset;
+      createdLineIds.forEach((id) => lastParallelOffsetByLineIdRef.current.set(id, signedOffset));
+    }
+
+    const total = selectedLineIds.length;
+    const created = createdLineIds.length;
+    const message =
+      failed.length === 0
+        ? `נוצרו ${created}/${total} קטעים מקבילים.`
+        : `נוצרו ${created}/${total} קטעים מקבילים. נכשלו: ${failed.join(', ')}`;
+
+    setSuccessNotification({ isOpen: true, message });
+    setIsParallelLineMode(false);
+    clearSelectedLines();
+  }, [
+    clearSelectedLines,
+    createParallelLinesBatch,
+    dtmLoaded,
+    onAddPoints,
+    parallelBatchOffset,
+    parallelBatchDirection,
+    selectedLineIds
+  ]);
 
   // Real-time validation function for dialog inputs
   const validateDialogInput = useCallback((type: string, value: string) => {
@@ -2126,6 +2471,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       // If in parallel line mode, handle line segment selection
       if (isParallelLineMode && dtmLoaded && flightPath.length >= 2 && map.current) {
+        const originalEvent = e.originalEvent as MouseEvent | undefined;
+        const clickTarget = originalEvent?.target as HTMLElement | null;
+        const isClickOnPopup = clickTarget?.closest('.edit-mode-indicator') !== null;
+        
+        // If click is on the pop-up, ignore it
+        if (isClickOnPopup) {
+          return;
+        }
+        
         // Find which segment was clicked by calculating distance to each segment
         const clickPoint = { lng: e.latlng.lng, lat: e.latlng.lat };
         let closestSegmentIndex = -1;
@@ -2144,34 +2498,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
 
         if (closestSegmentIndex >= 0) {
-          // Calculate default spacing using shared function for the selected segment with line-specific avgAGL
-          const segmentStart = flightPath[closestSegmentIndex];
-          const segmentEnd = flightPath[closestSegmentIndex + 1];
+          const lineId = segmentIdByIndex[closestSegmentIndex] ?? `seg-${closestSegmentIndex}`;
+          const modifier = !!(originalEvent && (originalEvent.ctrlKey || originalEvent.metaKey));
+
+          // Only allow selection with Ctrl/Cmd + Click
+          // Selection is PERSISTENT - halos remain visible until toggled off or parallel lines are created
+          if (modifier) {
+            setSelectedLineIds((prev) => {
+              const idx = prev.indexOf(lineId);
+              if (idx >= 0) {
+                // Remove if already selected (halo will disappear)
+                const next = [...prev];
+                next.splice(idx, 1);
+                return next;
+              }
+              // Add to selection (halo will appear and persist)
+              return [...prev, lineId];
+            });
+            setParallelBatchError(null);
+            return;
+          }
           
-          // Compute line-specific avgAGL for the selected segment
-          const avgAGL = computeAvgAGLForSegment(segmentStart, segmentEnd, closestSegmentIndex, closestSegmentIndex + 1, nominalFlightHeight);
-          
-          // Use avgAGL if available, otherwise fall back to average height
-          const effectiveAGL = avgAGL !== null ? avgAGL : (() => {
-            const startHeight = segmentStart.height ?? nominalFlightHeight;
-            const endHeight = segmentEnd.height ?? nominalFlightHeight;
-            return (startHeight + endHeight) / 2;
-          })();
-          
-          const calculatedSpacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
-          const defaultOffset = calculatedSpacing !== null && calculatedSpacing > 0 
-            ? calculatedSpacing.toFixed(1) 
-            : '50'; // Fallback to 50 if calculation fails
-          
-          setDialog({
-            type: 'parallelOffset',
-            title: 'היסט מקביל'
-          });
-          setDialogValues({
-            segmentIndex: closestSegmentIndex.toString(),
-            offset: defaultOffset
-          });
-          setDialogError(null);
+          // Normal click without modifier does nothing - selection and halos remain unchanged
         } else {
           alert('לחץ קרוב יותר למקטע קו.');
         }
@@ -2180,7 +2528,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       // If there are selected points, a click on the map should ONLY clear the selection
       // and NOT create a new point.
-      if (selectedPointIndices.size > 0 && !justFinishedDraggingRef.current) {
+      // BUT: In parallel line mode, don't clear point selection (different selection system)
+      if (selectedPointIndices.size > 0 && !justFinishedDraggingRef.current && !isParallelLineMode) {
         setSelectedPointIndices(new Set());
         return;
       }
@@ -2250,7 +2599,24 @@ const MapPanel: React.FC<MapPanelProps> = ({
         map.current.off('contextmenu', handleContextMenu);
       }
     };
-  }, [isDrawing, isParallelLineMode, dtmLoaded, onAddPoint, onUpdatePoint, isPointWithinBounds, editingPointIndex, flightPath, onAddPoints, isAoiSelectionMode, setSelectedPointIndices]);
+  }, [
+    computeDefaultOffsetForSegmentIndex,
+    dtmLoaded,
+    editingPointIndex,
+    externalEditPointIndex,
+    flightPath,
+    isAoiSelectionMode,
+    isDrawing,
+    isParallelLineMode,
+    onAddPoint,
+    onAddPoints,
+    onEditPointIndexChange,
+    onUpdatePoint,
+    segmentIdByIndex,
+    selectedPointIndices.size,
+    setSelectedPointIndices,
+    isPointWithinBounds
+  ]);
 
   // Multi-select helper functions
   const togglePointSelection = useCallback((index: number) => {
@@ -3429,6 +3795,46 @@ const MapPanel: React.FC<MapPanelProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [selectedPointIndices, flightPath.length, onDeletePoint, setSelectedPointIndices]);
+
+  // Render halos for selected lines in parallel mode
+  // Halos are PERSISTENT - they remain visible until:
+  // 1) User creates parallel lines (selection cleared after creation)
+  // 2) User Ctrl/Cmd+clicks to unselect a line
+  // 3) User exits parallel line mode
+  // Halos do NOT disappear on normal clicks or other map interactions
+  useEffect(() => {
+    if (!map.current || !isParallelLineMode || flightPath.length < 2) {
+      // Remove all halos if not in parallel mode or no flight path
+      selectedLineHalosRef.current.forEach((halo) => halo.remove());
+      selectedLineHalosRef.current = [];
+      return;
+    }
+
+    // Remove existing halos (will be re-rendered below if still selected)
+    selectedLineHalosRef.current.forEach((halo) => halo.remove());
+    selectedLineHalosRef.current = [];
+
+    // Add halos for selected lines - these persist until selection changes
+    if (selectedLineIds.length > 0) {
+      const selectedLineSet = new Set(selectedLineIds);
+      for (let i = 0; i < flightPath.length - 1; i++) {
+        const lineId = segmentIdByIndex[i];
+        if (lineId && selectedLineSet.has(lineId)) {
+          const start = flightPath[i];
+          const end = flightPath[i + 1];
+          const halo = L.polyline([[start.lat, start.lng], [end.lat, end.lng]], {
+            color: '#0ea5e9',
+            weight: 12,
+            opacity: 0.4,
+            interactive: false,
+            lineCap: 'round',
+            lineJoin: 'round'
+          }).addTo(map.current);
+          selectedLineHalosRef.current.push(halo);
+        }
+      }
+    }
+  }, [isParallelLineMode, selectedLineIds, flightPath, segmentIdByIndex]);
 
   // Handle zoom-dependent buffer width
   useEffect(() => {
@@ -4986,31 +5392,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (dialog.type === 'parallelOffset') {
       const offset = parseFloat(dialogValues.offset || '');
       const segmentIndex = parseInt(dialogValues.segmentIndex || '-1', 10);
-      if (isNaN(offset)) {
-        setDialogError('נדרש היסט.');
+      const result = createParallelLineForSegmentIndex(segmentIndex, offset);
+      if (!result.ok) {
+        setDialogError(result.error);
         return;
       }
-      if (segmentIndex < 0 || segmentIndex >= flightPath.length - 1) {
-        setDialogError('בחר מקטע שוב.');
-        return;
-      }
-      const segmentStart = flightPath[segmentIndex];
-      const segmentEnd = flightPath[segmentIndex + 1];
-      const [parallelStart, parallelEnd] = calculateParallelLine(
-        segmentStart,
-        segmentEnd,
-        offset
-      );
-      if (
-        isPointWithinBounds(parallelStart.lng, parallelStart.lat) &&
-        isPointWithinBounds(parallelEnd.lng, parallelEnd.lat)
-      ) {
-        onAddPoints([parallelEnd, parallelStart]);
-        setIsParallelLineMode(false);
-        resetDialog();
-      } else {
-        setDialogError('היסט יוצא מ-DTM.');
-      }
+      onAddPoints(result.points);
+      // Remember last used distance for better defaults
+      lastParallelOffsetRef.current = offset;
+      const lineId = segmentIdByIndex[segmentIndex] ?? `seg-${segmentIndex}`;
+      lastParallelOffsetByLineIdRef.current.set(lineId, offset);
+      setIsParallelLineMode(false);
+      resetDialog();
       return;
     }
 
@@ -5649,10 +6042,119 @@ const MapPanel: React.FC<MapPanelProps> = ({
         </div>
       )}
       {isParallelLineMode && (
-        <div className="edit-mode-indicator">
-          לחץ על מקטע קו כדי ליצור קו מקביל
+        <div 
+          ref={parallelWindowRef}
+          className="parallel-lines-window"
+          style={{
+            left: parallelWindowPosition?.x ?? (window.innerWidth - 320),
+            top: parallelWindowPosition?.y ?? 100,
+            cursor: isDraggingParallelWindow ? 'grabbing' : 'default'
+          }}
+          onClick={(e) => {
+            // Stop clicks on the window from triggering map click handler
+            e.stopPropagation();
+          }}
+        >
+          {/* Draggable header */}
+          <div 
+            className="parallel-lines-window__header"
+            onMouseDown={handleParallelWindowDragStart}
+            onTouchStart={handleParallelWindowDragStart}
+            style={{ cursor: isDraggingParallelWindow ? 'grabbing' : 'grab' }}
+          >
+            <span className="parallel-lines-window__title">קווים מקבילים</span>
+            <button
+              type="button"
+              className="parallel-lines-window__reset-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                resetParallelWindowPosition();
+              }}
+              title="איפוס מיקום"
+              aria-label="איפוס מיקום"
+            >
+              ↻
+            </button>
+          </div>
+
+          {/* Window content */}
+          <div className="parallel-lines-window__content">
+            <div style={{ fontSize: '0.8rem', color: '#64748b', marginBottom: '10px', lineHeight: '1.4', fontFamily: 'inherit' }}>
+              החזק Ctrl ולחץ על קווים כדי לבחור/לבטל בחירה.
+            </div>
+          
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <label className="quick-modal__label" htmlFor="parallel-batch-offset" style={{ margin: 0, minWidth: '120px' }}>
+                מרחק בין קווים (מ')
+              </label>
+              <input
+                id="parallel-batch-offset"
+                className="quick-modal__input"
+                type="number"
+                min="0"
+                max="10000"
+                step="0.1"
+                value={parallelBatchOffset}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  // Only allow positive numbers
+                  if (val === '' || (parseFloat(val) >= 0)) {
+                    setParallelBatchOffset(val);
+                    setIsParallelBatchOffsetOverridden(true);
+                    setParallelBatchError(null);
+                  }
+                }}
+                disabled={selectedLineIds.length === 0}
+                style={{ flex: 1, fontFamily: 'inherit' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <label className="quick-modal__label" style={{ margin: 0, minWidth: '120px' }}>כיוון</label>
+              <div className="quick-modal__segmented">
+                <button
+                  type="button"
+                  className={`quick-modal__pill ${parallelBatchDirection === 'right' ? 'active' : ''}`}
+                  onClick={() => setParallelBatchDirection('right')}
+                >
+                  ימין
+                </button>
+                <button
+                  type="button"
+                  className={`quick-modal__pill ${parallelBatchDirection === 'left' ? 'active' : ''}`}
+                  onClick={() => setParallelBatchDirection('left')}
+                >
+                  שמאל
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={selectedLineIds.length === 0}
+              onClick={handleCreateParallelLinesBatch}
+              style={{ width: '100%' }}
+            >
+              צור קווים מקבילים
+            </button>
+          </div>
+
+            {parallelBatchError && (
+              <div style={{ marginTop: '10px', color: '#dc2626', fontSize: '0.875rem', padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecdd3', borderRadius: '8px', fontFamily: 'inherit' }}>
+                {parallelBatchError}
+              </div>
+            )}
+          </div>
         </div>
       )}
+      <SuccessNotification
+        isOpen={successNotification.isOpen}
+        message={successNotification.message}
+        onClose={() => setSuccessNotification({ isOpen: false, message: '' })}
+        autoCloseDelay={3500}
+      />
       <div className="map-controls">
         <div className="control-group">
           <div className="group-title">ניהול נתונים</div>

@@ -263,6 +263,63 @@ export function samplePointsAlongLine(
 }
 
 /**
+ * Calculate the intersection point of two infinite lines defined by two points each.
+ * Uses a local tangent plane approximation suitable for small geographic distances.
+ * 
+ * @param line1Start First point of first line
+ * @param line1End Second point of first line
+ * @param line2Start First point of second line
+ * @param line2End Second point of second line
+ * @returns Intersection point, or null if lines are parallel or calculation fails
+ */
+export function calculateLineIntersection(
+  line1Start: Coordinate,
+  line1End: Coordinate,
+  line2Start: Coordinate,
+  line2End: Coordinate
+): Coordinate | null {
+  // Convert to radians for calculations
+  const φ1 = (line1Start.lat * Math.PI) / 180;
+  const λ1 = (line1Start.lng * Math.PI) / 180;
+  const φ2 = (line1End.lat * Math.PI) / 180;
+  const λ2 = (line1End.lng * Math.PI) / 180;
+  const φ3 = (line2Start.lat * Math.PI) / 180;
+  const λ3 = (line2Start.lng * Math.PI) / 180;
+  const φ4 = (line2End.lat * Math.PI) / 180;
+  const λ4 = (line2End.lng * Math.PI) / 180;
+
+  // Calculate direction vectors for both lines
+  const dx1 = λ2 - λ1;
+  const dy1 = φ2 - φ1;
+  const dx2 = λ4 - λ3;
+  const dy2 = φ4 - φ3;
+
+  // Check if lines are parallel (cross product is zero)
+  const cross = dx1 * dy2 - dy1 * dx2;
+  if (Math.abs(cross) < 1e-10) {
+    // Lines are parallel, no intersection
+    return null;
+  }
+
+  // Calculate intersection using parametric form
+  // Line 1: (λ1, φ1) + t * (dx1, dy1)
+  // Line 2: (λ3, φ3) + s * (dx2, dy2)
+  // At intersection: (λ1, φ1) + t * (dx1, dy1) = (λ3, φ3) + s * (dx2, dy2)
+  
+  // Solve for t: t = ((λ3 - λ1) * dy2 - (φ3 - φ1) * dx2) / cross
+  const t = ((λ3 - λ1) * dy2 - (φ3 - φ1) * dx2) / cross;
+
+  // Calculate intersection point using line 1
+  const λIntersect = λ1 + t * dx1;
+  const φIntersect = φ1 + t * dy1;
+
+  return {
+    lng: (λIntersect * 180) / Math.PI,
+    lat: (φIntersect * 180) / Math.PI
+  };
+}
+
+/**
  * Calculate the spacing distance for next line suggestions based on mission parameters.
  * This is the shared source-of-truth for spacing calculations used by both:
  * - Next line suggestion rendering

@@ -10,7 +10,7 @@ import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import CoordinateTooltip from './CoordinateTooltip';
 import SuccessNotification from './SuccessNotification';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, samplePointsAlongLine } from '../utils/geometry';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
 import './MapPanel.css';
@@ -1098,6 +1098,33 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const createdLineIds: string[] = [];
       const newPoints: Coordinate[] = [];
 
+      // If only one line is selected, use existing behavior (no intersection merging)
+      if (lineIds.length === 1) {
+        const lineId = lineIds[0];
+        const segmentIndex = segmentIndexById.get(lineId);
+        if (segmentIndex === undefined) {
+          failed.push(lineId);
+        } else {
+          const result = createParallelLineForSegmentIndex(segmentIndex, offset);
+          if (!result.ok) {
+            failed.push(`seg-${segmentIndex + 1}`);
+          } else {
+            newPoints.push(...result.points);
+            createdLineIds.push(lineId);
+          }
+        }
+        return {
+          offset,
+          createdLineIds,
+          failed,
+          newPoints
+        };
+      }
+
+      // For multiple lines: merge intermediate points at intersections
+      // Step 1: Collect segment indices and sort them
+      const segmentData: Array<{ lineId: string; segmentIndex: number; parallelLine: [Coordinate, Coordinate] | null }> = [];
+      
       for (const lineId of lineIds) {
         const segmentIndex = segmentIndexById.get(lineId);
         if (segmentIndex === undefined) {
@@ -1109,9 +1136,69 @@ const MapPanel: React.FC<MapPanelProps> = ({
           failed.push(`seg-${segmentIndex + 1}`);
           continue;
         }
-        newPoints.push(...result.points);
+        // result.points is [parallelEnd, parallelStart] (reversed order)
+        // Convert to [parallelStart, parallelEnd] for easier processing
+        const parallelLine: [Coordinate, Coordinate] = [result.points[1], result.points[0]];
+        segmentData.push({ lineId, segmentIndex, parallelLine });
         createdLineIds.push(lineId);
       }
+
+      // Sort by segment index to process in order
+      segmentData.sort((a, b) => a.segmentIndex - b.segmentIndex);
+
+      if (segmentData.length === 0) {
+        return {
+          offset,
+          createdLineIds,
+          failed,
+          newPoints
+        };
+      }
+
+      // Step 2: Build points array with intersection merging for consecutive segments
+      // The original code returns points as [parallelEnd, parallelStart] (reversed),
+      // but we build the path in forward order to maintain logical sequence
+      for (let i = 0; i < segmentData.length; i++) {
+        const current = segmentData[i];
+        const [parallelStart, parallelEnd] = current.parallelLine!;
+
+        if (i === 0) {
+          // First segment: add its start point (offset of first original point)
+          newPoints.push(parallelStart);
+        }
+
+        // Check if next segment is consecutive (shares a vertex)
+        const isLast = i === segmentData.length - 1;
+        const next = !isLast ? segmentData[i + 1] : null;
+        const isConsecutive = next && next.segmentIndex === current.segmentIndex + 1;
+
+        if (isConsecutive && next) {
+          // Consecutive segments: calculate intersection of the two parallel lines
+          // This replaces the two separate points (one from each segment) with one intersection point
+          const [nextParallelStart, nextParallelEnd] = next.parallelLine!;
+          const intersection = calculateLineIntersection(
+            parallelStart,
+            parallelEnd,
+            nextParallelStart,
+            nextParallelEnd
+          );
+
+          if (intersection) {
+            // Use intersection point for the shared vertex
+            // This is the key change: one point instead of two
+            newPoints.push(intersection);
+          } else {
+            // Fallback: if intersection calculation fails (parallel lines), use the end point of current segment
+            newPoints.push(parallelEnd);
+          }
+        } else {
+          // Not consecutive or last segment: add the end point (offset of last original point)
+          newPoints.push(parallelEnd);
+        }
+      }
+
+      // Reverse the points array to match the original ordering pattern
+      newPoints.reverse();
 
       return {
         offset,

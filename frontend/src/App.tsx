@@ -352,7 +352,7 @@ function App() {
     
     // Assign anchor IDs to climb points that don't have them (for backward compatibility)
     if (flightPath.length >= 2 && requests.length > 0) {
-      const updated = requests.map((climb: ClimbRequest, index: number) => {
+      const updated = requests.map((climb: ClimbRequest) => {
         // If climb already has anchor IDs, keep it as is
         if (climb.anchorPointIdA && climb.anchorPointIdB) {
           return climb;
@@ -658,24 +658,19 @@ function App() {
       return route[route.length - 1];
     };
 
-    climbRequests.forEach((climb, index) => {
+    climbRequests.forEach((climb) => {
       // Calculate required horizontal distance for the climb
       const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
       const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
 
       // Try to get position from anchor points first (for anchored climbs)
       let endCoord: Coordinate | null = null;
-      let endCoordMethod = 'none';
       if (climb.anchorPointIdA && climb.anchorPointIdB) {
         endCoord = getClimbPositionFromAnchors(climb, flightPath, climb.endDistance);
-        if (endCoord) {
-          endCoordMethod = 'anchors';
-        }
       }
       
       // Fallback to distance-based calculation if no anchors or anchors not found
       if (!endCoord) {
-        endCoordMethod = 'distance';
         const cumulativeDistances = computeCumulativeDistances(flightPath);
         endCoord = distanceToCoordinate(climb.endDistance, flightPath, cumulativeDistances);
       }
@@ -687,7 +682,6 @@ function App() {
       // For start position, calculate based on segment ratio (not global distance)
       // This ensures the start position stays fixed relative to the anchor points
       let startCoord: Coordinate | null = null;
-      let startCoordMethod = 'none';
       if (climb.anchorPointIdA && climb.anchorPointIdB && climb.segmentRatio !== undefined) {
         // Find anchor points
         const pointA = flightPath.find(p => p.id === climb.anchorPointIdA);
@@ -727,10 +721,8 @@ function App() {
                 lng: pointA.lng + (pointB.lng - pointA.lng) * startRatio,
                 lat: pointA.lat + (pointB.lat - pointA.lat) * startRatio
               };
-              startCoordMethod = 'anchors';
             } else {
               startCoord = { ...endCoord };
-              startCoordMethod = 'anchors';
             }
           }
         }
@@ -738,7 +730,6 @@ function App() {
       
       // Fallback to distance-based calculation if anchor-based failed
       if (!startCoord) {
-        startCoordMethod = 'distance';
         const cumulativeDistances = computeCumulativeDistances(flightPath);
         const startDistance = Math.max(0, climb.endDistance - requiredHorizontal);
         startCoord = distanceToCoordinate(startDistance, flightPath, cumulativeDistances);

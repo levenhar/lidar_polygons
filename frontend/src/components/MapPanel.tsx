@@ -13,6 +13,7 @@ import SuccessNotification from './SuccessNotification';
 import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
+import { ClimbConfig } from '../utils/climb';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 
@@ -614,6 +615,7 @@ interface MapPanelProps {
   onShowNextLineSuggestionsChange: (show: boolean) => void;
   climbRequests?: { endDistance: number; climbAmount: number }[];
   elevationProfile?: ElevationPoint[]; // Elevation profile with planned altitudes
+  climbConfig?: ClimbConfig; // Climb configuration for vertex proximity circles
   // Export/Import props
   onExportClick: () => void;
   onImportKML: (file: File) => Promise<void>;
@@ -664,6 +666,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onShowNextLineSuggestionsChange,
   climbRequests: _climbRequests = [],
   elevationProfile = [],
+  climbConfig,
   onExportClick,
   onImportKML,
   canExport
@@ -823,6 +826,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const displaySettingsButtonRef = useRef<HTMLButtonElement>(null);
   const displaySettingsPopoverRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<L.Marker[]>([]);
+  const vertexProximityCirclesRef = useRef<L.Circle[]>([]);
   const climbMarkersRef = useRef<L.Marker[]>([]);
   const flightPathLineRef = useRef<L.Polyline | null>(null);
   const flightPathClickableLineRef = useRef<L.Polyline | null>(null);
@@ -3361,6 +3365,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
     markersRef.current.forEach(marker => marker.remove());
     markersRef.current = [];
 
+    // Remove existing vertex proximity circles
+    vertexProximityCirclesRef.current.forEach(circle => circle.remove());
+    vertexProximityCirclesRef.current = [];
+
     climbMarkersRef.current.forEach(marker => marker.remove());
     climbMarkersRef.current = [];
 
@@ -3951,6 +3959,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       // Store marker and element for selection updates
       markersRef.current.push(marker);
+
+      // Add bright circle around point with radius = vertexProximityMeters
+      if (climbConfig && climbConfig.vertexProximityMeters > 0) {
+        const circle = L.circle([point.lat, point.lng], {
+          radius: climbConfig.vertexProximityMeters,
+          color: '#808080', // Gray
+          fillColor: '#808080',
+          fillOpacity: 0.2,
+          weight: 2,
+          opacity: 0.8
+        }).addTo(map.current!);
+        vertexProximityCirclesRef.current.push(circle);
+      }
     });
 
     // Don't auto-fit bounds while drawing - let user control the view
@@ -3972,7 +3993,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
     climbMarkers,
     showClimbLabels,
     selectedPointIndices,
-    togglePointSelection
+    togglePointSelection,
+    climbConfig
   ]);
 
   // Update marker visual state when selection changes

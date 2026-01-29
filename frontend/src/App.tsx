@@ -1418,6 +1418,7 @@ function App() {
             onShowNextLineSuggestionsChange={setShowNextLineSuggestions}
             climbRequests={climbRequests}
             elevationProfile={fullProfileResult.points}
+            climbConfig={climbConfig}
             onExportClick={() => {
               const routesWithPoints = routes.filter(route => route.points.length >= 2);
               if (routesWithPoints.length > 1) {

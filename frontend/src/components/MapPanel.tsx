@@ -3623,6 +3623,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       let isDraggingWithLeftClick = false;
       let dragStartLatLng: L.LatLng | null = null;
       let hasStartedDragging = false; // Track if we've actually started dragging
+      let isAltPressed = false; // Track ALT key state during drag
+      let altConstraintToastShown = false; // Track if we've shown the toast for non-endpoint ALT
 
       // Handle marker click for selection
       el.addEventListener('click', (e) => {
@@ -3682,12 +3684,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
         el.style.cursor = 'grabbing';
         el.classList.add('is-dragging');
         marker.setZIndexOffset(1000);
+        isAltPressed = e.altKey; // Capture initial ALT state
+        altConstraintToastShown = false; // Reset toast flag
 
         // Store drag start position
         dragStartLatLng = marker.getLatLng();
 
         // Store original positions of all selected points for group drag
-        if (selectedPointIndices.size > 0) {
+        // Only enable group drag if MULTIPLE points are selected (not just one)
+        if (selectedPointIndices.size > 1) {
           isGroupDraggingRef.current = true;
           dragStartPositionsRef.current.clear();
           selectedPointIndices.forEach((idx) => {
@@ -3715,9 +3720,101 @@ const MapPanel: React.FC<MapPanelProps> = ({
         });
       });
 
+      // Helper function to project a point onto a line direction in UTM coordinates
+      // Returns the constrained point in lat/lng, or null if constraint cannot be applied
+      const projectPointOntoLineDirection = (
+        endpointLat: number,
+        endpointLng: number,
+        mouseLat: number,
+        mouseLng: number,
+        pointIndex: number,
+        path: Coordinate[]
+      ): { lat: number; lng: number } | null => {
+        // Check if this is an endpoint
+        const isFirstPoint = pointIndex === 0;
+        const isLastPoint = pointIndex === path.length - 1;
+        
+        if (!isFirstPoint && !isLastPoint) {
+          return null; // Not an endpoint, constraint doesn't apply
+        }
+
+        if (path.length < 2) {
+          return null; // Need at least 2 points to determine direction
+        }
+
+        // Determine the direction vector
+        let directionPoint: Coordinate;
+        if (isFirstPoint) {
+          // For first point: direction = normalize(P0 - P1), so movement extends the line
+          directionPoint = path[1];
+        } else {
+          // For last point: direction = normalize(Pn - P(n-1))
+          directionPoint = path[path.length - 2];
+        }
+
+        // Convert all points to UTM for vector math
+        const endpointUtm = latLngToUTM(endpointLat, endpointLng);
+        const directionPointUtm = latLngToUTM(directionPoint.lat, directionPoint.lng);
+        const mouseUtm = latLngToUTM(mouseLat, mouseLng);
+
+        if (!endpointUtm || !directionPointUtm || !mouseUtm) {
+          return null; // Conversion failed
+        }
+
+        // Calculate direction vector in UTM (meters)
+        const dirX = endpointUtm.easting - directionPointUtm.easting;
+        const dirY = endpointUtm.northing - directionPointUtm.northing;
+        const dirLength = Math.sqrt(dirX * dirX + dirY * dirY);
+
+        if (dirLength < 0.001) {
+          return null; // Points are too close, can't determine direction
+        }
+
+        // Normalize direction vector
+        const dirUnitX = dirX / dirLength;
+        const dirUnitY = dirY / dirLength;
+
+        // Vector from endpoint to mouse position
+        const mouseX = mouseUtm.easting - endpointUtm.easting;
+        const mouseY = mouseUtm.northing - endpointUtm.northing;
+
+        // Project mouse position onto the line direction
+        const projectionLength = mouseX * dirUnitX + mouseY * dirUnitY;
+
+        // Calculate constrained point in UTM
+        const constrainedEasting = endpointUtm.easting + dirUnitX * projectionLength;
+        const constrainedNorthing = endpointUtm.northing + dirUnitY * projectionLength;
+
+        // Convert back to lat/lng
+        const utmProjString = `+proj=utm +zone=${endpointUtm.zone} +${endpointUtm.hemisphere === 'N' ? 'north' : 'south'} +datum=WGS84 +units=m +no_defs`;
+        try {
+          const [lng, lat] = proj4(utmProjString, 'EPSG:4326', [constrainedEasting, constrainedNorthing]);
+          return { lat, lng };
+        } catch (error) {
+          console.error('Failed to convert UTM back to lat/lng:', error);
+          return null;
+        }
+      };
+
+      // Handle ALT key state changes during drag
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (isDraggingWithLeftClick && e.key === 'Alt') {
+          isAltPressed = true;
+        }
+      };
+
+      const handleKeyUp = (e: KeyboardEvent) => {
+        if (isDraggingWithLeftClick && e.key === 'Alt') {
+          isAltPressed = false;
+        }
+      };
+
       // Handle mouse move to update marker position during drag
       const handleMouseMove = (e: MouseEvent) => {
         if (!isDraggingWithLeftClick || !map.current || !dragStartLatLng) return;
+
+        // Update ALT state from event
+        isAltPressed = e.altKey;
 
         // Disable map interactions only when dragging actually starts (first mousemove)
         if (!hasStartedDragging) {
@@ -3740,12 +3837,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
         const currentLng = currentLatLng.lng;
         const currentLat = currentLatLng.lat;
 
-        // Calculate delta from drag start
-        const deltaLng = currentLng - dragStartLatLng.lng;
-        const deltaLat = currentLat - dragStartLatLng.lat;
-
-        // If group dragging, update all selected markers
-        if (isGroupDraggingRef.current && selectedPointIndices.size > 0) {
+        // If group dragging, update all selected markers (ALT constraint doesn't apply to group drag)
+        if (isGroupDraggingRef.current && selectedPointIndices.size > 1) {
+          const deltaLng = currentLng - dragStartLatLng.lng;
+          const deltaLat = currentLat - dragStartLatLng.lat;
+          
           selectedPointIndices.forEach((idx) => {
             const originalPos = dragStartPositionsRef.current.get(idx);
             if (originalPos && idx >= 0 && idx < markersRef.current.length) {
@@ -3763,14 +3859,53 @@ const MapPanel: React.FC<MapPanelProps> = ({
           });
         } else {
           // Single point drag
+          let targetLat = currentLat;
+          let targetLng = currentLng;
+
+          // Apply ALT constraint if ALT is pressed and this is an endpoint
+          if (isAltPressed) {
+            const isFirstPoint = index === 0;
+            const isLastPoint = index === flightPath.length - 1;
+            
+            if (isFirstPoint || isLastPoint) {
+              // Get original position from drag start
+              const originalPos = dragStartPositionsRef.current.get(index);
+              if (originalPos) {
+                const constrained = projectPointOntoLineDirection(
+                  originalPos.lat,
+                  originalPos.lng,
+                  currentLat,
+                  currentLng,
+                  index,
+                  flightPath
+                );
+                
+                if (constrained) {
+                  targetLat = constrained.lat;
+                  targetLng = constrained.lng;
+                }
+              }
+            } else {
+              // ALT pressed on non-endpoint: show toast once
+              if (!altConstraintToastShown) {
+                altConstraintToastShown = true;
+                // Show a brief visual feedback
+                setSuccessNotification({ 
+                  isOpen: true, 
+                  message: 'ALT constraint works only on first/last point' 
+                });
+              }
+            }
+          }
+
           // Check if point is within DTM bounds
-          if (!isPointWithinBounds(currentLng, currentLat)) {
+          if (!isPointWithinBounds(targetLng, targetLat)) {
             return; // Don't update if outside bounds
           }
 
           // Update marker position
-          marker.setLatLng([currentLat, currentLng]);
-          lastValidPosition = [currentLat, currentLng];
+          marker.setLatLng([targetLat, targetLng]);
+          lastValidPosition = [targetLat, targetLng];
         }
       };
 
@@ -3780,6 +3915,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
         e.preventDefault();
         e.stopPropagation();
+
+        // Update ALT state from event
+        isAltPressed = e.altKey;
 
         // Re-enable map interactions if they were disabled (only if we actually dragged)
         if (hasStartedDragging && map.current) {
@@ -3794,20 +3932,20 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (!map.current || !dragStartLatLng) {
           isDraggingWithLeftClick = false;
           hasStartedDragging = false;
+          isAltPressed = false;
           return;
         }
 
-        // On release, ALWAYS drop the point exactly where the mouse was released
+        // On release, drop the point where the mouse was released (or constrained position)
         const dropLatLng = map.current.mouseEventToLatLng(e as any);
-        const dropLng = dropLatLng.lng;
-        const dropLat = dropLatLng.lat;
+        let dropLng = dropLatLng.lng;
+        let dropLat = dropLatLng.lat;
 
-        // Calculate final delta
-        const deltaLng = dropLng - dragStartLatLng.lng;
-        const deltaLat = dropLat - dragStartLatLng.lat;
-
-        // If group dragging, update all selected points
+        // If group dragging, update all selected points (ALT constraint doesn't apply to group drag)
         if (isGroupDraggingRef.current && selectedPointIndices.size > 0) {
+          const deltaLng = dropLng - dragStartLatLng.lng;
+          const deltaLat = dropLat - dragStartLatLng.lat;
+
           const updatedPath = [...flightPath];
           let allValid = true;
           const updates: Array<{ index: number; point: Coordinate }> = [];
@@ -3851,6 +3989,31 @@ const MapPanel: React.FC<MapPanelProps> = ({
           }
         } else {
           // Single point drag
+          // Apply ALT constraint if ALT is pressed and this is an endpoint
+          if (isAltPressed) {
+            const isFirstPoint = index === 0;
+            const isLastPoint = index === flightPath.length - 1;
+            
+            if (isFirstPoint || isLastPoint) {
+              const originalPos = dragStartPositionsRef.current.get(index);
+              if (originalPos) {
+                const constrained = projectPointOntoLineDirection(
+                  originalPos.lat,
+                  originalPos.lng,
+                  dropLat,
+                  dropLng,
+                  index,
+                  flightPath
+                );
+                
+                if (constrained) {
+                  dropLat = constrained.lat;
+                  dropLng = constrained.lng;
+                }
+              }
+            }
+          }
+
           if (isPointWithinBounds(dropLng, dropLat)) {
             marker.setLatLng([dropLat, dropLng]);
             lastValidPosition = [dropLat, dropLng];
@@ -3870,6 +4033,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
         isDraggingWithLeftClick = false;
         hasStartedDragging = false;
+        isAltPressed = false;
+        altConstraintToastShown = false;
         el.style.cursor = 'pointer';
         el.classList.remove('is-dragging');
         marker.setZIndexOffset(0);
@@ -3886,14 +4051,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }, 100);
       };
 
-      // Add event listeners to document for mouse move and up
+      // Add event listeners to document for mouse move and up, and keyboard for ALT
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
+      document.addEventListener('keydown', handleKeyDown);
+      document.addEventListener('keyup', handleKeyUp);
 
       // Store cleanup function
       marker.on('remove', () => {
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
+        document.removeEventListener('keydown', handleKeyDown);
+        document.removeEventListener('keyup', handleKeyUp);
       });
 
       el.addEventListener('mouseenter', () => {

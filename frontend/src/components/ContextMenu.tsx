@@ -7,7 +7,7 @@ interface ContextMenuProps {
   onClose: () => void;
   onDelete: () => void;
   onEdit?: () => void;
-  onSetHeight: () => void;
+  onSetHeight?: () => void;
 }
 
 const ContextMenu: React.FC<ContextMenuProps> = ({
@@ -76,12 +76,6 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
           ערוך / הזז נקודה
         </div>
       )}
-      <div
-        className="context-menu-item"
-        onClick={() => handleMenuItemClick(onSetHeight)}
-      >
-        הגדר גובה טיסה
-      </div>
     </div>
   );
 };

@@ -25,6 +25,7 @@ import {
   ProjectValidationError
 } from './utils/projectSerializer';
 import { generateKMLForRoute } from './utils/kmlGenerator';
+import { debug } from './utils/debug';
 import './App.css';
 
 export interface Coordinate {
@@ -171,7 +172,7 @@ function AppContent() {
         return JSON.parse(stored) as Record<string, { endDistance: number; climbAmount: number }[]>;
       }
     } catch (error) {
-      console.error('Failed to load climb requests from localStorage:', error);
+      debug.error('Failed to load climb requests from localStorage:', error);
     }
     return {};
   }, []);
@@ -222,7 +223,7 @@ function AppContent() {
     try {
       localStorage.setItem('climbRequestsByRoute', JSON.stringify(climbRequestsByRoute));
     } catch (error) {
-      console.error('Failed to save climb requests to localStorage:', error);
+      debug.error('Failed to save climb requests to localStorage:', error);
     }
   }, [climbRequestsByRoute]);
 
@@ -231,7 +232,7 @@ function AppContent() {
     try {
       localStorage.setItem('showNextLineSuggestions', JSON.stringify(showNextLineSuggestions));
     } catch (error) {
-      console.error('Failed to save showNextLineSuggestions to localStorage:', error);
+      debug.error('Failed to save showNextLineSuggestions to localStorage:', error);
     }
   }, [showNextLineSuggestions]);
   
@@ -295,7 +296,7 @@ function AppContent() {
       // Round to 1 decimal place
       return Math.round(calculatedHeight * 10) / 10;
     } catch (error) {
-      console.error('Failed to calculate default entry height:', error);
+      debug.error('Failed to calculate default entry height:', error);
       return null;
     }
   }, [dtmSource, activeClippedId, safetyHeight, resolutionHeight]);
@@ -309,7 +310,6 @@ function AppContent() {
       calculateDefaultEntryHeight(firstPoint).then((defaultHeight) => {
         if (defaultHeight !== null && !isNaN(defaultHeight)) {
           setNominalFlightHeight(defaultHeight);
-          console.log(`[ENTRY_HEIGHT] Auto-updated entry height to ${defaultHeight.toFixed(1)}m (calculated from first point)`);
         }
       });
     }
@@ -330,38 +330,17 @@ function AppContent() {
   const climbRequests = React.useMemo(() => {
     const requests = climbRequestsByRoute[activeRouteId] || [];
     
-    console.log('[CLIMB_REQUESTS] Processing requests:', {
-      activeRouteId,
-      requestsCount: requests.length,
-      flightPathLength: flightPath.length,
-      requests: requests.map((r: any) => ({
-        endDistance: r.endDistance,
-        climbAmount: r.climbAmount,
-        anchorPointIdA: r.anchorPointIdA,
-        anchorPointIdB: r.anchorPointIdB,
-        segmentRatio: r.segmentRatio
-      })),
-      flightPathIds: flightPath.map(p => p.id)
-    });
-    
     // Assign anchor IDs to climb points that don't have them (for backward compatibility)
     if (flightPath.length >= 2 && requests.length > 0) {
       const updated = requests.map((climb: ClimbRequest, index: number) => {
         // If climb already has anchor IDs, keep it as is
         if (climb.anchorPointIdA && climb.anchorPointIdB) {
-          console.log(`[CLIMB_REQUESTS] Climb ${index} already has anchors:`, {
-            anchorPointIdA: climb.anchorPointIdA,
-            anchorPointIdB: climb.anchorPointIdB,
-            segmentRatio: climb.segmentRatio
-          });
           return climb;
         }
         
         // Otherwise, try to find and assign anchor IDs and ratio
-        console.log(`[CLIMB_REQUESTS] Climb ${index} missing anchors, finding them...`);
         const anchors = findAnchorPointsForClimb(climb.endDistance, flightPath);
         if (anchors) {
-          console.log(`[CLIMB_REQUESTS] Climb ${index} assigned anchors:`, anchors);
           return {
             ...climb,
             anchorPointIdA: anchors.anchorPointIdA,
@@ -371,16 +350,8 @@ function AppContent() {
         }
         
         // If we can't find anchors (points don't have IDs), return as is
-        console.log(`[CLIMB_REQUESTS] Climb ${index} cannot find anchors (points may not have IDs)`);
         return climb;
       });
-      
-      console.log('[CLIMB_REQUESTS] Final processed requests:', updated.map((r: ClimbRequest) => ({
-        endDistance: r.endDistance,
-        anchorPointIdA: r.anchorPointIdA,
-        anchorPointIdB: r.anchorPointIdB,
-        segmentRatio: r.segmentRatio
-      })));
       
       return updated;
     }
@@ -410,19 +381,6 @@ function AppContent() {
 
   const { elevationProfile, loading, profileReady, calculateProfile, clearProfile } = useElevationProfile();
 
-  // Log flight path changes
-  React.useEffect(() => {
-    console.log('[FLIGHT_PATH_CHANGE] Flight path updated:', {
-      length: flightPath.length,
-      points: flightPath.map((p, i) => ({
-        index: i,
-        id: p.id,
-        lng: p.lng,
-        lat: p.lat,
-        height: p.height
-      }))
-    });
-  }, [flightPath]);
 
   // Track last inputs so we can avoid expensive recalculation when only nominal height changes
   const lastProfileParamsRef = React.useRef<{
@@ -641,19 +599,6 @@ function AppContent() {
   const fullProfileResult = stableProfileResult;
 
   const climbMarkers = React.useMemo(() => {
-    console.log('[CLIMB_MARKERS] Calculating markers:', {
-      profilePointsCount: fullProfileResult.points.length,
-      climbRequestsCount: climbRequests.length,
-      flightPathLength: flightPath.length,
-      climbRequests: climbRequests.map(c => ({
-        endDistance: c.endDistance,
-        climbAmount: c.climbAmount,
-        anchorPointIdA: c.anchorPointIdA,
-        anchorPointIdB: c.anchorPointIdB,
-        segmentRatio: c.segmentRatio
-      }))
-    });
-
     if (!fullProfileResult.points.length || climbRequests.length === 0) return [];
 
     const markers: { lat: number; lng: number; label: string; type: 'start' | 'end' }[] = [];
@@ -688,15 +633,6 @@ function AppContent() {
     };
 
     climbRequests.forEach((climb, index) => {
-      console.log(`[CLIMB_MARKERS] Processing climb ${index}:`, {
-        endDistance: climb.endDistance,
-        climbAmount: climb.climbAmount,
-        anchorPointIdA: climb.anchorPointIdA,
-        anchorPointIdB: climb.anchorPointIdB,
-        segmentRatio: climb.segmentRatio,
-        hasAnchors: !!(climb.anchorPointIdA && climb.anchorPointIdB)
-      });
-
       // Calculate required horizontal distance for the climb
       const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
       const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
@@ -705,19 +641,9 @@ function AppContent() {
       let endCoord: Coordinate | null = null;
       let endCoordMethod = 'none';
       if (climb.anchorPointIdA && climb.anchorPointIdB) {
-        console.log(`[CLIMB_MARKERS] Climb ${index}: Attempting anchor-based positioning for end`);
         endCoord = getClimbPositionFromAnchors(climb, flightPath, climb.endDistance);
         if (endCoord) {
           endCoordMethod = 'anchors';
-          console.log(`[CLIMB_MARKERS] Climb ${index}: End position from anchors:`, {
-            lat: endCoord.lat,
-            lng: endCoord.lng,
-            anchorPointIdA: climb.anchorPointIdA,
-            anchorPointIdB: climb.anchorPointIdB,
-            segmentRatio: climb.segmentRatio
-          });
-        } else {
-          console.log(`[CLIMB_MARKERS] Climb ${index}: Anchor-based positioning failed, falling back to distance`);
         }
       }
       
@@ -726,16 +652,9 @@ function AppContent() {
         endCoordMethod = 'distance';
         const cumulativeDistances = computeCumulativeDistances(flightPath);
         endCoord = distanceToCoordinate(climb.endDistance, flightPath, cumulativeDistances);
-        console.log(`[CLIMB_MARKERS] Climb ${index}: End position from distance:`, {
-          lat: endCoord?.lat,
-          lng: endCoord?.lng,
-          endDistance: climb.endDistance,
-          cumulativeDistances: cumulativeDistances
-        });
       }
       
       if (!endCoord) {
-        console.warn(`[CLIMB_MARKERS] Climb ${index}: Cannot calculate end position, skipping`);
         return;
       }
 
@@ -744,15 +663,9 @@ function AppContent() {
       let startCoord: Coordinate | null = null;
       let startCoordMethod = 'none';
       if (climb.anchorPointIdA && climb.anchorPointIdB && climb.segmentRatio !== undefined) {
-        console.log(`[CLIMB_MARKERS] Climb ${index}: Attempting anchor-based positioning for start`);
         // Find anchor points
         const pointA = flightPath.find(p => p.id === climb.anchorPointIdA);
         const pointB = flightPath.find(p => p.id === climb.anchorPointIdB);
-        
-        console.log(`[CLIMB_MARKERS] Climb ${index}: Anchor points found:`, {
-          pointA: pointA ? { id: pointA.id, lng: pointA.lng, lat: pointA.lat } : null,
-          pointB: pointB ? { id: pointB.id, lng: pointB.lng, lat: pointB.lat } : null
-        });
         
         if (pointA && pointB) {
           // Find segment indices to calculate segment length
@@ -763,12 +676,6 @@ function AppContent() {
             if (flightPath[i].id === climb.anchorPointIdA) segmentStartIdx = i;
             if (flightPath[i].id === climb.anchorPointIdB) segmentEndIdx = i;
           }
-          
-          console.log(`[CLIMB_MARKERS] Climb ${index}: Segment indices:`, {
-            segmentStartIdx,
-            segmentEndIdx,
-            consecutive: segmentEndIdx === segmentStartIdx + 1
-          });
           
           if (segmentStartIdx !== -1 && segmentEndIdx !== -1 && segmentEndIdx === segmentStartIdx + 1) {
             // Calculate segment length using haversine distance between the two anchor points
@@ -784,12 +691,6 @@ function AppContent() {
             const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
             const segmentLength = EARTH_RADIUS_M * c;
             
-            console.log(`[CLIMB_MARKERS] Climb ${index}: Segment info:`, {
-              segmentLength,
-              requiredHorizontal,
-              endSegmentRatio: climb.segmentRatio
-            });
-            
             if (segmentLength > 0) {
               // Calculate start ratio: go back requiredHorizontal meters from the end position
               // The end is at segmentRatio, so we need to calculate how much ratio to go back
@@ -801,23 +702,11 @@ function AppContent() {
                 lat: pointA.lat + (pointB.lat - pointA.lat) * startRatio
               };
               startCoordMethod = 'anchors';
-              console.log(`[CLIMB_MARKERS] Climb ${index}: Start position from anchors:`, {
-                lat: startCoord.lat,
-                lng: startCoord.lng,
-                startRatio,
-                ratioToGoBack,
-                endSegmentRatio: climb.segmentRatio
-              });
             } else {
-              console.log(`[CLIMB_MARKERS] Climb ${index}: Segment length is zero, using end position for start`);
               startCoord = { ...endCoord };
               startCoordMethod = 'anchors';
             }
-          } else {
-            console.log(`[CLIMB_MARKERS] Climb ${index}: Anchors not consecutive, cannot use anchor-based positioning for start`);
           }
-        } else {
-          console.log(`[CLIMB_MARKERS] Climb ${index}: Anchor points not found in flightPath`);
         }
       }
       
@@ -827,11 +716,6 @@ function AppContent() {
         const cumulativeDistances = computeCumulativeDistances(flightPath);
         const startDistance = Math.max(0, climb.endDistance - requiredHorizontal);
         startCoord = distanceToCoordinate(startDistance, flightPath, cumulativeDistances);
-        console.log(`[CLIMB_MARKERS] Climb ${index}: Start position from distance:`, {
-          lat: startCoord?.lat,
-          lng: startCoord?.lng,
-          startDistance
-        });
       }
 
       if (!startCoord) {
@@ -840,18 +724,6 @@ function AppContent() {
 
       const sign = climb.climbAmount >= 0 ? '+' : '';
       const label = `${sign}${climb.climbAmount.toFixed(0)}m`;
-
-      console.log(`[CLIMB_MARKERS] Climb ${index}: Final positions:`, {
-        start: { lat: startCoord.lat, lng: startCoord.lng, method: startCoordMethod },
-        end: { lat: endCoord.lat, lng: endCoord.lng, method: endCoordMethod },
-        climbData: {
-          endDistance: climb.endDistance,
-          climbAmount: climb.climbAmount,
-          anchorPointIdA: climb.anchorPointIdA,
-          anchorPointIdB: climb.anchorPointIdB,
-          segmentRatio: climb.segmentRatio
-        }
-      });
 
       // Add start marker
       markers.push({
@@ -870,7 +742,6 @@ function AppContent() {
       });
     });
 
-    console.log('[CLIMB_MARKERS] Final markers:', markers);
     return markers;
   }, [climbRequests, fullProfileResult.points, climbConfig, flightPath]);
 
@@ -881,7 +752,6 @@ function AppContent() {
     // If we have a clipped ID, delete that first
     if (targetClippedId) {
       try {
-        console.log(`Attempting to delete clipped DTM: ${targetClippedId}`);
         const response = await fetch(`/api/dtm/clipped/${targetClippedId}`, {
           method: 'DELETE',
           keepalive
@@ -889,20 +759,16 @@ function AppContent() {
         
         if (!response.ok) {
           const errorText = await response.text();
-          console.error(`Failed to delete clipped DTM: ${targetClippedId} - ${response.status} ${response.statusText}`, errorText);
-        } else {
-          const result = await response.json().catch(() => ({}));
-          console.log(`Successfully deleted clipped DTM: ${targetClippedId}`, result);
+          debug.error(`Failed to delete clipped DTM: ${targetClippedId} - ${response.status} ${response.statusText}`, errorText);
         }
       } catch (error) {
-        console.error('Failed to delete clipped DTM on server:', error);
+        debug.error('Failed to delete clipped DTM on server:', error);
       }
     }
 
     // Also cleanup legacy uploaded files if applicable
     if (targetPath && !targetPath.includes('/api/dtm/clipped/')) {
       try {
-        console.log(`Attempting to delete legacy DTM: ${targetPath}`);
         const response = await fetch('/api/dtm/cleanup', {
           method: 'POST',
           headers: {
@@ -914,13 +780,10 @@ function AppContent() {
         
         if (!response.ok) {
           const errorText = await response.text();
-          console.error(`Failed to delete legacy DTM: ${targetPath} - ${response.status} ${response.statusText}`, errorText);
-        } else {
-          const result = await response.json().catch(() => ({}));
-          console.log(`Successfully deleted legacy DTM: ${targetPath}`, result);
+          debug.error(`Failed to delete legacy DTM: ${targetPath} - ${response.status} ${response.statusText}`, errorText);
         }
       } catch (error) {
-        console.error('Failed to delete DTM on server:', error);
+        debug.error('Failed to delete DTM on server:', error);
       }
     }
   }, [dtmSource, activeClippedId]);
@@ -1051,7 +914,7 @@ function AppContent() {
 
     if (dtmSource || activeClippedId) {
       deleteDtmOnServer(dtmSource || undefined, activeClippedId || undefined).catch((error) => {
-        console.error('Failed to clean up DTM cache:', error);
+        debug.error('Failed to clean up DTM cache:', error);
       });
     }
     setDtmSource(null);

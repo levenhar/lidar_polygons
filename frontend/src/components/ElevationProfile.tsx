@@ -429,6 +429,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const height = 400 - margin.top - margin.bottom;
 
     // Set SVG dimensions (include space for legend)
+    // Height will be adjusted later if legend needs two rows
     svg.attr('width', width + margin.left + margin.right + legendWidth)
       .attr('height', height + margin.top + margin.bottom);
 
@@ -1162,51 +1163,94 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     totalLegendWidth += spacing * (legendData.length - 1); // Add spacing between items
     tempText.remove();
 
-    // Position legend at the end of the profile data range (max distance)
-    // Use baseXScale to convert the maximum distance to pixel position
-    const maxDistance = elevationProfile.length > 0 
-      ? elevationProfile[elevationProfile.length - 1].distance 
-      : 0;
-    const maxDistanceX = baseXScale(maxDistance);
-    // Ensure legend doesn't go beyond the chart width, and align from the right
-    const legendStartX = Math.min(maxDistanceX - totalLegendWidth, width - totalLegendWidth);
-    // But don't let it go to the left edge
-    const legendX = Math.max(0, legendStartX);
+    // Check if legend needs to wrap to two rows
+    const availableWidth = width;
+    const rowHeight = 25; // Height of each row including spacing
+    const needsTwoRows = totalLegendWidth > availableWidth * 0.9; // Use 90% of available width as threshold
+    
+    // Adjust SVG height if legend needs two rows
+    if (needsTwoRows) {
+      const additionalHeight = rowHeight;
+      svg.attr('height', height + margin.top + margin.bottom + additionalHeight);
+    }
+    
+    // Calculate layout for one or two rows
+    let row1Items: typeof legendData = [];
+    let row2Items: typeof legendData = [];
+    let row1Width = 0;
+    let row2Width = 0;
+    
+    if (needsTwoRows) {
+      // Split into two rows: first 2 items in row 1, last 2 items in row 2
+      row1Items = legendData.slice(0, 2);
+      row2Items = legendData.slice(2);
+      
+      // Calculate widths for each row
+      row1Items.forEach((item, idx) => {
+        const origIdx = idx;
+        row1Width += itemWidths[origIdx];
+        if (idx < row1Items.length - 1) row1Width += spacing;
+      });
+      
+      row2Items.forEach((item, idx) => {
+        const origIdx = idx + 2;
+        row2Width += itemWidths[origIdx];
+        if (idx < row2Items.length - 1) row2Width += spacing;
+      });
+    } else {
+      // Single row
+      row1Items = legendData;
+      row1Width = totalLegendWidth;
+    }
+
+    // Align legend to the right side of the chart
+    // Use the wider row width for positioning
+    const maxRowWidth = Math.max(row1Width, row2Width);
+    const legendX = width - maxRowWidth;
 
     // Update legend group position
-    legend.attr('transform', `translate(${margin.left + legendX}, ${height + margin.top + legendOffset})`);
+    const legendY = height + margin.top + legendOffset;
+    legend.attr('transform', `translate(${margin.left + legendX}, ${legendY})`);
 
-    // Layout legend items horizontally from right to left
-    // Position items relative to the legend group (starting at 0)
-    let currentX = 0;
+    // Function to render a row of legend items
+    const renderLegendRow = (items: typeof legendData, startIndex: number, yOffset: number) => {
+      let currentX = 0;
+      
+      items.forEach((item, idx) => {
+        const origIndex = startIndex + idx;
+        const legendItem = legend.append('g')
+          .attr('transform', `translate(${currentX}, ${yOffset})`);
 
-    legendData.forEach((item, index) => {
-      const legendItem = legend.append('g')
-        .attr('transform', `translate(${currentX}, 0)`);
+        // Line marker on the left
+        legendItem.append('line')
+          .attr('x1', 0)
+          .attr('x2', lineWidth)
+          .attr('y1', 0)
+          .attr('y2', 0)
+          .attr('stroke', item.color)
+          .attr('stroke-width', item.style === 'dashed' ? 3 : 2)
+          .attr('stroke-dasharray', item.style === 'dashed' ? '8,5' : '0');
 
-      // Line marker on the left
-      legendItem.append('line')
-        .attr('x1', 0)
-        .attr('x2', lineWidth)
-        .attr('y1', 0)
-        .attr('y2', 0)
-        .attr('stroke', item.color)
-        .attr('stroke-width', item.style === 'dashed' ? 3 : 2)
-        .attr('stroke-dasharray', item.style === 'dashed' ? '8,5' : '0');
+        // Text label right after the line marker
+        legendItem.append('text')
+          .attr('class', 'legend-text')
+          .attr('x', lineWidth + lineToTextGap)
+          .attr('y', 4)
+          .attr('fill', 'black')
+          .style('font-size', '14px')
+          .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
+          .style('text-anchor', 'end')
+          .text(item.label);
 
-      // Text label right after the line marker
-      legendItem.append('text')
-        .attr('class', 'legend-text')
-        .attr('x', lineWidth + lineToTextGap)
-        .attr('y', 4)
-        .attr('fill', 'black')
-        .style('font-size', '14px')
-        .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
-        .style('text-anchor', 'end')
-        .text(item.label);
+        currentX += itemWidths[origIndex] + spacing;
+      });
+    };
 
-      currentX += itemWidths[index] + spacing;
-    });
+    // Render legend rows
+    renderLegendRow(row1Items, 0, 0);
+    if (needsTwoRows) {
+      renderLegendRow(row2Items, 2, rowHeight);
+    }
 
     // Interaction overlay captures zoom/pan and hover without showing a visible layer
     const overlay = g.append('rect')
@@ -1334,15 +1378,35 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             .attr('x2', currentXScale(hoveredDistance));
         }
 
-        // Update legend position to align with the visible range end
-        if (elevationProfile.length > 0) {
-          const visibleDomain = currentXScale.domain();
-          const maxVisibleDistance = visibleDomain[1];
-          const maxVisibleX = currentXScale(maxVisibleDistance);
-          const legendStartX = Math.min(maxVisibleX - totalLegendWidth, width - totalLegendWidth);
-          const legendX = Math.max(0, legendStartX);
-          legend.attr('transform', `translate(${margin.left + legendX}, ${height + margin.top + legendOffset})`);
+        // Update legend position to keep it aligned to the right
+        // Recalculate max row width for positioning (same logic as initial render)
+        const availableWidth = width;
+        const needsTwoRows = totalLegendWidth > availableWidth * 0.9;
+        let maxRowWidth = totalLegendWidth;
+        
+        if (needsTwoRows) {
+          // Calculate row widths
+          let row1Width = 0;
+          let row2Width = 0;
+          
+          // First 2 items
+          for (let i = 0; i < 2; i++) {
+            row1Width += itemWidths[i];
+            if (i < 1) row1Width += spacing;
+          }
+          
+          // Last 2 items
+          for (let i = 2; i < legendData.length; i++) {
+            row2Width += itemWidths[i];
+            if (i < legendData.length - 1) row2Width += spacing;
+          }
+          
+          maxRowWidth = Math.max(row1Width, row2Width);
         }
+        
+        // Align legend to the right side of the chart
+        const legendX = width - maxRowWidth;
+        legend.attr('transform', `translate(${margin.left + legendX}, ${height + margin.top + legendOffset})`);
 
         if (hoveredPointMarker && hoveredPoint) {
           hoveredPointMarker

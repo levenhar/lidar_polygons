@@ -411,6 +411,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return;
     }
 
+    // Store component-level vertexDistances early to avoid temporal dead zone issues
+    const componentVertexDistances = vertexDistances;
 
     const svg = d3.select(svgRef.current);
     // Save zoom transform before clearing (use existing transform if available, otherwise use saved one)
@@ -915,6 +917,61 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
       .text('מרחק (מטרים)');
 
+    // Add gray shaded areas around each vertex to show vertex proximity zones
+    if (climbConfig && climbConfig.vertexProximityMeters > 0 && componentVertexDistances.length > 0) {
+      const vertexProximityZones = componentVertexDistances.map(vertexDistance => {
+        const zoneStart = Math.max(0, vertexDistance - climbConfig.vertexProximityMeters);
+        const zoneEnd = Math.min(
+          elevationProfile.length > 0 ? elevationProfile[elevationProfile.length - 1].distance : vertexDistance + climbConfig.vertexProximityMeters,
+          vertexDistance + climbConfig.vertexProximityMeters
+        );
+        return { start: zoneStart, end: zoneEnd };
+      });
+
+      // Merge overlapping zones
+      const mergedZones: { start: number; end: number }[] = [];
+      const sortedZones = [...vertexProximityZones].sort((a, b) => a.start - b.start);
+      
+      for (const zone of sortedZones) {
+        if (mergedZones.length === 0) {
+          mergedZones.push({ ...zone });
+        } else {
+          const lastZone = mergedZones[mergedZones.length - 1];
+          if (zone.start <= lastZone.end) {
+            lastZone.end = Math.max(lastZone.end, zone.end);
+          } else {
+            mergedZones.push({ ...zone });
+          }
+        }
+      }
+
+      // Draw rectangles for each merged zone
+      // Note: x-scale is reversed (range [width, 0]), so smaller distances map to larger x values
+      chartArea.selectAll<SVGRectElement, { start: number; end: number }>('.vertex-proximity-zone')
+        .data(mergedZones)
+        .enter()
+        .append('rect')
+        .attr('class', 'vertex-proximity-zone')
+        .attr('x', d => {
+          // Use the smaller x value (which corresponds to the larger distance, i.e., end)
+          const xStart = currentXScale(d.start);
+          const xEnd = currentXScale(d.end);
+          return Math.min(xStart, xEnd);
+        })
+        .attr('y', 0)
+        .attr('width', d => {
+          // Calculate absolute width since scale is reversed
+          const xStart = currentXScale(d.start);
+          const xEnd = currentXScale(d.end);
+          return Math.abs(xStart - xEnd);
+        })
+        .attr('height', height)
+        .attr('fill', '#808080')
+        .attr('fill-opacity', 0.2)
+        .attr('stroke', '#808080')
+        .attr('stroke-width', 1)
+        .attr('stroke-opacity', 0.4);
+    }
 
     // Highlight selected point (only for user-imported points, not interpolated ones)
     if (selectedPoint && flightPath.length > 0) {
@@ -1037,8 +1094,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Add legend under the graph area
     const legendOffset = 80; // Increased spacing
-    const legend = svg.append('g')
-      .attr('transform', `translate(${margin.left}, ${height + margin.top + legendOffset})`);
+    const legend = svg.append('g');
 
     const legendData = [
       { label: 'גובה קרקע', color: '#8B4513', style: 'solid' },
@@ -1069,8 +1125,23 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     totalLegendWidth += spacing * (legendData.length - 1); // Add spacing between items
     tempText.remove();
 
+    // Position legend at the end of the profile data range (max distance)
+    // Use baseXScale to convert the maximum distance to pixel position
+    const maxDistance = elevationProfile.length > 0 
+      ? elevationProfile[elevationProfile.length - 1].distance 
+      : 0;
+    const maxDistanceX = baseXScale(maxDistance);
+    // Ensure legend doesn't go beyond the chart width, and align from the right
+    const legendStartX = Math.min(maxDistanceX - totalLegendWidth, width - totalLegendWidth);
+    // But don't let it go to the left edge
+    const legendX = Math.max(0, legendStartX);
+
+    // Update legend group position
+    legend.attr('transform', `translate(${margin.left + legendX}, ${height + margin.top + legendOffset})`);
+
     // Layout legend items horizontally from right to left
-    let currentX = width - totalLegendWidth; // Start from the right
+    // Position items relative to the legend group (starting at 0)
+    let currentX = 0;
 
     legendData.forEach((item, index) => {
       const legendItem = legend.append('g')
@@ -1226,6 +1297,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             .attr('x2', currentXScale(hoveredDistance));
         }
 
+        // Update legend position to align with the visible range end
+        if (elevationProfile.length > 0) {
+          const visibleDomain = currentXScale.domain();
+          const maxVisibleDistance = visibleDomain[1];
+          const maxVisibleX = currentXScale(maxVisibleDistance);
+          const legendStartX = Math.min(maxVisibleX - totalLegendWidth, width - totalLegendWidth);
+          const legendX = Math.max(0, legendStartX);
+          legend.attr('transform', `translate(${margin.left + legendX}, ${height + margin.top + legendOffset})`);
+        }
+
         if (hoveredPointMarker && hoveredPoint) {
           hoveredPointMarker
             .attr('cx', currentXScale(hoveredPoint.distance))
@@ -1251,7 +1332,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     
     overlay.call(zoomBehavior as any);
 
-    const vertexDistances = new Set(originalVertices.map(v => v.point.distance));
+    const vertexDistanceSet = new Set(originalVertices.map(v => v.point.distance));
 
     overlay.on('click', function (event: MouseEvent) {
       if (profileWithPlan.length === 0) return;
@@ -1259,7 +1340,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       let closestPoint: typeof profileWithPlan[0] | null = null;
       let closestDistance = Infinity;
       for (const point of profileWithPlan) {
-        if (Array.from(vertexDistances).some(d => Math.abs(d - point.distance) < 1e-6)) {
+        if (Array.from(vertexDistanceSet).some(d => Math.abs(d - point.distance) < 1e-6)) {
           continue; // skip original user vertices
         }
         const dx = Math.abs(currentXScale(point.distance) - mouseX);

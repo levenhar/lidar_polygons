@@ -1186,13 +1186,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       row2Items = legendData.slice(2);
       
       // Calculate widths for each row
-      row1Items.forEach((item, idx) => {
+      row1Items.forEach((_, idx) => {
         const origIdx = idx;
         row1Width += itemWidths[origIdx];
         if (idx < row1Items.length - 1) row1Width += spacing;
       });
       
-      row2Items.forEach((item, idx) => {
+      row2Items.forEach((_, idx) => {
         const origIdx = idx + 2;
         row2Width += itemWidths[origIdx];
         if (idx < row2Items.length - 1) row2Width += spacing;

@@ -592,6 +592,33 @@ app.get('/api/dtm/options', async (req, res) => {
   }
 });
 
+// POST /api/dtm/available - Get TIF files overlapping with AOI
+app.post('/api/dtm/available', async (req, res) => {
+  try {
+    console.log('Getting available TIFs with params:', JSON.stringify(req.body));
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/available`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(req.body)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Python available TIFs error:', errorText);
+      return res.status(response.status).json({ error: errorText });
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    console.error('Error fetching available TIFs:', error);
+    res.status(500).json({ error: 'Failed to fetch available TIFs', details: error.message });
+  }
+});
+
 // POST /api/dtm/clip - Clip DTM to AOI
 app.post('/api/dtm/clip', async (req, res) => {
   try {

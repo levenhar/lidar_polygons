@@ -24,7 +24,18 @@ interface DTMOption {
   id: string;
   displayName: string;
   sizeBytes: number;
+  sizeMB?: number;
   modifiedAt: string;
+  footprintBBox?: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  };
+  resolution?: {
+    width: number;
+    height: number;
+  };
 }
 
 interface ClipResponse {
@@ -1524,7 +1535,30 @@ const MapPanel: React.FC<MapPanelProps> = ({
         localFileInputRef.current.click();
       }
     } else if (source === 'server') {
-      setDtmLoaderStep('server-area');
+      // NEW FLOW: Go directly to AOI selection mode (skip TIF list)
+      setDtmLoaderOpen(false);
+      setIsAoiSelectionMode(true);
+      setAoiSelectionMethod(null); // Show method chooser first
+      setAoiBounds(null);
+      setAoiPolygon(null);
+      setSelectedDtmId(null); // Will be set after TIF selection
+      aoiPolygonPointsRef.current = [];
+      aoiFirstClickRef.current = null;
+      
+      // Clear any existing AOI shapes
+      if (aoiRectRef.current && map.current) {
+        map.current.removeLayer(aoiRectRef.current);
+        aoiRectRef.current = null;
+      }
+      if (aoiPolygonRef.current && map.current) {
+        map.current.removeLayer(aoiPolygonRef.current);
+        aoiPolygonRef.current = null;
+      }
+      // Clear markers
+      aoiMarkersRef.current.forEach(marker => {
+        if (map.current) map.current.removeLayer(marker);
+      });
+      aoiMarkersRef.current = [];
     }
   }, []);
 
@@ -1677,7 +1711,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [onDtmLoad, handleCloseDtmLoader]);
 
-  // Fetch available DTM options from the server
+  // Fetch available DTM options from the server (legacy - for backward compatibility)
   const fetchDtmOptions = useCallback(async () => {
     setDtmOptionsLoading(true);
     setDtmOptionsError(null);
@@ -1696,6 +1730,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, []);
 
+  // Fetch available TIF files that overlap with the selected AOI
+  const fetchAvailableTifs = useCallback(async (aoi: { type: string; crs: string; bbox?: number[]; coordinates?: [number, number][] }) => {
+    setDtmOptionsLoading(true);
+    setDtmOptionsError(null);
+    try {
+      const response = await fetch('/api/dtm/available', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          aoi: aoi,
+          bufferMeters: 0.0
+        })
+      });
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || errorData.error || `Failed to fetch available TIFs: ${response.status}`);
+      }
+      const data = await response.json();
+      setDtmOptions(data.files || []);
+    } catch (error) {
+      debug.error('Error fetching available TIFs:', error);
+      setDtmOptionsError(error instanceof Error ? error.message : 'Error loading available TIF files');
+    } finally {
+      setDtmOptionsLoading(false);
+    }
+  }, []);
+
   // Close DTM options modal (legacy - used by legacy modal rendering)
   const handleCloseDtmOptionsModal = useCallback(() => {
     setShowDtmOptionsModal(false);
@@ -1703,25 +1766,49 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setDtmSearchQuery('');
   }, []);
 
-  // Select a DTM and enter AOI selection mode (used in server flow)
-  const handleSelectDtm = useCallback((dtmId: string, displayName?: string) => {
+  // Select a DTM and proceed with clipping (used in new server flow after AOI selection)
+  const handleSelectDtmForClipping = useCallback((dtmId: string, displayName?: string) => {
     setSelectedDtmId(dtmId);
     // Store the display name for later use when DTM is loaded
     if (displayName) {
       setActiveDtmName(displayName);
     }
     
-    // Close the unified loader dialog and enter AOI selection mode
+    // Close the unified loader dialog
+    setDtmLoaderOpen(false);
+    setShowDtmOptionsModal(false);
+    
+    // AOI is already selected, trigger clipping
+    // We'll call handleClipDtm after state updates
+  }, []);
+
+  // Legacy: Select a DTM and enter AOI selection mode (for backward compatibility)
+  const handleSelectDtm = useCallback((dtmId: string, displayName?: string) => {
+    // If we're in the new server flow (AOI already selected, just need TIF), use the new handler
+    if (dtmSourceType === 'server' && (aoiBounds || aoiPolygon) && !selectedDtmId) {
+      handleSelectDtmForClipping(dtmId, displayName);
+      // Trigger clipping after a short delay to ensure state is updated
+      setTimeout(() => {
+        handleClipDtm();
+      }, 100);
+      return;
+    }
+    
+    // Legacy flow: select DTM then enter AOI selection
+    setSelectedDtmId(dtmId);
+    if (displayName) {
+      setActiveDtmName(displayName);
+    }
+    
     setDtmLoaderOpen(false);
     setShowDtmOptionsModal(false);
     setIsAoiSelectionMode(true);
-    setAoiSelectionMethod(null); // Show method chooser first
+    setAoiSelectionMethod(null);
     setAoiBounds(null);
     setAoiPolygon(null);
     aoiPolygonPointsRef.current = [];
     aoiFirstClickRef.current = null;
     
-    // Clear any existing AOI shapes
     if (aoiRectRef.current && map.current) {
       map.current.removeLayer(aoiRectRef.current);
       aoiRectRef.current = null;
@@ -1730,12 +1817,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       map.current.removeLayer(aoiPolygonRef.current);
       aoiPolygonRef.current = null;
     }
-    // Clear markers
     aoiMarkersRef.current.forEach(marker => {
       if (map.current) map.current.removeLayer(marker);
     });
     aoiMarkersRef.current = [];
-  }, []);
+  }, [dtmSourceType, aoiBounds, aoiPolygon, selectedDtmId, handleSelectDtmForClipping]);
 
   // Cancel AOI selection - returns to unified loader source choice
   const handleCancelAoiSelection = useCallback(() => {
@@ -1766,7 +1852,52 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setDtmLoaderOpen(true);
     setDtmLoaderStep('source-choice');
     setDtmSourceType(null);
+    setDtmOptions([]);
+    setDtmOptionsError(null);
   }, []);
+
+  // Confirm AOI and fetch available TIF files (new flow)
+  const handleConfirmAoiForServer = useCallback(async () => {
+    if (!aoiBounds && !aoiPolygon) {
+      alert('בחר אזור עבודה תחילה.');
+      return;
+    }
+
+    // Build AOI object
+    let aoiPayload: { type: string; crs: string; bbox?: number[]; coordinates?: [number, number][] };
+    
+    if (aoiPolygon && aoiPolygon.coordinates.length >= 3) {
+      // Polygon AOI - close the ring if not already closed
+      const coords = [...aoiPolygon.coordinates];
+      const first = coords[0];
+      const last = coords[coords.length - 1];
+      if (first[0] !== last[0] || first[1] !== last[1]) {
+        coords.push(first);
+      }
+      aoiPayload = {
+        type: 'polygon',
+        crs: 'EPSG:4326',
+        coordinates: coords
+      };
+    } else if (aoiBounds) {
+      // Bbox AOI
+      aoiPayload = {
+        type: 'bbox',
+        crs: 'EPSG:4326',
+        bbox: [aoiBounds.minLon, aoiBounds.minLat, aoiBounds.maxLon, aoiBounds.maxLat]
+      };
+    } else {
+      alert('בחר אזור עבודה תקין.');
+      return;
+    }
+
+    // Fetch available TIFs
+    await fetchAvailableTifs(aoiPayload);
+    
+    // Show TIF selection dialog
+    setDtmLoaderStep('server-results');
+    setDtmLoaderOpen(true);
+  }, [aoiBounds, aoiPolygon, fetchAvailableTifs]);
 
   // Clip the DTM to the selected AOI
   const handleClipDtm = useCallback(async () => {
@@ -1893,7 +2024,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     } finally {
       setIsClipping(false);
     }
-  }, [selectedDtmId, aoiBounds, aoiPolygon, onDtmLoad]);
+  }, [selectedDtmId, aoiBounds, aoiPolygon, dtmSourceType, onDtmLoad, dtmOptions]);
 
   /*
   // Delete clipped DTM from cache
@@ -7156,7 +7287,94 @@ const MapPanel: React.FC<MapPanelProps> = ({
               </div>
             )}
 
-            {/* Step: Server Area Selection */}
+            {/* Step: Server Results (TIF selection after AOI) */}
+            {dtmLoaderStep === 'server-results' && (
+              <div className="dtm-loader-content">
+                <button
+                  type="button"
+                  className="dtm-loader-back"
+                  onClick={() => {
+                    // Go back to AOI selection
+                    setDtmLoaderOpen(false);
+                    setDtmLoaderStep('source-choice');
+                    // Keep AOI selection mode active
+                  }}
+                >
+                  <Icon name="undo" />
+                  חזרה לבחירת אזור
+                </button>
+
+                <div className="dtm-server-content">
+                  {dtmOptionsLoading && (
+                    <div className="dtm-modal-loading">
+                      <div className="loading-spinner" />
+                      <span>מחפש קבצי DTM חופפים...</span>
+                    </div>
+                  )}
+                  
+                  {dtmOptionsError && (
+                    <div className="dtm-modal-error">
+                      <span>⚠️ {dtmOptionsError}</span>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => {
+                          // Retry by going back to AOI selection
+                          setDtmLoaderOpen(false);
+                        }}
+                      >
+                        נסה שוב
+                      </button>
+                    </div>
+                  )}
+                  
+                  {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length === 0 && (
+                    <div className="dtm-modal-empty">
+                      <span>לא נמצאו קבצי DTM החופפים לאזור הנבחר.</span>
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={() => {
+                          setDtmLoaderOpen(false);
+                        }}
+                      >
+                        בחר אזור אחר
+                      </button>
+                    </div>
+                  )}
+                  
+                  {!dtmOptionsLoading && !dtmOptionsError && filteredDtmOptions.length > 0 && (
+                    <div className="dtm-options-list">
+                      <p className="dtm-loader-subtitle" style={{ marginBottom: '1rem' }}>
+                        נמצאו {filteredDtmOptions.length} קובצי DTM חופפים. בחר אחד:
+                      </p>
+                      {filteredDtmOptions.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          className="dtm-option-item"
+                          onClick={() => handleSelectDtm(option.id, option.displayName)}
+                        >
+                          <div className="dtm-option-icon">
+                            <Icon name="folder" />
+                          </div>
+                          <div className="dtm-option-info">
+                            <div className="dtm-option-name">{option.displayName}</div>
+                            <div className="dtm-option-meta">
+                              {option.sizeMB && <span>{option.sizeMB} MB</span>}
+                              {option.sizeMB && option.modifiedAt && <span>•</span>}
+                              {option.modifiedAt && <span>{formatDate(option.modifiedAt)}</span>}
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Step: Server Area Selection (Legacy - kept for backward compatibility) */}
             {dtmLoaderStep === 'server-area' && (
               <div className="dtm-loader-content">
                 <button
@@ -7458,7 +7676,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <button
                 type="button"
                 className="btn btn-primary"
-                onClick={handleClipDtm}
+                onClick={() => {
+                  // New flow: if server source and no TIF selected yet, fetch available TIFs
+                  if (dtmSourceType === 'server' && !selectedDtmId) {
+                    handleConfirmAoiForServer();
+                  } else {
+                    // Legacy flow or TIF already selected: proceed with clipping
+                    handleClipDtm();
+                  }
+                }}
                 disabled={(!aoiBounds && !aoiPolygon) || isClipping}
               >
                 {isClipping ? (
@@ -7467,7 +7693,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     חותך...
                   </>
                 ) : (
-                  'טען אזור נבחר'
+                  dtmSourceType === 'server' && !selectedDtmId ? 'חפש קבצי DTM' : 'טען אזור נבחר'
                 )}
               </button>
             </div>

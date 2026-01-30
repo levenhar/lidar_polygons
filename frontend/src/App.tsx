@@ -1399,6 +1399,8 @@ function App() {
             onDtmUnload={handleDtmUnload}
             onDisplaySettingsChange={setDtmDisplaySettings}
             initialDisplaySettings={dtmDisplaySettings}
+            currentAoi={aoiGeometry}
+            dtmSourceType={dtmSourceType}
             climbMarkers={climbMarkers}
             showClimbLabels={showClimbLabels}
             onShowClimbLabelsChange={setShowClimbLabels}

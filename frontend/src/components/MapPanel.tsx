@@ -14,8 +14,10 @@ import { calculateParallelLine, findClosestPointOnLine, calculateDestination, ge
 import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
 import { ClimbConfig } from '../utils/climb';
+import { saveFileWithLocation } from '../utils/fileSave';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
+import { aoiContains, AOIGeometry } from '../utils/aoiContainment';
 
 
 type TileLayerOptionsWithAgent = TileLayerOptions;
@@ -597,6 +599,9 @@ interface MapPanelProps {
     aoi?: { type: 'bbox' | 'polygon' | 'kml'; bbox?: { minLon: number; minLat: number; maxLon: number; maxLat: number }; polygon?: [number, number][] };
   }) => void;
   onDtmUnload: () => void;
+  // Props for DTM replacement feature
+  currentAoi?: AOIGeometry | null;
+  dtmSourceType?: 'local' | 'server' | null;
   onDisplaySettingsChange?: (settings: { palette: 'gray' | 'jet'; inverted: boolean; opacity: number }) => void;
   initialDisplaySettings?: { palette: 'gray' | 'jet'; inverted: boolean; opacity: number };
   nominalFlightHeight: number;
@@ -669,7 +674,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
   climbConfig,
   onExportClick,
   onImportKML,
-  canExport
+  canExport,
+  currentAoi,
+  dtmSourceType: propDtmSourceType
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -935,6 +942,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [dtmLoaderStep, setDtmLoaderStep] = useState<DtmLoaderStep>('source-choice');
   // @ts-ignore - dtmSourceType is used for tracking selected source
   const [dtmSourceType, setDtmSourceType] = useState<DtmSourceType>(null);
+  
+  // DTM replacement state
+  const [isReplacingDtm, setIsReplacingDtm] = useState(false);
+  const [replacementAbortController, setReplacementAbortController] = useState<AbortController | null>(null);
+  const [containmentWarning, setContainmentWarning] = useState<{ isOpen: boolean }>({ isOpen: false });
   
   // Local file picker state
   const [localFileError, setLocalFileError] = useState<string | null>(null);
@@ -1485,14 +1497,48 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Open the unified DTM loader dialog
   const handleOpenDtmLoader = useCallback(() => {
-    setDtmLoaderOpen(true);
-    setDtmLoaderStep('source-choice');
-    setDtmSourceType(null);
-    setLocalFileError(null);
-    setDtmSearchQuery('');
-    setSelectedDtmId(null);
-    setDtmOptionsError(null);
-  }, []);
+    // Check if a server DTM is already loaded - if so, enter AOI selection mode directly for replacement
+    if (dtmSource && propDtmSourceType === 'server' && currentAoi) {
+      // Cancel any ongoing replacement
+      if (replacementAbortController) {
+        replacementAbortController.abort();
+        setReplacementAbortController(null);
+      }
+      setIsReplacingDtm(true);
+      setDtmLoaderOpen(false);
+      setIsAoiSelectionMode(true);
+      setAoiSelectionMethod(null); // Show method chooser first
+      setAoiBounds(null);
+      setAoiPolygon(null);
+      setSelectedDtmId(null);
+      aoiPolygonPointsRef.current = [];
+      aoiFirstClickRef.current = null;
+      
+      // Clear any existing AOI shapes
+      if (aoiRectRef.current && map.current) {
+        map.current.removeLayer(aoiRectRef.current);
+        aoiRectRef.current = null;
+      }
+      if (aoiPolygonRef.current && map.current) {
+        map.current.removeLayer(aoiPolygonRef.current);
+        aoiPolygonRef.current = null;
+      }
+      aoiMarkersRef.current.forEach(marker => {
+        if (map.current) map.current.removeLayer(marker);
+      });
+      aoiMarkersRef.current = [];
+    } else {
+      // Normal flow - open dialog
+      setDtmLoaderOpen(true);
+      setDtmLoaderStep('source-choice');
+      setDtmSourceType(null);
+      setLocalFileError(null);
+      setDtmSearchQuery('');
+      setSelectedDtmId(null);
+      setDtmOptionsError(null);
+      setIsReplacingDtm(false);
+    }
+  }, [dtmSource, propDtmSourceType, currentAoi, replacementAbortController]);
 
   // Close the unified DTM loader and reset state
   const handleCloseDtmLoader = useCallback(() => {
@@ -1829,6 +1875,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Cancel AOI selection - returns to unified loader source choice
   const handleCancelAoiSelection = useCallback(() => {
+    // Cancel any ongoing replacement
+    if (replacementAbortController) {
+      replacementAbortController.abort();
+      setReplacementAbortController(null);
+    }
+    setIsReplacingDtm(false);
+    
     setIsAoiSelectionMode(false);
     setSelectedDtmId(null);
     setAoiSelectionMethod(null);
@@ -1852,13 +1905,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
     });
     aoiMarkersRef.current = [];
     
-    // Re-open the unified loader at source choice
-    setDtmLoaderOpen(true);
-    setDtmLoaderStep('source-choice');
-    setDtmSourceType(null);
-    setDtmOptions([]);
-    setDtmOptionsError(null);
-  }, []);
+    // Re-open the unified loader at source choice (only if not replacing)
+    if (!isReplacingDtm) {
+      setDtmLoaderOpen(true);
+      setDtmLoaderStep('source-choice');
+      setDtmSourceType(null);
+      setDtmOptions([]);
+      setDtmOptionsError(null);
+    }
+  }, [isReplacingDtm, replacementAbortController]);
 
   // Confirm AOI and fetch available TIF files (new flow)
   const handleConfirmAoiForServer = useCallback(async () => {
@@ -1910,6 +1965,64 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
 
+    // If replacing DTM, check containment first
+    if (isReplacingDtm && currentAoi) {
+      const newAOI: AOIGeometry | null = aoiPolygon ? {
+        type: 'polygon',
+        polygon: aoiPolygon.coordinates
+      } : aoiBounds ? {
+        type: 'bbox',
+        bbox: {
+          minLon: aoiBounds.minLon,
+          minLat: aoiBounds.minLat,
+          maxLon: aoiBounds.maxLon,
+          maxLat: aoiBounds.maxLat
+        }
+      } : null;
+      
+      if (!newAOI) {
+        alert('בחר אזור עבודה תקין.');
+        return;
+      }
+      
+      // Check containment
+      if (!aoiContains(newAOI, currentAoi)) {
+        // Containment failed - show warning and cancel
+        setContainmentWarning({ isOpen: true });
+        setIsReplacingDtm(false);
+        // Cancel AOI selection
+        setIsAoiSelectionMode(false);
+        setAoiSelectionMethod(null);
+        setAoiBounds(null);
+        setAoiPolygon(null);
+        aoiPolygonPointsRef.current = [];
+        aoiFirstClickRef.current = null;
+        
+        // Remove AOI shapes
+        if (aoiRectRef.current && map.current) {
+          map.current.removeLayer(aoiRectRef.current);
+          aoiRectRef.current = null;
+        }
+        if (aoiPolygonRef.current && map.current) {
+          map.current.removeLayer(aoiPolygonRef.current);
+          aoiPolygonRef.current = null;
+        }
+        aoiMarkersRef.current.forEach(marker => {
+          if (map.current) map.current.removeLayer(marker);
+        });
+        aoiMarkersRef.current = [];
+        return;
+      }
+      
+      // Containment passed - proceed with replacement
+      // Cancel any previous replacement operation
+      if (replacementAbortController) {
+        replacementAbortController.abort();
+      }
+      const abortController = new AbortController();
+      setReplacementAbortController(abortController);
+    }
+
     setIsClipping(true);
     try {
       // Build AOI object based on selection method
@@ -1941,6 +2054,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
         return;
       }
       
+      // If replacing, delete old cache before clipping new one
+      const oldClippedId = isReplacingDtm ? propClippedId : null;
+      
+      // Delete old cache if replacing (but don't wait for it to complete)
+      if (oldClippedId && isReplacingDtm) {
+        fetch(`/api/dtm/clipped/${oldClippedId}`, {
+          method: 'DELETE',
+          signal: replacementAbortController?.signal
+        }).catch(error => {
+          if (error.name !== 'AbortError') {
+            debug.error('Failed to delete old DTM cache:', error);
+          }
+        });
+      }
+      
       const response = await fetch('/api/dtm/clip', {
         method: 'POST',
         headers: {
@@ -1949,7 +2077,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
         body: JSON.stringify({
           dtmId: selectedDtmId,
           aoi: aoiPayload
-        })
+        }),
+        signal: isReplacingDtm ? replacementAbortController?.signal : undefined
       });
 
       if (!response.ok) {
@@ -1958,6 +2087,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
 
       const clipResult: ClipResponse = await response.json();
+      
+      // Check if operation was aborted
+      if (isReplacingDtm && replacementAbortController?.signal.aborted) {
+        setIsClipping(false);
+        setIsReplacingDtm(false);
+        setReplacementAbortController(null);
+        return;
+      }
       
       // Store the clipped ID
       setActiveClippedId(clipResult.clippedId);
@@ -1987,6 +2124,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Notify parent with the clipped DTM info
       // Use the dataUrl as the dtmSource (for raster loading)
       const selectedDtm = dtmOptions.find(d => d.id === selectedDtmId);
+      const newAOI: AOIGeometry | undefined = aoiPolygon ? {
+        type: 'polygon',
+        polygon: aoiPolygon.coordinates
+      } : aoiBounds ? {
+        type: 'bbox',
+        bbox: {
+          minLon: aoiBounds.minLon,
+          minLat: aoiBounds.minLat,
+          maxLon: aoiBounds.maxLon,
+          maxLat: aoiBounds.maxLat
+        }
+      } : undefined;
+      
       onDtmLoad(clipResult.dataUrl, {
         bounds: {
           minX: clipResult.raster.bbox[0],
@@ -2008,27 +2158,37 @@ const MapPanel: React.FC<MapPanelProps> = ({
           sizeBytes: selectedDtm.sizeBytes,
           modifiedAt: selectedDtm.modifiedAt
         } : undefined,
-        aoi: aoiPolygon ? {
-          type: 'polygon',
-          polygon: aoiPolygon.coordinates
-        } : aoiBounds ? {
-          type: 'bbox',
-          bbox: {
-            minLon: aoiBounds.minLon,
-            minLat: aoiBounds.minLat,
-            maxLon: aoiBounds.maxLon,
-            maxLat: aoiBounds.maxLat
-          }
-        } : undefined
+        aoi: newAOI
       });
+      
+      // Clear replacement state
+      if (isReplacingDtm) {
+        setIsReplacingDtm(false);
+        setReplacementAbortController(null);
+      }
 
     } catch (error) {
+      // Check if operation was aborted
+      if (error instanceof Error && error.name === 'AbortError') {
+        debug.log('DTM replacement was cancelled');
+        setIsReplacingDtm(false);
+        setReplacementAbortController(null);
+        setIsClipping(false);
+        return;
+      }
+      
       debug.error('Error clipping DTM:', error);
       alert(`שגיאה בחיתוך DTM: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
+      
+      // On error, restore replacement state
+      if (isReplacingDtm) {
+        setIsReplacingDtm(false);
+        setReplacementAbortController(null);
+      }
     } finally {
       setIsClipping(false);
     }
-  }, [selectedDtmId, aoiBounds, aoiPolygon, dtmSourceType, onDtmLoad, dtmOptions]);
+  }, [selectedDtmId, aoiBounds, aoiPolygon, dtmSourceType, onDtmLoad, dtmOptions, isReplacingDtm, currentAoi, propClippedId, replacementAbortController]);
 
   /*
   // Delete clipped DTM from cache
@@ -5542,6 +5702,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       setViewshedVisible(false);
       setViewshedStatus('idle');
       setViewshedProgress(0);
+      setViewshedJobId(null);
     }
     skipViewshedReplaceConfirmRef.current = false;
 
@@ -5581,7 +5742,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         await loadViewshedFromArrayBuffer(arrayBuffer, flightPathSignature);
         setViewshedStatus('done');
         setViewshedProgress(100);
-        setViewshedJobId(null);
+        // Keep jobId for downloading the TIFF file
         return;
       }
 
@@ -5612,6 +5773,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           } else if (status === 'error' || status === 'cancelled') {
             stopViewshedPolling();
             setIsViewshedProcessing(false);
+            setViewshedJobId(null);
             if (status === 'error') {
               alert(`שגיאה ביצירת שדה ראייה: ${statusJson.error || 'שגיאה לא ידועה'}`);
             }
@@ -5621,12 +5783,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
           stopViewshedPolling();
           setIsViewshedProcessing(false);
           setViewshedStatus('error');
+          setViewshedJobId(null);
         }
       }, 1500);
     } catch (error) {
       console.error('Error generating viewshed:', error);
       alert(`שגיאה ביצירת שדה ראייה: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
       setViewshedStatus('error');
+      setViewshedJobId(null);
     } finally {
       if (!viewshedPollRef.current) {
         setIsViewshedProcessing(false);
@@ -5650,6 +5814,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     try {
       await fetch(`/api/viewshed/cancel/${viewshedJobId}`, { method: 'POST' });
       setViewshedStatus('cancelled');
+      setViewshedJobId(null);
     } catch (error) {
       console.error('Cancel viewshed failed:', error);
     } finally {
@@ -5657,6 +5822,32 @@ const MapPanel: React.FC<MapPanelProps> = ({
       setIsViewshedProcessing(false);
     }
   }, [viewshedJobId, stopViewshedPolling]);
+
+  const handleDownloadViewshedTiff = useCallback(async () => {
+    if (!viewshedJobId || viewshedStatus !== 'done') {
+      alert('שדה ראייה לא זמין להורדה');
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/viewshed/result/${viewshedJobId}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch viewshed TIFF file');
+      }
+
+      const blob = await response.blob();
+      const defaultFilename = `viewshed_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5)}.tif`;
+      
+      await saveFileWithLocation(blob, defaultFilename, 'image/tiff');
+    } catch (error) {
+      console.error('Error downloading viewshed TIFF:', error);
+      if (error instanceof Error && error.message === 'User cancelled file save') {
+        // User cancelled - don't show error
+        return;
+      }
+      alert(`שגיאה בהורדת קובץ שדה הראייה: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
+    }
+  }, [viewshedJobId, viewshedStatus]);
 
   const handleViewshedRouteRecalculate = useCallback(() => {
     setIsViewshedRouteModalOpen(false);
@@ -5673,6 +5864,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setViewshedVisible(false);
     setViewshedStatus('idle');
     setViewshedProgress(0);
+    setViewshedJobId(null);
     viewshedSignatureRef.current = null;
     viewshedRouteSnapshotRef.current = null;
   }, [clearViewshedOverlay]);
@@ -5732,6 +5924,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (!dtmSource || !dtmLoaded) {
       setViewshedRaster(null);
       setViewshedVisible(false);
+      setViewshedJobId(null);
       clearViewshedOverlay();
     }
   }, [dtmSource, dtmLoaded, clearViewshedOverlay]);
@@ -6303,17 +6496,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <label className="quick-modal__label" htmlFor="viewshed-visible-toggle">
                     תצוגה
                   </label>
-                  <label className="switch viewshed-modal__toggle">
-                    <input
-                      id="viewshed-visible-toggle"
-                      type="checkbox"
-                      checked={viewshedVisible}
-                      onChange={(e) => setViewshedVisible(e.target.checked)}
-                      disabled={!viewshedRaster}
-                    />
-                    <span className="switch-slider" />
-                    <span className="viewshed-modal__toggle-text">{viewshedVisible ? 'מוצג' : 'מוסתר'}</span>
-                  </label>
+                  <button
+                    id="viewshed-visible-toggle"
+                    type="button"
+                    className={`btn ${viewshedVisible ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setViewshedVisible(!viewshedVisible)}
+                    disabled={!viewshedRaster}
+                    style={{ width: '100%' }}
+                  >
+                    {viewshedVisible ? 'הסתר' : 'הצג'}
+                  </button>
 
                   <label className="quick-modal__label" htmlFor="viewshed-colormap">
                     צבע
@@ -6347,10 +6539,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     disabled={!viewshedRaster}
                   />
 
-                  <div className="viewshed-modal__status">
-                    סטטוס: {viewshedStatusLabel}
-                  </div>
-
                   {isViewshedProcessing && (
                     <div className="viewshed-progress">
                       <div className="viewshed-progress-bar">
@@ -6365,9 +6553,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 </>
               ) : (
                 <>
-                  <div className="viewshed-modal__status">
-                    סטטוס: {viewshedStatusLabel}
-                  </div>
                   <div className="viewshed-progress">
                     <div className="viewshed-progress-bar">
                       <div
@@ -6381,17 +6566,36 @@ const MapPanel: React.FC<MapPanelProps> = ({
               )}
             </div>
             <div className="quick-modal__actions">
-              <button
-                type="button"
-                className="btn btn-tertiary"
-                onClick={() => {
-                  setIsViewshedModalOpen(false);
-                  setViewshedModalMode(null);
-                }}
-              >
-                סגור
-              </button>
               {hasViewshedResult ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={handleDownloadViewshedTiff}
+                    disabled={!viewshedJobId || viewshedStatus !== 'done'}
+                  >
+                    הורד TIFF
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleGenerateViewshed}
+                    disabled={!dtmLoaded || flightPath.length < 2 || isViewshedProcessing}
+                  >
+                    חשב מחדש
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-tertiary"
+                    onClick={() => {
+                      setIsViewshedModalOpen(false);
+                      setViewshedModalMode(null);
+                    }}
+                  >
+                    סגור
+                  </button>
+                </>
+              ) : (
                 <>
                   <button
                     type="button"
@@ -6403,22 +6607,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   </button>
                   <button
                     type="button"
-                    className="btn btn-primary"
-                    onClick={handleGenerateViewshed}
-                    disabled={!dtmLoaded || flightPath.length < 2 || isViewshedProcessing}
+                    className="btn btn-tertiary"
+                    onClick={() => {
+                      setIsViewshedModalOpen(false);
+                      setViewshedModalMode(null);
+                    }}
                   >
-                    חשב שדה ראייה
+                    סגור
                   </button>
                 </>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-destructive"
-                  onClick={handleCancelViewshed}
-                  disabled={!viewshedJobId || !isViewshedProcessing}
-                >
-                  בטל חישוב
-                </button>
               )}
             </div>
           </div>
@@ -6774,11 +6971,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
               </Tooltip>
             </div>
           </div>
-          {selectedPointIndices.size > 0 && (
-            <div className="selection-indicator" style={{ marginTop: '8px', padding: '4px 8px', backgroundColor: '#f0f9ff', borderRadius: '4px', fontSize: '0.875rem', color: '#0369a1' }}>
-              נבחרו: {selectedPointIndices.size}
-            </div>
-          )}
         </div>
 
         <div className="control-group">

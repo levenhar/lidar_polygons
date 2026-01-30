@@ -30,8 +30,13 @@ export async function saveFileWithLocation(
       if (typeof content === 'string') {
         await writable.write(content);
       } else {
-        // For Blob, use arrayBuffer for binary files (like ZIP), text for text files
-        if (mimeType === 'application/zip' || mimeType?.includes('zip')) {
+        // For Blob, use arrayBuffer for binary files (like ZIP, TIFF), text for text files
+        const isBinary = mimeType === 'application/zip' || 
+                        mimeType?.includes('zip') ||
+                        mimeType === 'image/tiff' ||
+                        mimeType === 'image/geotiff' ||
+                        mimeType?.startsWith('image/');
+        if (isBinary) {
           // Binary file - use arrayBuffer
           const arrayBuffer = await content.arrayBuffer();
           await writable.write(arrayBuffer);

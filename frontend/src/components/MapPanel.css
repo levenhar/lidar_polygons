@@ -19,8 +19,9 @@
 }
 
 .quick-modal__card {
-  width: 360px;
+  width: 420px;
   max-width: calc(100% - 32px);
+  max-height: calc(100vh - 64px);
   background: #fff;
   border-radius: 12px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
@@ -28,6 +29,7 @@
   display: flex;
   flex-direction: column;
   font-size: 1rem;
+  overflow: hidden;
 }
 
 .quick-modal__header {
@@ -57,6 +59,9 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .quick-modal__label {
@@ -124,11 +129,22 @@
   gap: 10px;
   padding: 10px 16px 14px;
   font-size: 1rem;
+  flex-wrap: wrap;
+  border-top: 1px solid #f1f5f9;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.quick-modal__actions .btn {
+  width: auto;
+  min-width: 100px;
+  flex: 0 0 auto;
 }
 
 .quick-modal__actions--stack {
   flex-direction: column;
-  align-items: stretch;
+  align-items: center;
+  justify-content: center;
 }
 
 .quick-modal__info {

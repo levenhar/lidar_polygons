@@ -2263,20 +2263,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return `linear-gradient(to bottom, ${gradientStops})`;
   }, [viewshedColormap]);
   const hasViewshedResult = Boolean(viewshedRaster) || viewshedStatus === 'done';
-  const viewshedStatusLabel = useMemo(() => {
-    switch (viewshedStatus) {
-      case 'running':
-        return 'מחשב';
-      case 'done':
-        return 'מוכן';
-      case 'error':
-        return 'שגיאה';
-      case 'cancelled':
-        return 'בוטל';
-      default:
-        return 'ממתין';
-    }
-  }, [viewshedStatus]);
   const hoveredUtm = useMemo(() => {
     if (!hoveredElevationPoint) return null;
     return latLngToUTM(hoveredElevationPoint.latitude, hoveredElevationPoint.longitude);

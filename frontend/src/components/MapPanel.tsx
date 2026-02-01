@@ -901,6 +901,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number } | null>(null);
+  const infoModeTooltipRef = useRef<HTMLDivElement>(null);
+  const [infoModeTooltipPosition, setInfoModeTooltipPosition] = useState<{ left: number; top: number } | null>(null);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
   const [editingRouteName, setEditingRouteName] = useState<string>('');
   const routeVisibilityMode = useMemo<RouteVisibilityMode>(() => {
@@ -2668,11 +2670,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       
       // Check if tooltip would go off the right edge of the screen
       if (left + tooltipRect.width > windowWidth - padding) {
-        // Position at the start of the window with padding
-        left = padding;
+        // Position on the left side of the cursor instead of the left side of the window
+        left = mousePos.x - tooltipRect.width - offset;
       }
 
-      // Also check if it would go off the left edge (shouldn't happen, but just in case)
+      // Also check if it would go off the left edge after repositioning
       if (left < padding) {
         left = padding;
       }
@@ -2680,6 +2682,38 @@ const MapPanel: React.FC<MapPanelProps> = ({
       setTooltipPosition({ left, top: mousePos.y + offset });
     });
   }, [mousePos, showMetadata, hoveredElevationPoint, hoverSource]);
+
+  // Calculate info mode tooltip position to keep it on screen
+  useLayoutEffect(() => {
+    if (!mousePos || !infoModeTooltipRef.current || !isInfoMode || !cursorElevation) {
+      setInfoModeTooltipPosition(null);
+      return;
+    }
+
+    // Use requestAnimationFrame to ensure the tooltip is rendered and measured
+    requestAnimationFrame(() => {
+      if (!infoModeTooltipRef.current) return;
+      const tooltipRect = infoModeTooltipRef.current.getBoundingClientRect();
+      const windowWidth = window.innerWidth;
+      const padding = 8;
+      const offset = 15;
+
+      let left = mousePos.x + offset;
+      
+      // Check if tooltip would go off the right edge of the screen
+      if (left + tooltipRect.width > windowWidth - padding) {
+        // Position on the left side of the cursor instead of the left side of the window
+        left = mousePos.x - tooltipRect.width - offset;
+      }
+
+      // Also check if it would go off the left edge after repositioning
+      if (left < padding) {
+        left = padding;
+      }
+
+      setInfoModeTooltipPosition({ left, top: mousePos.y + offset });
+    });
+  }, [mousePos, isInfoMode, cursorElevation]);
 
   // AOI selection mode handlers
   useEffect(() => {
@@ -7638,10 +7672,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
       )}
       {isInfoMode && mousePos && cursorElevation && (
         <div
+          ref={infoModeTooltipRef}
           className="hover-metadata-tooltip"
           style={{
-            left: mousePos.x + 15,
-            top: mousePos.y + 15
+            left: infoModeTooltipPosition?.left ?? mousePos.x + 15,
+            top: infoModeTooltipPosition?.top ?? mousePos.y + 15,
+            visibility: infoModeTooltipPosition ? 'visible' : 'hidden'
           }}
         >
           <div className="tooltip-section">

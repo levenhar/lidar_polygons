@@ -5,6 +5,7 @@ import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import CoordinateTooltip from './CoordinateTooltip';
 import ClimbConstraints1DGraph from './ClimbConstraints1DGraph';
+import SaveFileDialog from './SaveFileDialog';
 import './ElevationProfile.css';
 import './ClimbConstraints1DGraph.css';
 import { ClimbConfig, computeClimbProfile, BaseAltitudeSample, ClimbPreset } from '../utils/climb';
@@ -204,6 +205,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number } | null>(null);
+  const [saveFileDialog, setSaveFileDialog] = useState<{
+    isOpen: boolean;
+    defaultFilename: string;
+    fileContent: string | Blob;
+    mimeType: string;
+  } | null>(null);
   const hoveredUtm = useMemo(() => {
     if (!hoveredPoint) return null;
     return latLngToUTM(hoveredPoint.latitude, hoveredPoint.longitude);
@@ -333,11 +340,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       
       // Check if tooltip would go off the right edge of the screen
       if (left + tooltipRect.width > windowWidth - padding) {
-        // Position at the start of the window with padding
-        left = padding;
+        // Position on the left side of the cursor instead of the left side of the window
+        left = mousePos.x - tooltipRect.width - offset;
       }
 
-      // Also check if it would go off the left edge (shouldn't happen, but just in case)
+      // Also check if it would go off the left edge after repositioning
       if (left < padding) {
         left = padding;
       }
@@ -2335,21 +2342,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
           canvas.toBlob((blob) => {
             if (blob) {
-              const url = URL.createObjectURL(blob);
-
-              // Open image in new tab
-              window.open(url, '_blank');
-
-              // Also download the image
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `elevation-profile-${Date.now()}.png`;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-
-              // Clean up the URL after a delay to allow the new tab to load
-              setTimeout(() => URL.revokeObjectURL(url), 100);
+              // Generate default filename with route name if available
+              const routeName = activeRouteName ? `${activeRouteName}-` : '';
+              const defaultFilename = `${routeName}elevation-profile-${Date.now()}.png`;
+              
+              // Show save dialog
+              setSaveFileDialog({
+                isOpen: true,
+                defaultFilename,
+                fileContent: blob,
+                mimeType: 'image/png'
+              });
+              
+              // Clean up the SVG URL
+              URL.revokeObjectURL(url);
             }
           });
         };
@@ -2381,15 +2387,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       ...rows.map(row => row.join(','))
     ].join('\n');
 
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `elevation-profile-${Date.now()}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // Generate default filename with route name if available
+    const routeName = activeRouteName ? `${activeRouteName}-` : '';
+    const defaultFilename = `${routeName}elevation-profile-${Date.now()}.csv`;
+    
+    // Show save dialog
+    setSaveFileDialog({
+      isOpen: true,
+      defaultFilename,
+      fileContent: csvContent,
+      mimeType: 'text/csv'
+    });
   };
 
   // Clear hover state when mouse leaves the entire panel
@@ -2875,6 +2883,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         >
           <CoordinateTooltip point={hoveredPoint} utm={hoveredUtm} />
         </div>
+      )}
+      {saveFileDialog && (
+        <SaveFileDialog
+          isOpen={saveFileDialog.isOpen}
+          defaultFilename={saveFileDialog.defaultFilename}
+          fileExtension={saveFileDialog.mimeType === 'image/png' ? '.png' : '.csv'}
+          title={saveFileDialog.mimeType === 'image/png' ? 'שמור תרשים גובה כ-PNG' : 'שמור נתוני גובה כ-CSV'}
+          description={saveFileDialog.mimeType === 'image/png' 
+            ? 'הזן שם קובץ לשמירת תרשים הגובה'
+            : 'הזן שם קובץ לשמירת נתוני הגובה'}
+          fileContent={saveFileDialog.fileContent}
+          mimeType={saveFileDialog.mimeType}
+          onClose={() => setSaveFileDialog(null)}
+        />
       )}
     </div>
   );

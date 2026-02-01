@@ -6866,12 +6866,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-columns">
             <div className="group-column group-column-icons">
               {/* Unified DTM Loader Button */}
-              <Tooltip tooltip="טען DTM (מקומי או מהשרת)">
+              <Tooltip tooltip={propDtmSourceType === 'server' && dtmLoaded ? "שנה DTM מהשרת" : "טען DTM (מקומי או מהשרת)"}>
                 <button
                   onClick={handleOpenDtmLoader}
-                  className={`btn btn-tertiary btn-icon ${dtmLoaded ? 'disabled' : ''}`}
-                  disabled={dtmLoaded || isAoiSelectionMode}
-                  aria-label="טעינת DTM"
+                  className={`btn btn-tertiary btn-icon ${dtmLoaded && propDtmSourceType !== 'server' ? 'disabled' : ''}`}
+                  disabled={(dtmLoaded && propDtmSourceType !== 'server') || isAoiSelectionMode}
+                  aria-label={propDtmSourceType === 'server' && dtmLoaded ? "שנה DTM מהשרת" : "טעינת DTM"}
                   type="button"
                 >
                   <Icon name="folder" />

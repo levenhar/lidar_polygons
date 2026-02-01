@@ -1835,8 +1835,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
   // Legacy: Select a DTM and enter AOI selection mode (for backward compatibility)
   const handleSelectDtm = useCallback((dtmId: string, displayName?: string) => {
     // If we're in the new server flow (AOI already selected, just need TIF), use the new handler
-    if (dtmSourceType === 'server' && (aoiBounds || aoiPolygon) && !selectedDtmId) {
+    // Also check if we're in server-results step, which means AOI is already selected
+    if ((dtmSourceType === 'server' || dtmLoaderStep === 'server-results') && (aoiBounds || aoiPolygon) && !selectedDtmId) {
       handleSelectDtmForClipping(dtmId, displayName);
+      // Close the dialog immediately
+      setDtmLoaderOpen(false);
+      setShowDtmOptionsModal(false);
       // Trigger clipping after a short delay to ensure state is updated
       setTimeout(() => {
         handleClipDtm();
@@ -1871,7 +1875,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (map.current) map.current.removeLayer(marker);
     });
     aoiMarkersRef.current = [];
-  }, [dtmSourceType, aoiBounds, aoiPolygon, selectedDtmId, handleSelectDtmForClipping]);
+  }, [dtmSourceType, dtmLoaderStep, aoiBounds, aoiPolygon, selectedDtmId, handleSelectDtmForClipping]);
 
   // Cancel AOI selection - returns to unified loader source choice
   const handleCancelAoiSelection = useCallback(() => {

@@ -646,6 +646,35 @@ app.post('/api/dtm/clip', async (req, res) => {
   }
 });
 
+// GET /api/dtm/clipped/:clippedId/ready - Check if clipped DTM is ready
+app.get('/api/dtm/clipped/:clippedId/ready', async (req, res) => {
+  try {
+    const { clippedId } = req.params;
+    const traceId = req.headers['x-trace-id'] || `${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+    console.log(`[${traceId}] Checking readiness for clipped DTM: ${clippedId}`);
+    
+    const response = await fetch(`${PYTHON_BACKEND_URL}/api/dtm/clipped/${clippedId}/ready`, {
+      dispatcher: pythonDispatcher,
+      headers: {
+        'X-Trace-ID': traceId
+      }
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[${traceId}] Python ready check error: ${errorText}`);
+      return res.status(response.status).json({ error: errorText });
+    }
+
+    const data = await response.json();
+    console.log(`[${traceId}] Clipped DTM ${clippedId} ready status:`, data);
+    res.json(data);
+  } catch (error) {
+    console.error('Error checking clipped DTM readiness:', error);
+    res.status(500).json({ error: 'Failed to check readiness', details: error.message });
+  }
+});
+
 // GET /api/dtm/clipped/:clippedId/metadata - Get clipped DTM metadata
 app.get('/api/dtm/clipped/:clippedId/metadata', async (req, res) => {
   try {
@@ -1386,15 +1415,42 @@ app.post('/api/elevation-at-point', async (req, res) => {
   }
 });
 
-// 1) Path to Vite build 
-const distPath = join(__dirname, '../frontend/dist');
-console.log("distPath");
-console.log(distPath)
+// 1) Path to Vite build - use resolve to get absolute path
+const distPath = resolve(__dirname, '../frontend/dist');
+const indexHtmlPath = resolve(distPath, 'index.html');
+
+console.log("distPath:", distPath);
+console.log("index.html path:", indexHtmlPath);
+
+// Check if dist directory exists
+if (!existsSync(distPath)) {
+  console.error(`ERROR: Frontend dist directory not found at: ${distPath}`);
+  console.error('Please build the frontend first by running: cd frontend && npm run build');
+}
+
+// Check if index.html exists
+if (!existsSync(indexHtmlPath)) {
+  console.error(`ERROR: index.html not found at: ${indexHtmlPath}`);
+  console.error('Please build the frontend first by running: cd frontend && npm run build');
+}
+
 // 2) Serve static file (JS, CSS, image, etc.)
-app.use(express.static(distPath));
+if (existsSync(distPath)) {
+  app.use(express.static(distPath));
+} else {
+  console.warn('WARNING: Cannot serve static files - dist directory does not exist');
+}
+
 // 3) SPA fallback: for any unknown route, send index.html
 app.get('*', (req, res) => {
-  res.sendFile(join(distPath, 'index.html'));
+  if (!existsSync(indexHtmlPath)) {
+    return res.status(503).json({
+      error: 'Frontend not built',
+      message: 'Please build the frontend first by running: cd frontend && npm run build',
+      path: indexHtmlPath
+    });
+  }
+  res.sendFile(indexHtmlPath);
 });
 
 

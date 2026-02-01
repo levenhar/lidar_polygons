@@ -2604,31 +2604,42 @@ async def get_clipped_dtm_file(clipped_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/dtm/clipped/{clipped_id}/ready")
-async def check_clipped_dtm_ready(clipped_id: str):
+async def check_clipped_dtm_ready(clipped_id: str, request: Request):
     """Check if a clipped DTM is fully ready for elevation queries"""
+    trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4())[:8])
+    logger.info(f"[{trace_id}] Checking readiness for clipped DTM: {clipped_id}")
+    
     try:
         clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
         # Resolve to absolute path
         clipped_file_path = os.path.abspath(clipped_file_path)
+        logger.info(f"[{trace_id}] Looking for clipped DTM at: {clipped_file_path}")
         
         # Check if file exists
         if not os.path.exists(clipped_file_path):
+            logger.warning(f"[{trace_id}] Clipped DTM file not found at expected path: {clipped_file_path}")
             # Try to find the file with any extension
             if os.path.exists(DTM_CACHE_DIR):
                 cache_files = os.listdir(DTM_CACHE_DIR)
                 matching_files = [f for f in cache_files if f.startswith(clipped_id)]
+                logger.info(f"[{trace_id}] Found {len(matching_files)} matching files in cache directory")
                 if matching_files:
                     clipped_file_path = os.path.abspath(os.path.join(DTM_CACHE_DIR, matching_files[0]))
+                    logger.info(f"[{trace_id}] Using matching file: {clipped_file_path}")
                 else:
+                    logger.warning(f"[{trace_id}] No matching files found for clipped_id: {clipped_id}")
                     return {
                         "ready": False,
                         "message": f"Clipped DTM not found: {clipped_id}"
                     }
             else:
+                logger.error(f"[{trace_id}] DTM cache directory does not exist: {DTM_CACHE_DIR}")
                 return {
                     "ready": False,
                     "message": f"DTM cache directory not found"
                 }
+        else:
+            logger.info(f"[{trace_id}] Clipped DTM file found at: {clipped_file_path}")
         
         # Try to open and read from the file to verify it's fully written and readable
         try:
@@ -2646,6 +2657,7 @@ async def check_clipped_dtm_ready(clipped_id: str):
                 sample = src.read(1, window=rasterio.windows.Window(center_col, center_row, 1, 1))
                 _ = sample[0, 0]  # Access the value to ensure it's readable
                 
+                logger.info(f"[{trace_id}] Clipped DTM {clipped_id} is ready (size: {src.width}x{src.height})")
                 return {
                     "ready": True,
                     "message": "DTM is ready for elevation queries"

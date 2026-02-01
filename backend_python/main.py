@@ -2213,9 +2213,23 @@ async def clip_dtm(request: ClipRequest):
         # Ensure cache directory exists
         os.makedirs(DTM_CACHE_DIR, exist_ok=True)
         
+        # Ensure cache directory exists
+        os.makedirs(DTM_CACHE_DIR, exist_ok=True)
+        
+        # Verify directory is writable
+        if not os.access(DTM_CACHE_DIR, os.W_OK):
+            raise HTTPException(
+                status_code=500,
+                detail=f"DTM cache directory is not writable: {DTM_CACHE_DIR}"
+            )
+        
         # Generate unique clipped ID
         clipped_id = f"{int(time.time() * 1000)}-{request.dtmId.rsplit('.', 1)[0] if '.' in request.dtmId else request.dtmId}"
         clipped_file_path = os.path.join(DTM_CACHE_DIR, f"{clipped_id}.tif")
+        clipped_file_path = os.path.abspath(clipped_file_path)  # Use absolute path
+        
+        logger.info(f"Creating clipped DTM: {clipped_file_path}")
+        logger.info(f"DTM_CACHE_DIR: {os.path.abspath(DTM_CACHE_DIR)}")
         
         # Open source DTM
         with rasterio.open(dtm_file_path) as src:
@@ -2290,6 +2304,25 @@ async def clip_dtm(request: ClipRequest):
             # Write full-resolution clipped raster (for calculations)
             with rasterio.open(clipped_file_path, "w", **out_meta) as dest:
                 dest.write(out_image)
+            
+            # Verify the file was created successfully
+            if not os.path.exists(clipped_file_path):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to create clipped DTM file at {clipped_file_path}"
+                )
+            
+            # Verify file is readable
+            try:
+                with rasterio.open(clipped_file_path) as test_src:
+                    test_src.read(1)  # Try to read the first band
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Clipped DTM file created but not readable: {str(e)}"
+                )
+            
+            logger.info(f"Clipped DTM file verified: {clipped_file_path} (size: {os.path.getsize(clipped_file_path)} bytes)")
             
             # Create subsampled version for display if needed
             # Ensure subsampled cache directory exists

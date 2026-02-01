@@ -1834,16 +1834,156 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Legacy: Select a DTM and enter AOI selection mode (for backward compatibility)
   const handleSelectDtm = useCallback((dtmId: string, displayName?: string) => {
-    // If we're in the new server flow (AOI already selected, just need TIF), use the new handler
-    // Also check if we're in server-results step, which means AOI is already selected
-    if ((dtmSourceType === 'server' || dtmLoaderStep === 'server-results') && (aoiBounds || aoiPolygon) && !selectedDtmId) {
-      handleSelectDtmForClipping(dtmId, displayName);
+    // If we're in the new server flow (AOI already selected, just need TIF), automatically start clipping
+    // Check if we're in server-results step OR if dtmSourceType is server AND we have AOI selected
+    const isServerFlowWithAoi = (dtmLoaderStep === 'server-results' || dtmSourceType === 'server') && (aoiBounds || aoiPolygon);
+    
+    if (isServerFlowWithAoi && !selectedDtmId) {
+      // Set the DTM ID first
+      setSelectedDtmId(dtmId);
+      if (displayName) {
+        setActiveDtmName(displayName);
+      }
+      
       // Close the dialog immediately
       setDtmLoaderOpen(false);
       setShowDtmOptionsModal(false);
+      
+      // Trigger clipping directly with the DTM ID and current AOI
+      // Capture AOI values to avoid closure issues
+      const capturedAoiBounds = aoiBounds;
+      const capturedAoiPolygon = aoiPolygon;
+      
+      const clipWithDtmId = async () => {
+        if (!dtmId || (!capturedAoiBounds && !capturedAoiPolygon)) {
+          alert('בחר DTM ושרטט אזור עבודה.');
+          return;
+        }
+
+        setIsClipping(true);
+        try {
+          // Build AOI object based on selection method
+          let aoiPayload: { type: string; crs: string; bbox?: number[]; coordinates?: [number, number][] };
+          
+          if (capturedAoiPolygon && capturedAoiPolygon.coordinates.length >= 3) {
+            // Polygon AOI - close the ring if not already closed
+            const coords = [...capturedAoiPolygon.coordinates];
+            const first = coords[0];
+            const last = coords[coords.length - 1];
+            if (first[0] !== last[0] || first[1] !== last[1]) {
+              coords.push(first);
+            }
+            aoiPayload = {
+              type: 'polygon',
+              crs: 'EPSG:4326',
+              coordinates: coords
+            };
+          } else if (capturedAoiBounds) {
+            // Bbox AOI
+            aoiPayload = {
+              type: 'bbox',
+              crs: 'EPSG:4326',
+              bbox: [capturedAoiBounds.minLon, capturedAoiBounds.minLat, capturedAoiBounds.maxLon, capturedAoiBounds.maxLat]
+            };
+          } else {
+            alert('בחר אזור עבודה תקין.');
+            setIsClipping(false);
+            return;
+          }
+          
+          const response = await fetch('/api/dtm/clip', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              dtmId: dtmId,
+              aoi: aoiPayload
+            })
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.detail || errorData.error || `Clip failed: ${response.status}`);
+          }
+
+          const clipResult: ClipResponse = await response.json();
+          
+          // Store the clipped ID
+          setActiveClippedId(clipResult.clippedId);
+          
+          // Exit AOI selection mode
+          setIsAoiSelectionMode(false);
+          setSelectedDtmId(null);
+          setAoiSelectionMethod(null);
+          setAoiPolygon(null);
+          aoiPolygonPointsRef.current = [];
+          
+          // Remove AOI shapes
+          if (aoiRectRef.current && map.current) {
+            map.current.removeLayer(aoiRectRef.current);
+            aoiRectRef.current = null;
+          }
+          if (aoiPolygonRef.current && map.current) {
+            map.current.removeLayer(aoiPolygonRef.current);
+            aoiPolygonRef.current = null;
+          }
+          // Clear markers
+          aoiMarkersRef.current.forEach(marker => {
+            if (map.current) map.current.removeLayer(marker);
+          });
+          aoiMarkersRef.current = [];
+
+          // Notify parent with the clipped DTM info
+          const selectedDtm = dtmOptions.find(d => d.id === dtmId);
+          const newAOI: AOIGeometry | undefined = capturedAoiPolygon ? {
+            type: 'polygon',
+            polygon: capturedAoiPolygon.coordinates
+          } : capturedAoiBounds ? {
+            type: 'bbox',
+            bbox: {
+              minLon: capturedAoiBounds.minLon,
+              minLat: capturedAoiBounds.minLat,
+              maxLon: capturedAoiBounds.maxLon,
+              maxLat: capturedAoiBounds.maxLat
+            }
+          } : undefined;
+          
+          onDtmLoad(clipResult.dataUrl, {
+            bounds: {
+              minX: clipResult.raster.bbox[0],
+              minY: clipResult.raster.bbox[1],
+              maxX: clipResult.raster.bbox[2],
+              maxY: clipResult.raster.bbox[3]
+            },
+            resolution: {
+              width: clipResult.raster.width,
+              height: clipResult.raster.height
+            },
+            clippedId: clipResult.clippedId,
+            crs: clipResult.raster.crs
+          }, clipResult.clippedId, {
+            sourceType: 'server',
+            serverId: dtmId,
+            serverMetadata: selectedDtm ? {
+              displayName: selectedDtm.displayName,
+              sizeBytes: selectedDtm.sizeBytes,
+              modifiedAt: selectedDtm.modifiedAt
+            } : undefined,
+            aoi: newAOI
+          });
+
+        } catch (error) {
+          debug.error('Error clipping DTM:', error);
+          alert(`שגיאה בחיתוך DTM: ${error instanceof Error ? error.message : 'שגיאה לא ידועה'}`);
+        } finally {
+          setIsClipping(false);
+        }
+      };
+      
       // Trigger clipping after a short delay to ensure state is updated
       setTimeout(() => {
-        handleClipDtm();
+        clipWithDtmId();
       }, 100);
       return;
     }
@@ -1875,7 +2015,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (map.current) map.current.removeLayer(marker);
     });
     aoiMarkersRef.current = [];
-  }, [dtmSourceType, dtmLoaderStep, aoiBounds, aoiPolygon, selectedDtmId, handleSelectDtmForClipping]);
+  }, [dtmSourceType, dtmLoaderStep, aoiBounds, aoiPolygon, selectedDtmId, dtmOptions, onDtmLoad]);
 
   // Cancel AOI selection - returns to unified loader source choice
   const handleCancelAoiSelection = useCallback(() => {
@@ -1926,6 +2066,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
 
+    // Ensure dtmSourceType is set to 'server'
+    if (dtmSourceType !== 'server') {
+      setDtmSourceType('server');
+    }
+
     // Build AOI object
     let aoiPayload: { type: string; crs: string; bbox?: number[]; coordinates?: [number, number][] };
     
@@ -1957,10 +2102,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     // Fetch available TIFs
     await fetchAvailableTifs(aoiPayload);
     
-    // Show TIF selection dialog
+    // Show TIF selection dialog (but keep AOI selection mode active in background)
     setDtmLoaderStep('server-results');
     setDtmLoaderOpen(true);
-  }, [aoiBounds, aoiPolygon, fetchAvailableTifs]);
+    // Don't clear AOI selection mode - keep it active so AOI is preserved
+  }, [aoiBounds, aoiPolygon, fetchAvailableTifs, dtmSourceType]);
 
   // Clip the DTM to the selected AOI
   const handleClipDtm = useCallback(async () => {

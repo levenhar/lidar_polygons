@@ -7415,7 +7415,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         {viewshedRaster && viewshedVisible && (
           <div className="viewshed-legend">
             <div className="viewshed-legend-title">שדה ראייה</div>
-            <div className="viewshed-legend-label viewshed-legend-label-top">0</div>
+            <div className="viewshed-legend-label viewshed-legend-label-top">
+              {Number.isFinite(viewshedRaster.min) ? Math.round(viewshedRaster.min) : '—'}
+            </div>
             <div className="viewshed-legend-bar" style={{ background: viewshedGradient }} />
             <div className="viewshed-legend-label viewshed-legend-label-bottom">
               {Number.isFinite(viewshedRaster.max) ? Math.round(viewshedRaster.max) : '—'}

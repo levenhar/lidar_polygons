@@ -901,6 +901,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number } | null>(null);
+  const infoModeTooltipRef = useRef<HTMLDivElement>(null);
+  const [infoModeTooltipPosition, setInfoModeTooltipPosition] = useState<{ left: number; top: number } | null>(null);
   const [editingRouteId, setEditingRouteId] = useState<string | null>(null);
   const [editingRouteName, setEditingRouteName] = useState<string>('');
   const routeVisibilityMode = useMemo<RouteVisibilityMode>(() => {
@@ -2679,11 +2681,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       
       // Check if tooltip would go off the right edge of the screen
       if (left + tooltipRect.width > windowWidth - padding) {
-        // Position at the start of the window with padding
-        left = padding;
+        // Position on the left side of the cursor instead of the left side of the window
+        left = mousePos.x - tooltipRect.width - offset;
       }
 
-      // Also check if it would go off the left edge (shouldn't happen, but just in case)
+      // Also check if it would go off the left edge after repositioning
       if (left < padding) {
         left = padding;
       }

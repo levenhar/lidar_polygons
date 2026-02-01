@@ -1816,22 +1816,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setDtmSearchQuery('');
   }, []);
 
-  // Select a DTM and proceed with clipping (used in new server flow after AOI selection)
-  const handleSelectDtmForClipping = useCallback((dtmId: string, displayName?: string) => {
-    setSelectedDtmId(dtmId);
-    // Store the display name for later use when DTM is loaded
-    if (displayName) {
-      setActiveDtmName(displayName);
-    }
-    
-    // Close the unified loader dialog
-    setDtmLoaderOpen(false);
-    setShowDtmOptionsModal(false);
-    
-    // AOI is already selected, trigger clipping
-    // We'll call handleClipDtm after state updates
-  }, []);
-
   // Legacy: Select a DTM and enter AOI selection mode (for backward compatibility)
   const handleSelectDtm = useCallback((dtmId: string, displayName?: string) => {
     // If we're in the new server flow (AOI already selected, just need TIF), automatically start clipping

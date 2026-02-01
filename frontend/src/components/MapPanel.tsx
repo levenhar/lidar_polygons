@@ -3050,27 +3050,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
         if (closestSegmentIndex >= 0) {
           const lineId = segmentIdByIndex[closestSegmentIndex] ?? `seg-${closestSegmentIndex}`;
-          const modifier = !!(originalEvent && (originalEvent.ctrlKey || originalEvent.metaKey));
 
-          // Only allow selection with Ctrl/Cmd + Click
+          // Allow selection with normal click - toggle selection on/off
           // Selection is PERSISTENT - halos remain visible until toggled off or parallel lines are created
-          if (modifier) {
-            setSelectedLineIds((prev) => {
-              const idx = prev.indexOf(lineId);
-              if (idx >= 0) {
-                // Remove if already selected (halo will disappear)
-                const next = [...prev];
-                next.splice(idx, 1);
-                return next;
-              }
-              // Add to selection (halo will appear and persist)
-              return [...prev, lineId];
-            });
-            setParallelBatchError(null);
-            return;
-          }
-          
-          // Normal click without modifier does nothing - selection and halos remain unchanged
+          setSelectedLineIds((prev) => {
+            const idx = prev.indexOf(lineId);
+            if (idx >= 0) {
+              // Remove if already selected (halo will disappear)
+              const next = [...prev];
+              next.splice(idx, 1);
+              return next;
+            }
+            // Add to selection (halo will appear and persist)
+            return [...prev, lineId];
+          });
+          setParallelBatchError(null);
+          return;
         } else {
           alert('לחץ קרוב יותר למקטע קו.');
         }

@@ -301,19 +301,38 @@ function AppContent() {
     }
   }, [dtmSource, activeClippedId, safetyHeight, resolutionHeight]);
 
-  // Update entry height when first point is added
+  // Track previous first point to detect edits
+  const previousFirstPointRef = React.useRef<{ lng: number; lat: number } | null>(null);
+
+  // Update entry height when first point is added or edited
   React.useEffect(() => {
-    // Only update if flight path just became length 1 (first point added)
-    // and entry height is still at default (250)
-    if (flightPath.length === 1 && Math.abs(nominalFlightHeight - 250) < 0.1) {
-      const firstPoint = flightPath[0];
+    if (flightPath.length === 0) {
+      previousFirstPointRef.current = null;
+      return;
+    }
+
+    const firstPoint = flightPath[0];
+    const previousFirstPoint = previousFirstPointRef.current;
+
+    // Check if first point was just added (no previous point) or edited (coordinates changed)
+    const isFirstPointAdded = previousFirstPoint === null;
+    const isFirstPointEdited = previousFirstPoint !== null && 
+      (previousFirstPoint.lng !== firstPoint.lng || previousFirstPoint.lat !== firstPoint.lat);
+
+    // Update entry height when:
+    // 1. First point is added and entry height is still at default (250), OR
+    // 2. First point is edited (coordinates changed)
+    if ((isFirstPointAdded && Math.abs(nominalFlightHeight - 250) < 0.1) || isFirstPointEdited) {
       calculateDefaultEntryHeight(firstPoint).then((defaultHeight) => {
         if (defaultHeight !== null && !isNaN(defaultHeight)) {
           setNominalFlightHeight(defaultHeight);
         }
       });
     }
-  }, [flightPath.length, nominalFlightHeight, calculateDefaultEntryHeight, setNominalFlightHeight, flightPath]);
+
+    // Update the ref to track the current first point coordinates
+    previousFirstPointRef.current = { lng: firstPoint.lng, lat: firstPoint.lat };
+  }, [flightPath, nominalFlightHeight, calculateDefaultEntryHeight, setNominalFlightHeight]);
 
   // Wrap addPoint and addPoints to mark them as insert operations
   const addPointWrapped = React.useCallback((point: Coordinate) => {

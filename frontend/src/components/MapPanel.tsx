@@ -5123,54 +5123,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           throw new Error('Invalid DTM bounds');
         }
 
-        // Transform projected coordinates to WGS84 (lat/lon) if needed
-        // Note: Clipped DTMs already have bounds in WGS84 (transformed by backend), so skip transformation
-        let transformedBounds = bounds;
-
-        if (isProjected && !isClippedDtm) {
-          // Try to determine source projection from EPSG code
-          let sourceProj: string | null = null;
-
-          if (epsg) {
-            // Use the EPSG code directly
-            sourceProj = `EPSG:${epsg}`;
-          } else if (crs?.projectedCSType) {
-            // Try to use projected CRS type
-            sourceProj = `EPSG:${crs.projectedCSType}`;
-          }
-
-          if (!sourceProj) {
-            // Default to UTM Zone 36N (EPSG:32636) when no coordinate system is detected
-            sourceProj = 'EPSG:32636';
-            debug.warn('Could not determine EPSG code from GeoTIFF metadata. Assuming UTM Zone 36N (EPSG:32636) as default.');
-          }
-
-          if (sourceProj) {
-            try {
-              // Transform bounds from projected to WGS84
-              const [minX, minY, maxX, maxY] = bounds;
-
-              // Transform all four corners
-              const topLeft = proj4(sourceProj, 'EPSG:4326', [minX, maxY]);
-              const topRight = proj4(sourceProj, 'EPSG:4326', [maxX, maxY]);
-              const bottomRight = proj4(sourceProj, 'EPSG:4326', [maxX, minY]);
-              const bottomLeft = proj4(sourceProj, 'EPSG:4326', [minX, minY]);
-
-              // Create new bounds from transformed coordinates
-              const transformedMinX = Math.min(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
-              const transformedMinY = Math.min(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
-              const transformedMaxX = Math.max(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
-              const transformedMaxY = Math.max(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
-
-              transformedBounds = [transformedMinX, transformedMinY, transformedMaxX, transformedMaxY];
-            } catch (transformError) {
-              debug.error('Error transforming coordinates:', transformError);
-              debug.error('Source projection:', sourceProj);
-              alert(`Transform failed: ${transformError instanceof Error ? transformError.message : 'Unknown error'}\nSource projection: ${sourceProj}\nCheck the EPSG in your GeoTIFF.`);
-              throw new Error(`Coordinate transformation failed: ${transformError instanceof Error ? transformError.message : 'Unknown error'}`);
-            }
-          }
-        }
+        // Backend now returns bounds in WGS84, so no transformation needed
+        const transformedBounds = bounds;
 
         // Store raster data for client-side elevation calculation
         dtmRasterDataRef.current = {
@@ -5749,13 +5703,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const isProjected = Boolean(geoKeys.ProjectedCSTypeGeoKey);
     const bbox = image.getBoundingBox();
 
+    // Viewshed TIFF is now reprojected to WGS84 by the backend, so bounds should already be in WGS84
+    // However, we still check the CRS in case of legacy files or if reprojection failed
     let bounds = bbox;
-    if (!sourceProj) {
-      const fallbackBounds = dtmRasterDataRef.current?.bounds ?? dtmBounds ?? null;
-      if (fallbackBounds && fallbackBounds.length === 4) {
-        bounds = fallbackBounds;
-      }
-    } else if (sourceProj !== 'EPSG:4326') {
+    if (sourceProj && sourceProj !== 'EPSG:4326') {
+      // If viewshed is not in WGS84, try to transform (fallback for legacy files)
       try {
         const [minX, minY, maxX, maxY] = bbox;
         const topLeft = proj4(sourceProj, 'EPSG:4326', [minX, maxY]);
@@ -5773,8 +5725,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (fallbackBounds && fallbackBounds.length === 4) {
           bounds = fallbackBounds;
         } else {
-          alert('כשל בהמרת תחומי שדה ראייה. מוצג עם תחום לא מומר.');
+          console.warn('Viewshed bounds transformation failed, using original bounds');
         }
+      }
+    } else if (!sourceProj) {
+      // If no CRS info, use fallback bounds
+      const fallbackBounds = dtmRasterDataRef.current?.bounds ?? dtmBounds ?? null;
+      if (fallbackBounds && fallbackBounds.length === 4) {
+        bounds = fallbackBounds;
       }
     }
 

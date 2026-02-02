@@ -2658,28 +2658,30 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
 
-    // Use requestAnimationFrame to ensure the tooltip is rendered and measured
+    // Use double requestAnimationFrame to ensure the tooltip is fully rendered and measured
     requestAnimationFrame(() => {
-      if (!tooltipRef.current) return;
-      const tooltipRect = tooltipRef.current.getBoundingClientRect();
-      const windowWidth = window.innerWidth;
-      const padding = 8;
-      const offset = 15;
+      requestAnimationFrame(() => {
+        if (!tooltipRef.current) return;
+        const tooltipRect = tooltipRef.current.getBoundingClientRect();
+        const windowWidth = window.innerWidth;
+        const padding = 8;
+        const offset = 15;
 
-      let left = mousePos.x + offset;
-      
-      // Check if tooltip would go off the right edge of the screen
-      if (left + tooltipRect.width > windowWidth - padding) {
-        // Position on the left side of the cursor instead of the left side of the window
-        left = mousePos.x - tooltipRect.width - offset;
-      }
+        let left = mousePos.x + offset;
+        
+        // Check if tooltip would go off the right edge of the screen
+        if (left + tooltipRect.width > windowWidth - padding) {
+          // Position on the left side of the cursor instead of the left side of the window
+          left = mousePos.x - tooltipRect.width - offset;
+        }
 
-      // Also check if it would go off the left edge after repositioning
-      if (left < padding) {
-        left = padding;
-      }
+        // Also check if it would go off the left edge after repositioning
+        if (left < padding) {
+          left = padding;
+        }
 
-      setTooltipPosition({ left, top: mousePos.y + offset });
+        setTooltipPosition({ left, top: mousePos.y + offset });
+      });
     });
   }, [mousePos, showMetadata, hoveredElevationPoint, hoverSource]);
 
@@ -2690,28 +2692,30 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
 
-    // Use requestAnimationFrame to ensure the tooltip is rendered and measured
+    // Use double requestAnimationFrame to ensure the tooltip is fully rendered and measured
     requestAnimationFrame(() => {
-      if (!infoModeTooltipRef.current) return;
-      const tooltipRect = infoModeTooltipRef.current.getBoundingClientRect();
-      const windowWidth = window.innerWidth;
-      const padding = 8;
-      const offset = 15;
+      requestAnimationFrame(() => {
+        if (!infoModeTooltipRef.current) return;
+        const tooltipRect = infoModeTooltipRef.current.getBoundingClientRect();
+        const windowWidth = window.innerWidth;
+        const padding = 8;
+        const offset = 15;
 
-      let left = mousePos.x + offset;
-      
-      // Check if tooltip would go off the right edge of the screen
-      if (left + tooltipRect.width > windowWidth - padding) {
-        // Position on the left side of the cursor instead of the left side of the window
-        left = mousePos.x - tooltipRect.width - offset;
-      }
+        let left = mousePos.x + offset;
+        
+        // Check if tooltip would go off the right edge of the screen
+        if (left + tooltipRect.width > windowWidth - padding) {
+          // Position on the left side of the cursor instead of the left side of the window
+          left = mousePos.x - tooltipRect.width - offset;
+        }
 
-      // Also check if it would go off the left edge after repositioning
-      if (left < padding) {
-        left = padding;
-      }
+        // Also check if it would go off the left edge after repositioning
+        if (left < padding) {
+          left = padding;
+        }
 
-      setInfoModeTooltipPosition({ left, top: mousePos.y + offset });
+        setInfoModeTooltipPosition({ left, top: mousePos.y + offset });
+      });
     });
   }, [mousePos, isInfoMode, cursorElevation]);
 
@@ -7664,7 +7668,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           style={{
             left: tooltipPosition?.left ?? mousePos.x + 15,
             top: tooltipPosition?.top ?? mousePos.y + 15,
-            visibility: tooltipPosition ? 'visible' : 'hidden'
+            visibility: tooltipPosition ? 'visible' : 'visible',
+            opacity: tooltipPosition ? 1 : 0,
+            pointerEvents: tooltipPosition ? 'auto' : 'none'
           }}
         >
           <CoordinateTooltip point={hoveredElevationPoint} utm={hoveredUtm} />
@@ -7677,7 +7683,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           style={{
             left: infoModeTooltipPosition?.left ?? mousePos.x + 15,
             top: infoModeTooltipPosition?.top ?? mousePos.y + 15,
-            visibility: infoModeTooltipPosition ? 'visible' : 'hidden'
+            visibility: infoModeTooltipPosition ? 'visible' : 'visible',
+            opacity: infoModeTooltipPosition ? 1 : 0,
+            pointerEvents: infoModeTooltipPosition ? 'auto' : 'none'
           }}
         >
           <div className="tooltip-section">

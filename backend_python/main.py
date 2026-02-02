@@ -466,12 +466,17 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                 logger.info(f"[{job_id}] Using subsampled DTM for viewshed: {compute_path}")
 
         with rasterio.open(compute_path) as src:
-            src_crs = src.crs
-            if not src_crs:
+            src_crs_obj = src.crs  # Keep original CRS object
+            if not src_crs_obj:
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
+                src_crs_str = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
+                # Create CRS object from string for transformation
+                from rasterio.crs import CRS
+                src_crs_obj = CRS.from_string(src_crs_str)
+            else:
+                src_crs_str = src_crs_obj.to_string()
 
-            transformer = Transformer.from_crs(C.EPSG_WGS84, src_crs, always_xy=True)
+            transformer = Transformer.from_crs(C.EPSG_WGS84, src_crs_obj, always_xy=True)
             data = src.read(1).astype(np.float32)
             nodata = src.nodata
 
@@ -560,21 +565,66 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
 
             viewshed[np.isnan(data)] = C.VIEWSHED_NODATA_VALUE
 
-            out_meta = src.meta.copy()
-            out_meta.update({
-                "driver": C.RASTER_DRIVER_GTIFF,
-                "height": viewshed.shape[0],
-                "width": viewshed.shape[1],
-                "count": 1,
-                "dtype": rasterio.int32,
-                "nodata": C.VIEWSHED_NODATA_VALUE,
-                "compress": C.RASTER_COMPRESSION_LZW
-            })
-
+            # Reproject viewshed to WGS84 for consistent coordinate system
             output_name = f"viewshed_{int(time.time() * 1000)}.tif"
             output_path = os.path.join(VIEWSHED_CACHE_DIR, output_name)
-            with rasterio.open(output_path, "w", **out_meta) as dest:
-                dest.write(viewshed, 1)
+            
+            # Determine destination CRS (WGS84)
+            dst_crs = C.EPSG_WGS84
+            
+            # If source CRS is already WGS84, just write directly
+            if src_crs_obj and src_crs_obj.to_string() == C.EPSG_WGS84:
+                out_meta = src.meta.copy()
+                out_meta.update({
+                    "driver": C.RASTER_DRIVER_GTIFF,
+                    "height": viewshed.shape[0],
+                    "width": viewshed.shape[1],
+                    "count": 1,
+                    "dtype": rasterio.int32,
+                    "nodata": C.VIEWSHED_NODATA_VALUE,
+                    "compress": C.RASTER_COMPRESSION_LZW,
+                    "crs": dst_crs
+                })
+                with rasterio.open(output_path, "w", **out_meta) as dest:
+                    dest.write(viewshed, 1)
+            else:
+                # Reproject to WGS84
+                logger.info(f"[{job_id}] Reprojecting viewshed from {src_crs_str} to {dst_crs}")
+                out_meta = src.meta.copy()
+                out_meta.update({
+                    "driver": C.RASTER_DRIVER_GTIFF,
+                    "count": 1,
+                    "dtype": rasterio.int32,
+                    "nodata": C.VIEWSHED_NODATA_VALUE,
+                    "compress": C.RASTER_COMPRESSION_LZW,
+                    "crs": dst_crs
+                })
+                
+                # Calculate destination transform and dimensions
+                dst_transform, dst_width, dst_height = rasterio.warp.calculate_default_transform(
+                    src_crs_obj, dst_crs, src.width, src.height, *src.bounds
+                )
+                
+                out_meta.update({
+                    "transform": dst_transform,
+                    "width": dst_width,
+                    "height": dst_height
+                })
+                
+                # Reproject the viewshed raster
+                reprojected_viewshed = np.zeros((dst_height, dst_width), dtype=rasterio.int32)
+                rasterio.warp.reproject(
+                    source=viewshed,
+                    destination=reprojected_viewshed,
+                    src_transform=src.transform,
+                    src_crs=src_crs_obj,
+                    dst_transform=dst_transform,
+                    dst_crs=dst_crs,
+                    resampling=rasterio.enums.Resampling.nearest  # Use nearest for integer data
+                )
+                
+                with rasterio.open(output_path, "w", **out_meta) as dest:
+                    dest.write(reprojected_viewshed, 1)
 
             duration = time.time() - start_time
             logger.info(f"[{job_id}] Viewshed generated in {duration:.2f}s: {output_name}")
@@ -1129,20 +1179,42 @@ async def get_dtm_metadata(filename: str):
     try:
         with rasterio.open(file_path) as src:
             bounds = src.bounds
-            return {
-                "filename": filename,
-                "bounds": {
+            src_crs = src.crs
+            
+            # Transform bounds to WGS84 if CRS is available
+            if src_crs:
+                wgs84_bounds = rasterio.warp.transform_bounds(
+                    src_crs,
+                    C.EPSG_WGS84,
+                    bounds.left,
+                    bounds.bottom,
+                    bounds.right,
+                    bounds.top
+                )
+                bounds_dict = {
+                    "minX": wgs84_bounds[0],
+                    "minY": wgs84_bounds[1],
+                    "maxX": wgs84_bounds[2],
+                    "maxY": wgs84_bounds[3]
+                }
+            else:
+                # Fallback: use original bounds if no CRS
+                bounds_dict = {
                     "minX": bounds.left,
                     "minY": bounds.bottom,
                     "maxX": bounds.right,
                     "maxY": bounds.top
-                },
+                }
+            
+            return {
+                "filename": filename,
+                "bounds": bounds_dict,
                 "resolution": {
                     "width": src.width,
                     "height": src.height
                 },
                 "noDataValue": src.nodata,
-                "crs": src.crs.to_string() if src.crs else None
+                "crs": src_crs.to_string() if src_crs else None
             }
     except Exception as e:
         logger.error(f"Error reading metadata for {filename}: {e}", exc_info=True)
@@ -1856,7 +1928,8 @@ async def get_dtm_raster(filename: str):
             bounds = src.bounds
             src_width = src.width
             src_height = src.height
-            src_crs_str = src.crs.to_string() if src.crs else None
+            src_crs = src.crs  # Get CRS object for transformation
+            src_crs_str = src_crs.to_string() if src_crs else None
             
             # Get stats from full resolution
             valid_mask = full_data != nodata if nodata is not None else np.ones_like(full_data, dtype=bool)
@@ -1872,8 +1945,8 @@ async def get_dtm_raster(filename: str):
             
             # Check projection
             is_projected = False
-            if src.crs:
-                is_projected = src.crs.is_projected
+            if src_crs:
+                is_projected = src_crs.is_projected
             else:
                 # Heuristic fallback
                 is_projected = abs(bounds.left) > 180 or abs(bounds.bottom) > 90
@@ -1909,6 +1982,21 @@ async def get_dtm_raster(filename: str):
                     render_width = src_width
                     render_height = src_height
         
+        # Transform bounds to WGS84 if CRS is available
+        if src_crs:
+            wgs84_bounds = rasterio.warp.transform_bounds(
+                src_crs,
+                C.EPSG_WGS84,
+                bounds.left,
+                bounds.bottom,
+                bounds.right,
+                bounds.top
+            )
+            bounds_list = list(wgs84_bounds)
+        else:
+            # Fallback: use original bounds if no CRS
+            bounds_list = [bounds.left, bounds.bottom, bounds.right, bounds.top]
+        
         # Convert to list for JSON response
         flat_data = display_data.flatten()
         
@@ -1919,7 +2007,7 @@ async def get_dtm_raster(filename: str):
             "originalHeight": src_height,
             "min": min_val,
             "max": max_val,
-            "bounds": [bounds.left, bounds.bottom, bounds.right, bounds.top],
+            "bounds": bounds_list,  # Now in WGS84
             "noDataValue": nodata,
             "isProjected": is_projected,
             "data": flat_data.tolist(),

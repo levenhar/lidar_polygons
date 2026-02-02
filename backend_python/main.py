@@ -221,7 +221,7 @@ class ElevationAtPointRequest(BaseModel):
 class ViewshedPoint(BaseModel):
     lng: float
     lat: float
-    height: Optional[float] = None  # AGL meters
+    height: Optional[float] = None  # ASL meters (Above Sea Level)
 
 class ViewshedRequest(BaseModel):
     coordinates: List[ViewshedPoint]
@@ -511,7 +511,7 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                         raise RuntimeError("cancelled")
 
                 lon, lat = point["lng"], point["lat"]
-                height_agl = point.get("height", 0.0) or 0.0
+                height_asl = point.get("height", 0.0) or 0.0
                 x, y = transformer.transform(lon, lat)
                 row0, col0 = src.index(x, y)
                 if not (0 <= row0 < src.height and 0 <= col0 < src.width):
@@ -519,7 +519,8 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                 obs_elev = data[row0, col0]
                 if np.isnan(obs_elev):
                     continue
-                obs_elev = float(obs_elev) + float(height_agl)
+                # height is ASL (Above Sea Level), so use it directly as observer elevation
+                obs_elev = float(height_asl)
 
                 meters_per_deg_lat = C.METERS_PER_DEGREE_LATITUDE
                 meters_per_deg_lon = C.METERS_PER_DEGREE_LATITUDE * cos(radians(lat))

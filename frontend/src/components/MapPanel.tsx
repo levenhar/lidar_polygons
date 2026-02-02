@@ -5795,46 +5795,45 @@ const MapPanel: React.FC<MapPanelProps> = ({
       
       if (elevationProfile && elevationProfile.length > 0) {
         // Use all points from elevation profile (includes interpolation points)
-        // Height should be AGL (Above Ground Level) for viewshed calculation
+        // Height should be ASL (Above Sea Level - מעל פני הים) for viewshed calculation
         trajectory = elevationProfile.map((point) => {
-          // Calculate AGL height: plannedAltitude (ASL) - elevation (ground level)
-          // If plannedAltitude is not available, use baseAltitude or calculate from flightHeight
-          let heightAGL: number;
+          // Use ASL height: plannedAltitude is already ASL
+          // If plannedAltitude is not available, use baseAltitude or calculate from flightHeight + elevation
+          let heightASL: number;
           if (point.plannedAltitude !== undefined) {
-            // plannedAltitude is ASL, so AGL = plannedAltitude - elevation
-            heightAGL = point.plannedAltitude - point.elevation;
-          } else if (point.flightHeight !== undefined) {
-            // flightHeight is already AGL
-            heightAGL = point.flightHeight;
+            // plannedAltitude is already ASL (Above Sea Level)
+            heightASL = point.plannedAltitude;
           } else if (point.baseAltitude !== undefined) {
-            // baseAltitude is ASL, so AGL = baseAltitude - elevation
-            heightAGL = point.baseAltitude - point.elevation;
+            // baseAltitude is ASL
+            heightASL = point.baseAltitude;
+          } else if (point.flightHeight !== undefined) {
+            // flightHeight is AGL, so ASL = flightHeight + elevation
+            heightASL = point.flightHeight + point.elevation;
           } else {
-            // Fallback: use nominalFlightHeight as ASL, calculate AGL
-            heightAGL = nominalFlightHeight - point.elevation;
+            // Fallback: use nominalFlightHeight as ASL
+            heightASL = nominalFlightHeight;
           }
           
           return {
             lng: point.longitude,
             lat: point.latitude,
-            height: Math.max(0, heightAGL) // Ensure non-negative AGL
+            height: Math.max(0, heightASL) // Ensure non-negative ASL
           };
         });
       } else {
         // Fallback to flightPath if elevation profile is not available
         trajectory = flightPath.map((point) => {
-          // For flightPath points, we need to estimate AGL
-          // If point.height is provided, assume it's ASL and we'd need elevation to calculate AGL
-          // For now, use a simple fallback: assume height is AGL if provided, otherwise use nominalFlightHeight as ASL
-          // This is a limitation when elevation profile is not available
-          const heightAGL = point.height !== undefined 
-            ? point.height  // Assume AGL if provided (may not be accurate)
-            : nominalFlightHeight; // Fallback: use as AGL (not ideal but better than nothing)
+          // For flightPath points, use height as ASL
+          // If point.height is provided, assume it's ASL (Above Sea Level)
+          // Otherwise use nominalFlightHeight as ASL
+          const heightASL = point.height !== undefined 
+            ? point.height  // Assume ASL if provided
+            : nominalFlightHeight; // Fallback: use as ASL
           
           return {
             lng: point.lng,
             lat: point.lat,
-            height: Math.max(0, heightAGL)
+            height: Math.max(0, heightASL)
           };
         });
       }

@@ -5747,9 +5747,106 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const epsg = geoKeys.ProjectedCSTypeGeoKey || geoKeys.GeographicTypeGeoKey;
     const sourceProj = epsg ? `EPSG:${epsg}` : null;
     const isProjected = Boolean(geoKeys.ProjectedCSTypeGeoKey);
+    
+    // Get bounding box from geotiff.js as reference
     const bbox = image.getBoundingBox();
-
-    let bounds = bbox;
+    
+    // Manually calculate bounds from geotransform using four corner pixels
+    // This ensures accurate bounds calculation accounting for translation and scale
+    let calculatedCorners: number[][] = [];
+    let bounds: number[] = bbox;
+    
+    try {
+      // Calculate geotransform from bbox and image dimensions
+      // The geotransform converts pixel coordinates (col, row) to geographic coordinates (x, y)
+      // Geotransform: [a, b, c, d, e, f] where:
+      // X = a * col + b * row + c
+      // Y = d * col + e * row + f
+      const [bboxMinX, bboxMinY, bboxMaxX, bboxMaxY] = bbox;
+      
+      // Calculate pixel size (assuming no rotation, which is typical for north-up rasters)
+      const pixelWidth = (bboxMaxX - bboxMinX) / width;
+      const pixelHeight = (bboxMaxY - bboxMinY) / height;
+      
+      // For north-up rasters: a = pixelWidth, e = -pixelHeight (negative because Y increases downward)
+      // c = top-left X, f = top-left Y
+      // Note: In geographic coordinates, Y typically increases upward, but in pixel space it increases downward
+      const geotransform = {
+        a: pixelWidth,   // pixel width (scale in X)
+        b: 0,            // rotation term (usually 0 for north-up)
+        c: bboxMinX,     // top-left X coordinate
+        d: 0,            // rotation term (usually 0 for north-up)
+        e: -pixelHeight, // pixel height (negative because pixel Y increases downward)
+        f: bboxMaxY      // top-left Y coordinate (maxY because Y axis is inverted)
+      };
+      
+      // Calculate four corner coordinates in pixel space and transform to geographic
+      const corners = [
+        [0, 0],           // Top-left
+        [width, 0],       // Top-right
+        [width, height],  // Bottom-right
+        [0, height]       // Bottom-left
+      ];
+      
+      // Transform each corner from pixel to geographic coordinates using geotransform
+      calculatedCorners = corners.map(([col, row]) => {
+        const x = geotransform.a * col + geotransform.b * row + geotransform.c;
+        const y = geotransform.d * col + geotransform.e * row + geotransform.f;
+        return [x, y];
+      });
+      
+      // Calculate bounds from transformed corners
+      const cornerX = calculatedCorners.map(c => c[0]);
+      const cornerY = calculatedCorners.map(c => c[1]);
+      const calculatedMinX = Math.min(...cornerX);
+      const calculatedMaxX = Math.max(...cornerX);
+      const calculatedMinY = Math.min(...cornerY);
+      const calculatedMaxY = Math.max(...cornerY);
+      
+      // Use calculated bounds (in source CRS)
+      bounds = [calculatedMinX, calculatedMinY, calculatedMaxX, calculatedMaxY];
+      
+      // Validate calculated bounds against getBoundingBox() - they should be very close
+      const bboxDiffX = Math.abs(bbox[0] - calculatedMinX) + Math.abs(bbox[2] - calculatedMaxX);
+      const bboxDiffY = Math.abs(bbox[1] - calculatedMinY) + Math.abs(bbox[3] - calculatedMaxY);
+      const maxDiff = Math.max(bboxDiffX, bboxDiffY);
+      
+      // Log for debugging - compare with getBoundingBox()
+      console.log('[Viewshed] Bounds calculation:', {
+        getBoundingBox: bbox,
+        calculated: bounds,
+        difference: {
+          x: bboxDiffX,
+          y: bboxDiffY,
+          max: maxDiff
+        },
+        geotransform,
+        width,
+        height,
+        sourceProj,
+        corners: calculatedCorners
+      });
+      
+      // Warn if there's a significant difference (more than 1% of pixel size)
+      const avgPixelSize = (pixelWidth + Math.abs(pixelHeight)) / 2;
+      if (maxDiff > avgPixelSize * 0.01) {
+        console.warn('[Viewshed] Significant difference between calculated bounds and getBoundingBox():', {
+          difference: maxDiff,
+          avgPixelSize,
+          ratio: maxDiff / avgPixelSize
+        });
+      }
+      
+    } catch (calcError) {
+      console.warn('[Viewshed] Error calculating bounds from geotransform, using getBoundingBox():', calcError);
+      // Fall back to getBoundingBox() result
+      bounds = bbox;
+    }
+    
+    // Store source bounds for transformation
+    const sourceBounds = bounds;
+    
+    // Transform bounds to WGS84 if needed
     if (!sourceProj) {
       const fallbackBounds = dtmRasterDataRef.current?.bounds ?? dtmBounds ?? null;
       if (fallbackBounds && fallbackBounds.length === 4) {
@@ -5757,18 +5854,39 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
     } else if (sourceProj !== 'EPSG:4326') {
       try {
-        const [minX, minY, maxX, maxY] = bbox;
-        const topLeft = proj4(sourceProj, 'EPSG:4326', [minX, maxY]);
-        const topRight = proj4(sourceProj, 'EPSG:4326', [maxX, maxY]);
-        const bottomRight = proj4(sourceProj, 'EPSG:4326', [maxX, minY]);
-        const bottomLeft = proj4(sourceProj, 'EPSG:4326', [minX, minY]);
-        const transformedMinX = Math.min(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
-        const transformedMinY = Math.min(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
-        const transformedMaxX = Math.max(topLeft[0], topRight[0], bottomRight[0], bottomLeft[0]);
-        const transformedMaxY = Math.max(topLeft[1], topRight[1], bottomRight[1], bottomLeft[1]);
+        // Transform all four calculated corners from source CRS to WGS84
+        const cornersToTransform = calculatedCorners.length === 4 
+          ? calculatedCorners 
+          : [
+              [sourceBounds[0], sourceBounds[3]], // top-left (minX, maxY)
+              [sourceBounds[2], sourceBounds[3]], // top-right (maxX, maxY)
+              [sourceBounds[2], sourceBounds[1]], // bottom-right (maxX, minY)
+              [sourceBounds[0], sourceBounds[1]]  // bottom-left (minX, minY)
+            ];
+        
+        const transformedCorners = cornersToTransform.map(([x, y]) => 
+          proj4(sourceProj, 'EPSG:4326', [x, y])
+        );
+        
+        // Calculate min/max bounds from transformed corners
+        const transformedX = transformedCorners.map(c => c[0]);
+        const transformedY = transformedCorners.map(c => c[1]);
+        const transformedMinX = Math.min(...transformedX);
+        const transformedMaxX = Math.max(...transformedX);
+        const transformedMinY = Math.min(...transformedY);
+        const transformedMaxY = Math.max(...transformedY);
+        
         bounds = [transformedMinX, transformedMinY, transformedMaxX, transformedMaxY];
+        
+        console.log('[Viewshed] Transformed bounds to WGS84:', {
+          sourceBounds,
+          wgs84Bounds: bounds,
+          sourceProj,
+          corners: cornersToTransform,
+          transformedCorners
+        });
       } catch (transformError) {
-        console.error('Error transforming viewshed bounds:', transformError);
+        console.error('[Viewshed] Error transforming viewshed bounds:', transformError);
         const fallbackBounds = dtmRasterDataRef.current?.bounds ?? dtmBounds ?? null;
         if (fallbackBounds && fallbackBounds.length === 4) {
           bounds = fallbackBounds;

@@ -46,7 +46,7 @@ DEFAULT_SAFETY_RADIUS_METERS = 50.0  # Default safety radius for elevation profi
 DEFAULT_RESOLUTION_RADIUS_METERS = 50.0  # Default resolution radius for elevation profile
 
 DEFAULT_SAMPLING_INTERVAL_METERS = 1.0  # Default sampling interval for viewshed
-TRESH_AZ = np.deg2rad(3.0)
+THRESH_AZ = np.deg2rad(3)
 ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS = 3.0  # Sampling interval for elevation profile generation
 
 # Geographic conversion constants

@@ -1,3 +1,4 @@
+import numpy as np
 """
 Constants module for the lidar_polygons backend.
 
@@ -43,7 +44,9 @@ MAX_DISPLAY_DIM = 2048  # Maximum dimension for subsampled display versions (pix
 # Default sampling and resolution parameters (meters)
 DEFAULT_SAFETY_RADIUS_METERS = 50.0  # Default safety radius for elevation profile
 DEFAULT_RESOLUTION_RADIUS_METERS = 50.0  # Default resolution radius for elevation profile
-DEFAULT_SAMPLING_INTERVAL_METERS = 50.0  # Default sampling interval for viewshed
+
+DEFAULT_SAMPLING_INTERVAL_METERS = 1.0  # Default sampling interval for viewshed
+TRESH_AZ = np.deg2rad(3.0)
 ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS = 3.0  # Sampling interval for elevation profile generation
 
 # Geographic conversion constants

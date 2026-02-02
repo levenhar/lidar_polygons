@@ -5789,11 +5789,55 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setViewshedProgress(0);
     pendingViewshedRouteSnapshotRef.current = flightPath.map((point) => ({ ...point }));
     try {
-      const trajectory = flightPath.map((point) => ({
-        lng: point.lng,
-        lat: point.lat,
-        height: point.height ?? nominalFlightHeight
-      }));
+      // Use elevationProfile if available (includes all interpolation points with elevations)
+      // Otherwise fall back to flightPath (user input points only)
+      let trajectory: Array<{ lng: number; lat: number; height: number }>;
+      
+      if (elevationProfile && elevationProfile.length > 0) {
+        // Use all points from elevation profile (includes interpolation points)
+        // Height should be AGL (Above Ground Level) for viewshed calculation
+        trajectory = elevationProfile.map((point) => {
+          // Calculate AGL height: plannedAltitude (ASL) - elevation (ground level)
+          // If plannedAltitude is not available, use baseAltitude or calculate from flightHeight
+          let heightAGL: number;
+          if (point.plannedAltitude !== undefined) {
+            // plannedAltitude is ASL, so AGL = plannedAltitude - elevation
+            heightAGL = point.plannedAltitude - point.elevation;
+          } else if (point.flightHeight !== undefined) {
+            // flightHeight is already AGL
+            heightAGL = point.flightHeight;
+          } else if (point.baseAltitude !== undefined) {
+            // baseAltitude is ASL, so AGL = baseAltitude - elevation
+            heightAGL = point.baseAltitude - point.elevation;
+          } else {
+            // Fallback: use nominalFlightHeight as ASL, calculate AGL
+            heightAGL = nominalFlightHeight - point.elevation;
+          }
+          
+          return {
+            lng: point.longitude,
+            lat: point.latitude,
+            height: Math.max(0, heightAGL) // Ensure non-negative AGL
+          };
+        });
+      } else {
+        // Fallback to flightPath if elevation profile is not available
+        trajectory = flightPath.map((point) => {
+          // For flightPath points, we need to estimate AGL
+          // If point.height is provided, assume it's ASL and we'd need elevation to calculate AGL
+          // For now, use a simple fallback: assume height is AGL if provided, otherwise use nominalFlightHeight as ASL
+          // This is a limitation when elevation profile is not available
+          const heightAGL = point.height !== undefined 
+            ? point.height  // Assume AGL if provided (may not be accurate)
+            : nominalFlightHeight; // Fallback: use as AGL (not ideal but better than nothing)
+          
+          return {
+            lng: point.lng,
+            lat: point.lat,
+            height: Math.max(0, heightAGL)
+          };
+        });
+      }
 
       const response = await fetch('/api/viewshed/start', {
         method: 'POST',
@@ -5873,7 +5917,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         setIsViewshedProcessing(false);
       }
     }
-  }, [dtmSource, dtmLoaded, flightPath, isViewshedProcessing, nominalFlightHeight, propClippedId, stopViewshedPolling, viewshedStatus, loadViewshedFromArrayBuffer, flightPathSignature, resolutionHeight, fovDegrees]);
+  }, [dtmSource, dtmLoaded, flightPath, elevationProfile, isViewshedProcessing, nominalFlightHeight, propClippedId, stopViewshedPolling, viewshedStatus, loadViewshedFromArrayBuffer, flightPathSignature, resolutionHeight, fovDegrees]);
 
   const handleViewshedButtonClick = useCallback(() => {
     if (hasViewshedResult) {

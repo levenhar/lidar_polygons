@@ -636,7 +636,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .y1(d => currentYScale(getSafetyThreshold(d)))
       .curve(d3.curveMonotoneX);
 
-    resolutionViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+    const resolutionViolationPaths = resolutionViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(resolutionSegments)
       .enter()
       .append('path')
@@ -644,7 +644,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill-opacity', 0.18)
       .attr('d', d => resolutionAreaGenerator(d));
 
-    safetyViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+    const safetyViolationPaths = safetyViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(safetySegments)
       .enter()
       .append('path')
@@ -1271,40 +1271,53 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           .y1(d => currentYScale(d.elevation))
           .curve(d3.curveMonotoneX);
         groundArea.attr('d', updatedGroundAreaGenerator);
-        groundPath.attr('d', groundLine);
+        
+        const updatedGroundLine = d3.line<ElevationPoint>()
+          .x(d => currentXScale(d.distance))
+          .y(d => currentYScale(d.elevation))
+          .curve(d3.curveMonotoneX);
+        groundPath.attr('d', updatedGroundLine);
+        
         // baseFlightPathLine.attr('d', baseFlightLine);
-        plannedFlightPathLine.attr('d', plannedFlightLine);
-        safetyPath.attr('d', safetyLine);
-        resolutionPath.attr('d', resolutionLine);
+        const updatedPlannedFlightLine = d3.line<typeof profileWithPlan[0]>()
+          .x(d => currentXScale(d.distance))
+          .y(d => currentYScale(d.plannedAltitude))
+          .curve(d3.curveMonotoneX);
+        plannedFlightPathLine.attr('d', updatedPlannedFlightLine);
+        
+        const updatedSafetyLine = d3.line<ElevationPoint>()
+          .x(d => currentXScale(d.distance))
+          .y(d => {
+            const maxElev = d.maxElevation !== undefined ? d.maxElevation : d.elevation;
+            return currentYScale(maxElev + safetyHeight);
+          })
+          .curve(d3.curveMonotoneX);
+        safetyPath.attr('d', updatedSafetyLine);
+        
+        const updatedResolutionLine = d3.line<ElevationPoint>()
+          .x(d => currentXScale(d.distance))
+          .y(d => {
+            const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
+            return currentYScale(minElev + resolutionHeight);
+          })
+          .curve(d3.curveMonotoneX);
+        resolutionPath.attr('d', updatedResolutionLine);
 
-        /*
-        if (resolutionViolationAreas) {
-          const resolutionAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-            .x(d => currentXScale(d.distance))
-            .y0(d => currentYScale(getResolutionThreshold(d)))
-            .y1(d => currentYScale(d.plannedAltitude))
-            .curve(d3.curveMonotoneX);
-          resolutionViolationAreas.attr('d', d => resolutionAreaGenerator(d));
-        }
- 
-        if (safetyViolationAreas) {
-          const safetyAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-            .x(d => currentXScale(d.distance))
-            .y0(d => currentYScale(d.plannedAltitude))
-            .y1(d => currentYScale(getSafetyThreshold(d)))
-            .curve(d3.curveMonotoneX);
-          safetyViolationAreas.attr('d', d => safetyAreaGenerator(d));
-        }
- 
-        if (climbAreas) {
-          const climbAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-            .x(d => currentXScale(d.distance))
-            .y0(d => currentYScale(d.baseAltitude))
-            .y1(d => currentYScale(d.plannedAltitude))
-            .curve(d3.curveMonotoneX);
-          climbAreas.attr('d', d => climbAreaGenerator(d));
-        }
-        */
+        // Update resolution violation fill areas
+        const updatedResolutionAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+          .x(d => currentXScale(d.distance))
+          .y0(d => currentYScale(getResolutionThreshold(d)))
+          .y1(d => currentYScale(d.plannedAltitude))
+          .curve(d3.curveMonotoneX);
+        resolutionViolationPaths.attr('d', d => updatedResolutionAreaGenerator(d));
+
+        // Update safety violation fill areas
+        const updatedSafetyAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+          .x(d => currentXScale(d.distance))
+          .y0(d => currentYScale(d.plannedAltitude))
+          .y1(d => currentYScale(getSafetyThreshold(d)))
+          .curve(d3.curveMonotoneX);
+        safetyViolationPaths.attr('d', d => updatedSafetyAreaGenerator(d));
 
         /*
         if (rangeBars) {

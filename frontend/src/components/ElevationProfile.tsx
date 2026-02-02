@@ -188,6 +188,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const savedZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
   const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGRectElement, unknown> | null>(null);
   const overlayRef = useRef<d3.Selection<SVGRectElement, unknown, null, undefined> | null>(null);
+  
+  // Track drag state for click vs pan detection
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const panStartTransformRef = useRef<d3.ZoomTransform | null>(null);
+  const isPanningRef = useRef(false); // Track if we're actually panning (after threshold)
   // Track container width to trigger chart re-render when it changes (for export)
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
@@ -424,12 +430,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const componentVertexDistances = vertexDistances;
 
     const svg = d3.select(svgRef.current);
-    // Save zoom transform before clearing (use existing transform if available, otherwise use saved one)
+    // Save zoom transform before clearing (preserve zoom state across re-renders)
     const existingOverlay = svg.select('rect[fill="transparent"]').node() as SVGRectElement | null;
-    const existingTransform = existingOverlay ? d3.zoomTransform(existingOverlay) : null;
-    if (existingTransform && (existingTransform.k !== 1 || existingTransform.x !== 0 || existingTransform.y !== 0)) {
-      savedZoomTransformRef.current = existingTransform;
+    if (existingOverlay) {
+      const existingTransform = d3.zoomTransform(existingOverlay);
+      // Only update if it's actually zoomed/translated (not identity)
+      if (existingTransform.k !== 1 || existingTransform.x !== 0 || existingTransform.y !== 0) {
+        savedZoomTransformRef.current = existingTransform;
+      }
     }
+    // If no existing transform, keep the saved one (don't reset to null)
     svg.selectAll('*').remove(); // Clear previous render
 
     const margin = { top: 20, right: 80, bottom: 110, left: 30 };
@@ -1272,192 +1282,394 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .style('pointer-events', 'all');
     overlay.lower();
 
+    // Function to update all elements based on current transform
+    const updateElementsWithTransform = (transform: d3.ZoomTransform) => {
+      const newXScale = transform.rescaleX(baseXScale);
+      const newYScale = transform.rescaleY(baseYScale);
+
+      currentXScale = newXScale;
+      currentYScale = newYScale;
+
+      xAxis.scale(currentXScale);
+      yAxis.scale(currentYScale);
+      xAxisGrid.scale(currentXScale);
+      yAxisGrid.scale(currentYScale);
+
+      xGridGroup.call(xAxisGrid);
+      yGridGroup.call(yAxisGrid);
+      xAxisGroup.call(xAxis);
+      yAxisGroup.call(yAxis);
+      xAxisGroup.selectAll('text')
+        .style('font-size', '12px')
+        .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif');
+      yAxisGroup.selectAll('text')
+        .style('font-size', '12px')
+        .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
+        .attr('dx', '-0.5em');
+
+      // Update all paths and elements
+      const updatedGroundAreaGenerator = d3.area<ElevationPoint>()
+        .x(d => currentXScale(d.distance))
+        .y0(height)
+        .y1(d => currentYScale(d.elevation))
+        .curve(d3.curveMonotoneX);
+      groundArea.attr('d', updatedGroundAreaGenerator);
+      
+      const updatedGroundLine = d3.line<ElevationPoint>()
+        .x(d => currentXScale(d.distance))
+        .y(d => currentYScale(d.elevation))
+        .curve(d3.curveMonotoneX);
+      groundPath.attr('d', updatedGroundLine);
+      
+      const updatedPlannedFlightLine = d3.line<typeof profileWithPlan[0]>()
+        .x(d => currentXScale(d.distance))
+        .y(d => currentYScale(d.plannedAltitude))
+        .curve(d3.curveMonotoneX);
+      plannedFlightPathLine.attr('d', updatedPlannedFlightLine);
+      
+      const updatedSafetyLine = d3.line<ElevationPoint>()
+        .x(d => currentXScale(d.distance))
+        .y(d => {
+          const maxElev = d.maxElevation !== undefined ? d.maxElevation : d.elevation;
+          return currentYScale(maxElev + safetyHeight);
+        })
+        .curve(d3.curveMonotoneX);
+      safetyPath.attr('d', updatedSafetyLine);
+      
+      const updatedResolutionLine = d3.line<ElevationPoint>()
+        .x(d => currentXScale(d.distance))
+        .y(d => {
+          const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
+          return currentYScale(minElev + resolutionHeight);
+        })
+        .curve(d3.curveMonotoneX);
+      resolutionPath.attr('d', updatedResolutionLine);
+
+      // Update resolution violation fill areas
+      const updatedResolutionAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+        .x(d => currentXScale(d.distance))
+        .y0(d => currentYScale(getResolutionThreshold(d)))
+        .y1(d => currentYScale(d.plannedAltitude))
+        .curve(d3.curveMonotoneX);
+      resolutionViolationPaths.attr('d', d => updatedResolutionAreaGenerator(d));
+
+      // Update safety violation fill areas
+      const updatedSafetyAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+        .x(d => currentXScale(d.distance))
+        .y0(d => currentYScale(d.plannedAltitude))
+        .y1(d => currentYScale(getSafetyThreshold(d)))
+        .curve(d3.curveMonotoneX);
+      safetyViolationPaths.attr('d', d => updatedSafetyAreaGenerator(d));
+
+      groundPoints
+        .attr('cx', d => currentXScale(d.point.distance))
+        .attr('cy', d => currentYScale(d.point.elevation));
+
+      flightPoints
+        .attr('cx', d => currentXScale(d.point.distance))
+        .attr('cy', (d) => currentYScale(getPlannedAltitudeAtDistance(d.point.distance)));
+
+      pointLabels
+        .attr('x', d => currentXScale(d.point.distance))
+        .attr('y', d => currentYScale(d.point.elevation) - 8);
+
+      if (selectedDistanceLine && selectedDistance !== null) {
+        selectedDistanceLine
+          .attr('x1', currentXScale(selectedDistance))
+          .attr('x2', currentXScale(selectedDistance));
+      }
+
+      if (hoveredDistanceLine && hoveredDistance !== null) {
+        hoveredDistanceLine
+          .attr('x1', currentXScale(hoveredDistance))
+          .attr('x2', currentXScale(hoveredDistance));
+      }
+
+      // Update legend position
+      const availableWidth = width;
+      const needsTwoRows = totalLegendWidth > availableWidth * 0.9;
+      let maxRowWidth = totalLegendWidth;
+      
+      if (needsTwoRows) {
+        let row1Width = 0;
+        let row2Width = 0;
+        
+        for (let i = 0; i < 2; i++) {
+          row1Width += itemWidths[i];
+          if (i < 1) row1Width += spacing;
+        }
+        
+        for (let i = 2; i < legendData.length; i++) {
+          row2Width += itemWidths[i];
+          if (i < legendData.length - 1) row2Width += spacing;
+        }
+        
+        maxRowWidth = Math.max(row1Width, row2Width);
+      }
+      
+      const legendX = width - maxRowWidth;
+      legend.attr('transform', `translate(${margin.left + legendX}, ${height + margin.top + legendOffset})`);
+
+      if (hoveredPointMarker && hoveredPoint) {
+        hoveredPointMarker
+          .attr('cx', currentXScale(hoveredPoint.distance))
+          .attr('cy', currentYScale(getPlannedAltitudeAtDistance(hoveredPoint.distance)));
+      }
+
+      climbEndMarkers?.selectAll<SVGCircleElement, any>('circle')
+        .attr('cx', (d: any) => currentXScale(d.endDistance))
+        .attr('cy', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)));
+
+      climbStartMarkers?.selectAll<SVGRectElement, any>('rect')
+        .attr('x', (d: any) => currentXScale(d.startDistance) - 4)
+        .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.startDistance)) - 4);
+
+      climbLabels
+        ?.attr('x', (d: any) => currentXScale(d.endDistance))
+        .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)) - 8);
+
+      // Update gray vertex proximity zones
+      // Recalculate zones and update existing rectangles
+      if (climbConfig && climbConfig.vertexProximityMeters > 0 && componentVertexDistances.length > 0) {
+        const vertexProximityZones = componentVertexDistances.map(vertexDistance => {
+          const zoneStart = Math.max(0, vertexDistance - climbConfig.vertexProximityMeters);
+          const zoneEnd = Math.min(
+            elevationProfile.length > 0 ? elevationProfile[elevationProfile.length - 1].distance : vertexDistance + climbConfig.vertexProximityMeters,
+            vertexDistance + climbConfig.vertexProximityMeters
+          );
+          return { start: zoneStart, end: zoneEnd };
+        });
+
+        // Merge overlapping zones
+        const mergedZones: { start: number; end: number }[] = [];
+        const sortedZones = [...vertexProximityZones].sort((a, b) => a.start - b.start);
+        
+        for (const zone of sortedZones) {
+          if (mergedZones.length === 0) {
+            mergedZones.push({ ...zone });
+          } else {
+            const lastZone = mergedZones[mergedZones.length - 1];
+            if (zone.start <= lastZone.end) {
+              lastZone.end = Math.max(lastZone.end, zone.end);
+            } else {
+              mergedZones.push({ ...zone });
+            }
+          }
+        }
+
+        // Update existing zones with new data and positions
+        chartArea.selectAll<SVGRectElement, { start: number; end: number }>('.vertex-proximity-zone')
+          .data(mergedZones)
+          .attr('x', d => {
+            // Use the smaller x value (which corresponds to the larger distance, i.e., end)
+            const xStart = currentXScale(d.start);
+            const xEnd = currentXScale(d.end);
+            return Math.min(xStart, xEnd);
+          })
+          .attr('width', d => {
+            // Calculate absolute width since scale is reversed
+            const xStart = currentXScale(d.start);
+            const xEnd = currentXScale(d.end);
+            return Math.abs(xStart - xEnd);
+          });
+      }
+    };
+
+    // Setup zoom behavior - only for wheel zoom, not for panning
     const zoomBehavior = d3.zoom<SVGRectElement, unknown>()
-      .scaleExtent([1, 12])
-      .translateExtent([[0, 0], [width, height]])
+      .scaleExtent([1, 20])
       .extent([[0, 0], [width, height]])
       .on('zoom', (event) => {
-        // Save the transform so it persists across re-renders
-        savedZoomTransformRef.current = event.transform;
-        const newXScale = event.transform.rescaleX(baseXScale);
-        const newYScale = event.transform.rescaleY(baseYScale);
-
-        currentXScale = newXScale;
-        currentYScale = newYScale;
-
-        xAxis.scale(currentXScale);
-        yAxis.scale(currentYScale);
-        xAxisGrid.scale(currentXScale);
-        yAxisGrid.scale(currentYScale);
-
-        xGridGroup.call(xAxisGrid);
-        yGridGroup.call(yAxisGrid);
-        xAxisGroup.call(xAxis);
-        yAxisGroup.call(yAxis);
-        xAxisGroup.selectAll('text')
-          .style('font-size', '12px')
-          .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif');
-        yAxisGroup.selectAll('text')
-          .style('font-size', '12px')
-          .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
-          .attr('dx', '-0.5em');
-
-        const updatedGroundAreaGenerator = d3.area<ElevationPoint>()
-          .x(d => currentXScale(d.distance))
-          .y0(height)
-          .y1(d => currentYScale(d.elevation))
-          .curve(d3.curveMonotoneX);
-        groundArea.attr('d', updatedGroundAreaGenerator);
+        // Handle wheel zoom and programmatic transforms (like reset button)
+        const isWheelEvent = event.sourceEvent && event.sourceEvent.type === 'wheel';
+        const isProgrammatic = !event.sourceEvent; // No source event means it's programmatic
         
-        const updatedGroundLine = d3.line<ElevationPoint>()
-          .x(d => currentXScale(d.distance))
-          .y(d => currentYScale(d.elevation))
-          .curve(d3.curveMonotoneX);
-        groundPath.attr('d', updatedGroundLine);
-        
-        // baseFlightPathLine.attr('d', baseFlightLine);
-        const updatedPlannedFlightLine = d3.line<typeof profileWithPlan[0]>()
-          .x(d => currentXScale(d.distance))
-          .y(d => currentYScale(d.plannedAltitude))
-          .curve(d3.curveMonotoneX);
-        plannedFlightPathLine.attr('d', updatedPlannedFlightLine);
-        
-        const updatedSafetyLine = d3.line<ElevationPoint>()
-          .x(d => currentXScale(d.distance))
-          .y(d => {
-            const maxElev = d.maxElevation !== undefined ? d.maxElevation : d.elevation;
-            return currentYScale(maxElev + safetyHeight);
-          })
-          .curve(d3.curveMonotoneX);
-        safetyPath.attr('d', updatedSafetyLine);
-        
-        const updatedResolutionLine = d3.line<ElevationPoint>()
-          .x(d => currentXScale(d.distance))
-          .y(d => {
-            const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
-            return currentYScale(minElev + resolutionHeight);
-          })
-          .curve(d3.curveMonotoneX);
-        resolutionPath.attr('d', updatedResolutionLine);
-
-        // Update resolution violation fill areas
-        const updatedResolutionAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-          .x(d => currentXScale(d.distance))
-          .y0(d => currentYScale(getResolutionThreshold(d)))
-          .y1(d => currentYScale(d.plannedAltitude))
-          .curve(d3.curveMonotoneX);
-        resolutionViolationPaths.attr('d', d => updatedResolutionAreaGenerator(d));
-
-        // Update safety violation fill areas
-        const updatedSafetyAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-          .x(d => currentXScale(d.distance))
-          .y0(d => currentYScale(d.plannedAltitude))
-          .y1(d => currentYScale(getSafetyThreshold(d)))
-          .curve(d3.curveMonotoneX);
-        safetyViolationPaths.attr('d', d => updatedSafetyAreaGenerator(d));
-
-        /*
-        if (rangeBars) {
-          rangeBars
-            .attr('x1', d => currentXScale(d.distance))
-            .attr('x2', d => currentXScale(d.distance))
-            .attr('y1', d => currentYScale(d.minElevation!))
-            .attr('y2', d => currentYScale(d.maxElevation!));
-        }
-        if (minMarkers) {
-          minMarkers
-            .attr('cx', d => currentXScale(d.distance))
-            .attr('cy', d => currentYScale(d.minElevation!));
-        }
-        if (maxMarkers) {
-          maxMarkers
-            .attr('cx', d => currentXScale(d.distance))
-            .attr('cy', d => currentYScale(d.maxElevation!));
-        }
-        */
-
-        groundPoints
-          .attr('cx', d => currentXScale(d.point.distance))
-          .attr('cy', d => currentYScale(d.point.elevation));
-
-        flightPoints
-          .attr('cx', d => currentXScale(d.point.distance))
-          .attr('cy', (d) => currentYScale(getPlannedAltitudeAtDistance(d.point.distance)));
-
-        pointLabels
-          .attr('x', d => currentXScale(d.point.distance))
-          .attr('y', d => currentYScale(d.point.elevation) - 8);
-
-        if (selectedDistanceLine && selectedDistance !== null) {
-          selectedDistanceLine
-            .attr('x1', currentXScale(selectedDistance))
-            .attr('x2', currentXScale(selectedDistance));
-        }
-
-        if (hoveredDistanceLine && hoveredDistance !== null) {
-          hoveredDistanceLine
-            .attr('x1', currentXScale(hoveredDistance))
-            .attr('x2', currentXScale(hoveredDistance));
-        }
-
-        // Update legend position to keep it aligned to the right
-        // Recalculate max row width for positioning (same logic as initial render)
-        const availableWidth = width;
-        const needsTwoRows = totalLegendWidth > availableWidth * 0.9;
-        let maxRowWidth = totalLegendWidth;
-        
-        if (needsTwoRows) {
-          // Calculate row widths
-          let row1Width = 0;
-          let row2Width = 0;
-          
-          // First 2 items
-          for (let i = 0; i < 2; i++) {
-            row1Width += itemWidths[i];
-            if (i < 1) row1Width += spacing;
+        if (isWheelEvent || isProgrammatic) {
+          // If zoomed out to scale 1 or less, reset to identity (no translation either)
+          if (event.transform.k <= 1) {
+            const identity = d3.zoomIdentity;
+            savedZoomTransformRef.current = identity;
+            updateElementsWithTransform(identity);
+            // Only reset the transform if it's a wheel event (to avoid infinite loop)
+            if (isWheelEvent && (event.transform.k < 1 || event.transform.x !== 0 || event.transform.y !== 0)) {
+              overlay.call(zoomBehavior.transform as any, identity);
+            }
+          } else {
+            // Save the transform so it persists across re-renders
+            savedZoomTransformRef.current = event.transform;
+            updateElementsWithTransform(event.transform);
           }
-          
-          // Last 2 items
-          for (let i = 2; i < legendData.length; i++) {
-            row2Width += itemWidths[i];
-            if (i < legendData.length - 1) row2Width += spacing;
-          }
-          
-          maxRowWidth = Math.max(row1Width, row2Width);
         }
-        
-        // Align legend to the right side of the chart
-        const legendX = width - maxRowWidth;
-        legend.attr('transform', `translate(${margin.left + legendX}, ${height + margin.top + legendOffset})`);
-
-        if (hoveredPointMarker && hoveredPoint) {
-          hoveredPointMarker
-            .attr('cx', currentXScale(hoveredPoint.distance))
-            .attr('cy', currentYScale(getPlannedAltitudeAtDistance(hoveredPoint.distance)));
-        }
-
-        climbEndMarkers?.selectAll<SVGCircleElement, any>('circle')
-          .attr('cx', (d: any) => currentXScale(d.endDistance))
-          .attr('cy', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)));
-
-        climbStartMarkers?.selectAll<SVGRectElement, any>('rect')
-          .attr('x', (d: any) => currentXScale(d.startDistance) - 4)
-          .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.startDistance)) - 4);
-
-        climbLabels
-          ?.attr('x', (d: any) => currentXScale(d.endDistance))
-          .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)) - 8);
+      })
+      // Only allow wheel zoom, disable drag panning from d3.zoom
+      .filter(function(event) {
+        // Only allow wheel events for zooming
+        return event.type === 'wheel';
       });
 
     // Store references for zoom controls
     zoomBehaviorRef.current = zoomBehavior;
     overlayRef.current = overlay;
     
+    // Apply the zoom behavior first
     overlay.call(zoomBehavior as any);
+    
+    // Restore saved zoom transform AFTER applying zoom behavior (to maintain zoom state across re-renders)
+    if (savedZoomTransformRef.current) {
+      // Restore the transform immediately to maintain zoom/pan state
+      overlay.call(zoomBehavior.transform as any, savedZoomTransformRef.current);
+    }
+    
+    // Update cursor based on zoom state
+    const transform = savedZoomTransformRef.current || d3.zoomIdentity;
+    if (transform.k > 1) {
+      overlay.style('cursor', 'grab');
+    }
+    
+    // Custom panning handlers - calculate translation vector from mouse click to mouse location
+    overlay.on('mousedown', function(event: MouseEvent) {
+      // Only allow panning when zoomed in
+      const currentTransform = savedZoomTransformRef.current || d3.zoomIdentity;
+      if (currentTransform.k <= 1) {
+        return; // Don't pan when not zoomed
+      }
+      
+      // Prevent right-click and ctrl+click from panning
+      if (event.button !== 0 || event.ctrlKey) {
+        return;
+      }
+      
+      event.preventDefault();
+      event.stopPropagation();
+      
+      const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+      dragStartRef.current = { x: mouseX, y: mouseY };
+      panStartTransformRef.current = currentTransform;
+      isDraggingRef.current = false;
+      isPanningRef.current = false; // Not panning yet, waiting for drag threshold
+      overlay.style('cursor', 'grab'); // Keep grab cursor until we actually start panning
+    });
+    
+    // Combined mousemove handler for panning and hover
+    overlay.on('mousemove', function(event: MouseEvent) {
+      // Handle panning if mouse is down
+      if (dragStartRef.current && panStartTransformRef.current) {
+        const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+        
+        // Calculate translation vector (delta from start position)
+        const dx = mouseX - dragStartRef.current.x;
+        const dy = mouseY - dragStartRef.current.y;
+        
+        // Check if we've moved beyond the drag threshold (5 pixels)
+        const dragDistance = Math.sqrt(dx * dx + dy * dy);
+        const dragThreshold = 5;
+        
+        if (dragDistance >= dragThreshold) {
+          // Start panning only after threshold is crossed
+          if (!isPanningRef.current) {
+            isPanningRef.current = true;
+            overlay.style('cursor', 'grabbing');
+          }
+          
+          event.preventDefault();
+          isDraggingRef.current = true;
+          
+          // Create new transform by adding translation to the start transform
+          const newTransform = panStartTransformRef.current.translate(dx, dy);
+          
+          // Update the transform and render in real-time
+          savedZoomTransformRef.current = newTransform;
+          updateElementsWithTransform(newTransform);
+          return; // Don't process hover when panning
+        }
+        // If below threshold, don't pan yet but also don't process hover
+        return;
+      }
+      
+      // Continue with hover handling if not panning (will be handled by hover handler below)
+    });
+    
+    overlay.on('mouseup', function(event: MouseEvent) {
+      if (!dragStartRef.current || !panStartTransformRef.current) {
+        return;
+      }
+      
+      // Only apply translation if we actually panned (crossed threshold)
+      if (isPanningRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+        
+        // Calculate final translation vector
+        const dx = mouseX - dragStartRef.current.x;
+        const dy = mouseY - dragStartRef.current.y;
+        
+        // Apply final translation
+        const finalTransform = panStartTransformRef.current.translate(dx, dy);
+        savedZoomTransformRef.current = finalTransform;
+        
+        // Update the d3.zoom behavior's transform so it persists
+        overlay.call(zoomBehavior.transform as any, finalTransform);
+        
+        // Update elements with final transform
+        updateElementsWithTransform(finalTransform);
+      }
+      
+      // Update cursor
+      const currentTransform = savedZoomTransformRef.current || d3.zoomIdentity;
+      if (currentTransform.k > 1) {
+        overlay.style('cursor', 'grab');
+      } else {
+        overlay.style('cursor', 'crosshair');
+      }
+      
+      // Reset drag state after a delay to allow click handler to check it
+      setTimeout(() => {
+        isDraggingRef.current = false;
+        isPanningRef.current = false;
+        dragStartRef.current = null;
+        panStartTransformRef.current = null;
+      }, 10);
+    });
+    
+    overlay.on('mouseleave', function() {
+      // If mouse leaves while dragging, finalize the pan only if we were actually panning
+      if (dragStartRef.current && panStartTransformRef.current && isPanningRef.current) {
+        // Get the current transform (which should already be updated from mousemove)
+        const currentTransform = savedZoomTransformRef.current || d3.zoomIdentity;
+        
+        // Make sure the transform is saved and persisted in d3.zoom
+        savedZoomTransformRef.current = currentTransform;
+        overlay.call(zoomBehavior.transform as any, currentTransform);
+        updateElementsWithTransform(currentTransform);
+      }
+      
+      // Update cursor
+      const currentTransform = savedZoomTransformRef.current || d3.zoomIdentity;
+      if (currentTransform.k > 1) {
+        overlay.style('cursor', 'grab');
+      } else {
+        overlay.style('cursor', 'crosshair');
+      }
+      
+      // Reset drag state
+      isDraggingRef.current = false;
+      isPanningRef.current = false;
+      dragStartRef.current = null;
+      panStartTransformRef.current = null;
+    });
 
     const vertexDistanceSet = new Set(originalVertices.map(v => v.point.distance));
 
     overlay.on('click', function (event: MouseEvent) {
+      // Only handle click if we didn't drag (to avoid breaking click selection)
+      if (isDraggingRef.current) {
+        isDraggingRef.current = false;
+        dragStartRef.current = null;
+        return;
+      }
+      
       if (profileWithPlan.length === 0) return;
       const [mouseX] = d3.pointer(event, g.node() as SVGGElement);
       let closestPoint: typeof profileWithPlan[0] | null = null;
@@ -1584,7 +1796,42 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Hover interactions reuse the same overlay
     if (onElevationPointHover) {
+      // Replace the mousemove handler to include both panning and hover
       overlay.on('mousemove', function (event: MouseEvent) {
+        // First, handle panning if mouse is down
+        if (dragStartRef.current && panStartTransformRef.current) {
+          const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+          
+          // Calculate translation vector (delta from start position)
+          const dx = mouseX - dragStartRef.current.x;
+          const dy = mouseY - dragStartRef.current.y;
+          
+          // Check if we've moved beyond the drag threshold (5 pixels)
+          const dragDistance = Math.sqrt(dx * dx + dy * dy);
+          const dragThreshold = 5;
+          
+          if (dragDistance >= dragThreshold) {
+            // Start panning only after threshold is crossed
+            if (!isPanningRef.current) {
+              isPanningRef.current = true;
+              overlay.style('cursor', 'grabbing');
+            }
+            
+            event.preventDefault();
+            isDraggingRef.current = true;
+            
+            // Create new transform by adding translation to the start transform
+            const newTransform = panStartTransformRef.current.translate(dx, dy);
+            
+            // Update the transform and render in real-time
+            savedZoomTransformRef.current = newTransform;
+            updateElementsWithTransform(newTransform);
+            return; // Don't process hover when panning
+          }
+          // If below threshold, don't pan yet but also don't process hover
+          return;
+        }
+        
         const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
 
         // Check if we're near any input point (ground or flight points)
@@ -1702,13 +1949,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       });
     }
 
-    // Restore saved zoom transform after all elements and event handlers are set up
-    if (savedZoomTransformRef.current) {
-      // Use requestAnimationFrame to ensure DOM is fully ready
-      requestAnimationFrame(() => {
-        d3.select(overlay.node() as any).call(zoomBehavior.transform as any, savedZoomTransformRef.current!);
-      });
-    }
+    // Note: Zoom/pan state is managed via viewWindow state, no need to restore d3.zoom transform
 
   }, [
     elevationProfile,

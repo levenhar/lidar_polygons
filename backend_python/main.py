@@ -486,7 +486,7 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
 
             raw_points = [{"lng": p.lng, "lat": p.lat, "height": p.height} for p in request.coordinates]
             trajectory = []
-            interval = request.samplingIntervalMeters or 0
+            interval = C.DEFAULT_SAMPLING_INTERVAL_METERS
             if interval and interval > 0:
                 for i in range(len(raw_points) - 1):
                     segment_points = interpolate_segment_with_height(raw_points[i], raw_points[i + 1], interval)

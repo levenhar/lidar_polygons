@@ -13,7 +13,7 @@ uploads/
 .vscode/
 package-lock.json
 .geojson
-.kml
+*.kml
 .venv/
 __pycache__/
 venv/

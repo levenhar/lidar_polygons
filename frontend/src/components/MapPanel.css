@@ -842,6 +842,78 @@
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
 }
 
+/* Imported labeled points (from KML) - Different design from route points */
+.imported-point-marker {
+  background: transparent;
+  border: none;
+  padding: 0;
+  pointer-events: none !important;
+  z-index: 730;
+}
+
+.imported-point-marker__square,
+.imported-point-marker__circle,
+.imported-point-marker__diamond {
+  display: block;
+  width: 18px;
+  height: 18px;
+  background: #10b981; /* Default color, can be overridden by inline style */
+  border: 2.5px solid #ffffff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  position: relative;
+}
+
+.imported-point-marker__square {
+  transform: rotate(45deg);
+}
+
+.imported-point-marker__circle {
+  border-radius: 50%;
+}
+
+.imported-point-marker__diamond {
+  transform: rotate(45deg);
+}
+
+.imported-point-marker__triangle {
+  display: block;
+  width: 18px;
+  height: 18px;
+  position: relative;
+}
+
+.imported-point-marker__star,
+.imported-point-marker__cross {
+  display: block;
+  width: 18px;
+  height: 18px;
+  position: relative;
+}
+
+.imported-point-label {
+  background: transparent;
+  border: none;
+  padding: 0;
+  pointer-events: none !important;
+  white-space: nowrap;
+  z-index: 720;
+}
+
+.imported-point-label__text {
+  display: inline-block;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.8);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.1;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.4);
+  margin-left: 10px;
+  transform: translateY(-4px);
+}
+
 .edit-mode-indicator {
   position: absolute;
   bottom: 90px;

@@ -26,6 +26,8 @@ import {
 } from './utils/projectSerializer';
 import { generateKMLForRoute } from './utils/kmlGenerator';
 import { debug } from './utils/debug';
+import { importKmlFile } from './utils/importKmlFlow';
+import KmlManagerModal, { KmlImport } from './components/KmlManagerModal';
 import './App.css';
 
 export interface Coordinate {
@@ -152,6 +154,10 @@ function AppContent() {
     isOpen: boolean;
     message: string;
   }>({ isOpen: false, message: '' });
+  const [importSummary, setImportSummary] = useState<{ points: number; polygons: number } | null>(null);
+  const [zoomToBounds, setZoomToBounds] = useState<{ minLon: number; minLat: number; maxLon: number; maxLat: number } | null>(null);
+  const [kmlImports, setKmlImports] = useState<KmlImport[]>([]);
+  const [kmlManagerModalOpen, setKmlManagerModalOpen] = useState(false);
   
   // Queue system for height profile edits
   type EditOperation = 
@@ -1095,6 +1101,91 @@ function AppContent() {
     globalUndoRedo.redo();
   }, [globalUndoRedo]);
 
+  const handleImportKml = React.useCallback(() => {
+    importKmlFile({
+      onKmlImported: (kmlImport) => {
+        // Add to KML imports array with timestamp
+        // Polygons are just visual overlays, not AOI
+        setKmlImports(prev => [...prev, {
+          ...kmlImport,
+          importedAt: Date.now()
+        }]);
+      },
+      onError: (error: string) => {
+        setSuccessNotification({ isOpen: true, message: error });
+      },
+      onSuccess: (message: string) => {
+        setSuccessNotification({ isOpen: true, message });
+      },
+      onShowSummary: (summary: { points: number; polygons: number }) => {
+        setImportSummary(summary);
+        // Show summary briefly, then clear
+        setTimeout(() => setImportSummary(null), 2000);
+      },
+      onZoomToBounds: (bounds: { minLon: number; minLat: number; maxLon: number; maxLat: number }) => {
+        setZoomToBounds(bounds);
+        // Clear after zoom (so it doesn't re-zoom on every render)
+        setTimeout(() => setZoomToBounds(null), 100);
+      }
+    });
+  }, []);
+
+  const handleDeleteKml = React.useCallback((id: string) => {
+    setKmlImports(prev => prev.filter(kml => kml.id !== id));
+  }, []);
+
+  const handleDeleteAllKml = React.useCallback(() => {
+    setKmlImports([]);
+  }, []);
+
+  const handleKmlColorChange = React.useCallback((id: string, color: string) => {
+    setKmlImports(prev => prev.map(kml => kml.id === id ? { ...kml, color } : kml));
+  }, []);
+
+  const handleKmlSymbolChange = React.useCallback((id: string, symbol: import('./components/KmlManagerModal').PointSymbol) => {
+    setKmlImports(prev => prev.map(kml => kml.id === id ? { ...kml, symbol } : kml));
+  }, []);
+
+  const handleKmlVisibilityToggle = React.useCallback((id: string) => {
+    setKmlImports(prev => prev.map(kml => kml.id === id ? { ...kml, visible: !kml.visible } : kml));
+  }, []);
+
+  const handleZoomToKml = React.useCallback((id: string) => {
+    const kml = kmlImports.find(k => k.id === id);
+    if (!kml) return;
+
+    // Calculate bounds from points and polygons
+    const allCoords: Array<{ lat: number; lng: number }> = [];
+    
+    // Add all point coordinates
+    kml.points.forEach(point => {
+      allCoords.push({ lat: point.lat, lng: point.lng });
+    });
+    
+    // Add all polygon coordinates
+    kml.polygons.forEach(polygon => {
+      polygon.coordinates.forEach(([lon, lat]) => {
+        allCoords.push({ lat, lng: lon });
+      });
+    });
+
+    if (allCoords.length === 0) return;
+
+    // Calculate bounds
+    const lats = allCoords.map(c => c.lat);
+    const lngs = allCoords.map(c => c.lng);
+    const bounds = {
+      minLat: Math.min(...lats),
+      maxLat: Math.max(...lats),
+      minLon: Math.min(...lngs),
+      maxLon: Math.max(...lngs)
+    };
+
+    // Zoom to bounds
+    setZoomToBounds(bounds);
+    setTimeout(() => setZoomToBounds(null), 100);
+  }, [kmlImports]);
+
   const handleSetFlightHeight = useCallback((pointIndex: number) => {
     if (pointIndex < 0 || pointIndex >= flightPath.length) return;
     const currentPoint = flightPath[pointIndex];
@@ -1699,6 +1790,20 @@ function AppContent() {
             </svg>
           </button>
           <button
+            onClick={() => setKmlManagerModalOpen(true)}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="נהל קבצי KML"
+            title={`נהל קבצי KML${kmlImports.length > 0 ? ` (${kmlImports.length})` : ''}`}
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z" />
+            </svg>
+            {kmlImports.length > 0 && (
+              <span className="kml-count-badge">{kmlImports.length}</span>
+            )}
+          </button>
+          <button
             onClick={() => setShowSettingsModal(true)}
             className="btn btn-secondary btn-icon settings-header-btn"
             type="button"
@@ -1748,9 +1853,11 @@ function AppContent() {
             initialDisplaySettings={dtmDisplaySettings}
             currentAoi={aoiGeometry}
             dtmSourceType={dtmSourceType}
+            zoomToBounds={zoomToBounds}
             climbMarkers={climbMarkers}
             showClimbLabels={showClimbLabels}
             onShowClimbLabelsChange={setShowClimbLabels}
+            kmlImports={kmlImports}
             nominalFlightHeight={nominalFlightHeight}
             overlapPercentage={overlapPercentage}
             fovDegrees={fovDegrees}
@@ -2077,6 +2184,35 @@ function AppContent() {
             }
           }}
         />
+      )}
+      <KmlManagerModal
+        isOpen={kmlManagerModalOpen}
+        kmlImports={kmlImports}
+        onDelete={handleDeleteKml}
+        onColorChange={handleKmlColorChange}
+        onSymbolChange={handleKmlSymbolChange}
+        onVisibilityToggle={handleKmlVisibilityToggle}
+        onZoomToKml={handleZoomToKml}
+        onDeleteAll={handleDeleteAllKml}
+        onImport={handleImportKml}
+        onClose={() => setKmlManagerModalOpen(false)}
+      />
+      {importSummary && (
+        <div style={{
+          position: 'fixed',
+          top: '20px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#3b82f6',
+          color: 'white',
+          padding: '12px 24px',
+          borderRadius: '8px',
+          boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+          zIndex: 10001,
+          direction: 'rtl'
+        }}>
+          זוהו: {importSummary.points} נקודות, {importSummary.polygons} מצולעים. מייבא...
+        </div>
       )}
       <SuccessNotification
         isOpen={successNotification.isOpen}

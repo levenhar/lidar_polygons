@@ -576,6 +576,15 @@ interface MapPanelProps {
   climbMarkers: { lat: number; lng: number; label: string; type: 'start' | 'end' }[];
   showClimbLabels: boolean;
   onShowClimbLabelsChange: (show: boolean) => void;
+  kmlImports?: Array<{
+    id: string;
+    name: string;
+    points: Array<{ lng: number; lat: number; label: string }>;
+    polygons: Array<{ coordinates: [number, number][]; name?: string }>;
+    color: string;
+    symbol: 'square' | 'circle' | 'triangle' | 'star' | 'diamond' | 'cross';
+    visible: boolean;
+  }>;
   onPathPointHover: (point: Coordinate | null, distance?: number) => void;
   onPathChange: (path: Coordinate[]) => void;
   onAddPoint: (point: Coordinate) => void;
@@ -625,6 +634,7 @@ interface MapPanelProps {
   onExportClick: () => void;
   onImportKML: (file: File) => Promise<void>;
   canExport: boolean;
+  zoomToBounds?: { minLon: number; minLat: number; maxLon: number; maxLat: number } | null;
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
@@ -676,7 +686,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onImportKML,
   canExport,
   currentAoi,
-  dtmSourceType: propDtmSourceType
+  dtmSourceType: propDtmSourceType,
+  zoomToBounds,
+  kmlImports = []
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -835,6 +847,45 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const markersRef = useRef<L.Marker[]>([]);
   const vertexProximityCirclesRef = useRef<L.Circle[]>([]);
   const climbMarkersRef = useRef<L.Marker[]>([]);
+  const importedPointsMarkersRef = useRef<L.Marker[]>([]);
+  const importedPolygonsRef = useRef<L.Polygon[]>([]);
+
+  // Helper function to generate icon HTML based on symbol type
+  const getPointIconHtml = (symbol: 'square' | 'circle' | 'triangle' | 'star' | 'diamond' | 'cross', color: string): string => {
+    const size = 18;
+    const borderWidth = 2.5;
+    const borderColor = '#ffffff';
+    const shadow = '0 2px 6px rgba(0, 0, 0, 0.35)';
+
+    switch (symbol) {
+      case 'square':
+        return `<span class="imported-point-marker__square" style="background-color: ${color}; border: ${borderWidth}px solid ${borderColor}; box-shadow: ${shadow}; transform: rotate(45deg);"></span>`;
+      case 'circle':
+        return `<span class="imported-point-marker__circle" style="background-color: ${color}; border: ${borderWidth}px solid ${borderColor}; box-shadow: ${shadow}; border-radius: 50%;"></span>`;
+      case 'triangle':
+        // Triangle using SVG for better control
+        return `<svg class="imported-point-marker__triangle" width="${size}" height="${size}" viewBox="0 0 24 24" style="filter: drop-shadow(${shadow});">
+          <path fill="${color}" stroke="${borderColor}" stroke-width="1.5" d="M12 2 L22 20 L2 20 Z"/>
+        </svg>`;
+      case 'star':
+        // Star using SVG
+        return `<svg class="imported-point-marker__star" width="${size}" height="${size}" viewBox="0 0 24 24" style="filter: drop-shadow(${shadow});">
+          <path fill="${color}" stroke="${borderColor}" stroke-width="1.5" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+        </svg>`;
+      case 'diamond':
+        return `<span class="imported-point-marker__diamond" style="background-color: ${color}; border: ${borderWidth}px solid ${borderColor}; box-shadow: ${shadow}; transform: rotate(45deg);"></span>`;
+      case 'cross':
+        // Cross using SVG with rounded ends
+        return `<svg class="imported-point-marker__cross" width="${size}" height="${size}" viewBox="0 0 24 24" style="filter: drop-shadow(${shadow});">
+          <line x1="12" y1="2" x2="12" y2="22" stroke="${color}" stroke-width="4" stroke-linecap="round"/>
+          <line x1="2" y1="12" x2="22" y2="12" stroke="${color}" stroke-width="4" stroke-linecap="round"/>
+          <line x1="12" y1="2" x2="12" y2="22" stroke="${borderColor}" stroke-width="2" stroke-linecap="round"/>
+          <line x1="2" y1="12" x2="22" y2="12" stroke="${borderColor}" stroke-width="2" stroke-linecap="round"/>
+        </svg>`;
+      default:
+        return `<span class="imported-point-marker__square" style="background-color: ${color}; border: ${borderWidth}px solid ${borderColor}; box-shadow: ${shadow}; transform: rotate(45deg);"></span>`;
+    }
+  };
   const flightPathLineRef = useRef<L.Polyline | null>(null);
   const flightPathClickableLineRef = useRef<L.Polyline | null>(null);
   const flightPathBufferRef = useRef<L.Polyline | null>(null);
@@ -1080,6 +1131,79 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
     }
   }, [parallelWindowPosition]);
+
+  // Zoom to bounds when zoomToBounds prop changes
+  useEffect(() => {
+    if (!zoomToBounds || !map.current) return;
+    
+    const bounds = L.latLngBounds(
+      [zoomToBounds.minLat, zoomToBounds.minLon],
+      [zoomToBounds.maxLat, zoomToBounds.maxLon]
+    );
+    
+    map.current.fitBounds(bounds, { padding: [50, 50] });
+  }, [zoomToBounds]);
+
+  // Render AOI polygon from currentAoi prop
+  useEffect(() => {
+    if (!map.current) return;
+
+    // Clear existing AOI polygon
+    if (aoiPolygonRef.current) {
+      map.current.removeLayer(aoiPolygonRef.current);
+      aoiPolygonRef.current = null;
+    }
+
+    // Render polygon from currentAoi prop
+    if (currentAoi && currentAoi.type === 'polygon' && currentAoi.polygon && currentAoi.polygon.length >= 3) {
+      const latlngs = currentAoi.polygon.map(([lon, lat]) => [lat, lon] as [number, number]);
+      aoiPolygonRef.current = L.polygon(latlngs, {
+        color: '#3b82f6',
+        weight: 2,
+        fillColor: '#3b82f6',
+        fillOpacity: 0.2
+      }).addTo(map.current);
+    } else if (currentAoi && currentAoi.type === 'bbox' && currentAoi.bbox) {
+      // Render bbox as rectangle
+      const bounds = L.latLngBounds(
+        [currentAoi.bbox.minLat, currentAoi.bbox.minLon],
+        [currentAoi.bbox.maxLat, currentAoi.bbox.maxLon]
+      );
+      aoiPolygonRef.current = L.rectangle(bounds, {
+        color: '#3b82f6',
+        weight: 2,
+        fillColor: '#3b82f6',
+        fillOpacity: 0.2
+      }).addTo(map.current);
+    }
+  }, [currentAoi]);
+
+  // Render polygons from all KML imports
+  useEffect(() => {
+    if (!map.current) return;
+
+    // Clear existing imported polygons
+    importedPolygonsRef.current.forEach(polygon => {
+      map.current?.removeLayer(polygon);
+    });
+    importedPolygonsRef.current = [];
+
+    // Render polygons from all KML imports
+    kmlImports.filter(kml => kml.visible).forEach((kmlImport) => {
+      kmlImport.polygons.forEach((polygon) => {
+        if (polygon.coordinates.length >= 3) {
+          const latlngs = polygon.coordinates.map(([lon, lat]) => [lat, lon] as [number, number]);
+          const leafletPolygon = L.polygon(latlngs, {
+            color: kmlImport.color,
+            weight: 2,
+            fillColor: kmlImport.color,
+            fillOpacity: 0.2
+          }).addTo(map.current!);
+          importedPolygonsRef.current.push(leafletPolygon);
+        }
+      });
+    });
+  }, [kmlImports]);
 
   // Keep batch distance default in sync with selection (unless user overrides)
   useEffect(() => {
@@ -3641,6 +3765,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     climbMarkersRef.current.forEach(marker => marker.remove());
     climbMarkersRef.current = [];
+    importedPointsMarkersRef.current.forEach(marker => marker.remove());
+    importedPointsMarkersRef.current = [];
 
     // Remove existing flight path lines
     if (flightPathLineRef.current) {
@@ -3662,6 +3788,46 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
     // NOTE: Do NOT remove halos here - they are managed by the dedicated halo rendering useEffect
     // Halos will be updated automatically when flightPath changes via the halo rendering effect
+
+    // Render imported points from all KML imports even if flightPath is empty
+    kmlImports.filter(kml => kml.visible).forEach((kmlImport) => {
+      kmlImport.points.forEach((point) => {
+        // Create marker icon with custom symbol and color
+        const iconHtml = getPointIconHtml(kmlImport.symbol, kmlImport.color);
+        const pointIcon = L.divIcon({
+          className: 'imported-point-marker',
+          html: iconHtml,
+          iconSize: [18, 18],
+          iconAnchor: [9, 9]
+        });
+
+        const pointMarker = L.marker([point.lat, point.lng], {
+          icon: pointIcon,
+          interactive: false,
+          zIndexOffset: 620
+        }).addTo(map.current!);
+
+        importedPointsMarkersRef.current.push(pointMarker);
+
+        // Add label
+        if (point.label) {
+          const labelIcon = L.divIcon({
+            className: 'imported-point-label',
+            html: `<span class="imported-point-label__text">${point.label}</span>`,
+            iconSize: [1, 1],
+            iconAnchor: [0, -4]
+          });
+
+          const labelMarker = L.marker([point.lat, point.lng], {
+            icon: labelIcon,
+            interactive: false,
+            zIndexOffset: 610
+          }).addTo(map.current!);
+
+          importedPointsMarkersRef.current.push(labelMarker);
+        }
+      });
+    });
 
     if (flightPath.length === 0) return;
 
@@ -4671,7 +4837,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       });
       suggestedLinesRef.current = [];
     };
-  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight, activeRouteColor, showNextLineSuggestions, computeAvgAGLForSegment]);
+  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight, activeRouteColor, showNextLineSuggestions, computeAvgAGLForSegment, kmlImports, showClimbLabels, climbMarkers]);
 
   // Render passive polylines for non-active routes
   useEffect(() => {

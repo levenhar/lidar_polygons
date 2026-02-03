@@ -346,7 +346,7 @@ export function calculateNextLineSpacing(
   }
 
   // Calculate half-width based on AGL * tan(fov/2)
-  const swathWidth = avgAGL * Math.tan(fovRadians / 2);
+  const swathWidth = avgAGL * Math.tan(fovRadians / 2) * 2;
   const spacing = swathWidth * spacingFactor;
 
   if (!Number.isFinite(spacing) || spacing <= 0) {

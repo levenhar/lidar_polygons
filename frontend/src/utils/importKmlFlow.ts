@@ -4,7 +4,6 @@
  */
 
 import { parseKml, ImportedPoint, ImportedPolygon, calculateBounds } from './kmlImport';
-import { Coordinate } from '../App';
 import { PointSymbol } from '../components/KmlManagerModal';
 
 export interface ImportKmlOptions {

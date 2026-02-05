@@ -355,3 +355,31 @@ export function calculateNextLineSpacing(
 
   return spacing;
 }
+
+/**
+ * Calculate the average spacing distance for parallel line suggestions based on all new line suggestions present on the map.
+ * This averages the spacing values calculated for each segment to provide a consistent default spacing.
+ * 
+ * @param spacingValues Array of spacing values in meters (from calculateNextLineSpacing for each segment)
+ * @returns Average spacing distance in meters, or null if no valid spacing values
+ */
+export function calculateAverageNextLineSpacing(
+  spacingValues: (number | null)[]
+): number | null {
+  const validSpacings = spacingValues.filter(
+    (spacing): spacing is number => spacing !== null && spacing > 0 && Number.isFinite(spacing)
+  );
+
+  if (validSpacings.length === 0) {
+    return null;
+  }
+
+  const sum = validSpacings.reduce((acc, spacing) => acc + spacing, 0);
+  const average = sum / validSpacings.length;
+
+  if (!Number.isFinite(average) || average <= 0) {
+    return null;
+  }
+
+  return average;
+}

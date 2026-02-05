@@ -10,7 +10,7 @@ import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import CoordinateTooltip from './CoordinateTooltip';
 import SuccessNotification from './SuccessNotification';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, calculateAverageNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
 import { ClimbConfig } from '../utils/climb';
@@ -1056,11 +1056,45 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return m;
   }, [segmentIdByIndex]);
 
+  // Calculate average spacing of all new line suggestions present on the map
+  // NOTE: computeAvgAGLForSegment is declared later in this file.
+  // We intentionally don't include it in deps to avoid TDZ issues and because it's a stable callback.
+  const averageNextLineSpacing = useMemo((): number => {
+    if (flightPath.length < 2) return 50;
+
+    const spacingValues: (number | null)[] = [];
+    
+    for (let i = 0; i < flightPath.length - 1; i++) {
+      const start = flightPath[i];
+      const end = flightPath[i + 1];
+      
+      // Compute line-specific avgAGL (using the same logic as in the suggestion rendering)
+      const avgAGL = computeAvgAGLForSegment(start, end, i, i + 1, nominalFlightHeight);
+      
+      // If avgAGL is unavailable, fall back to average height
+      const effectiveAGL = avgAGL !== null ? avgAGL : (() => {
+        const startHeight = start.height ?? nominalFlightHeight;
+        const endHeight = end.height ?? nominalFlightHeight;
+        return (startHeight + endHeight) / 2;
+      })();
+
+      // Calculate spacing for this segment
+      const spacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
+      spacingValues.push(spacing);
+    }
+
+    // Calculate average of all spacing values using the function from geometry.ts
+    const average = calculateAverageNextLineSpacing(spacingValues);
+    return average !== null && average > 0
+      ? Math.round(average * 10) / 10
+      : 50;
+  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight]);
+
   const computeDefaultOffsetForSegmentIndex = useCallback(
     (segmentIndex: number): number => {
       const segmentStart = flightPath[segmentIndex];
       const segmentEnd = flightPath[segmentIndex + 1];
-      if (!segmentStart || !segmentEnd) return 50;
+      if (!segmentStart || !segmentEnd) return averageNextLineSpacing;
 
       const avgAGL = computeAvgAGLForSegment(
         segmentStart,
@@ -1082,11 +1116,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const calculatedSpacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
       return calculatedSpacing !== null && calculatedSpacing > 0
         ? Math.round(calculatedSpacing * 10) / 10
-        : 50;
+        : averageNextLineSpacing;
     },
     // NOTE: computeAvgAGLForSegment is declared later in this file.
     // We intentionally don't include it in deps to avoid TDZ issues and because it's a stable callback.
-    [flightPath, fovDegrees, nominalFlightHeight, overlapPercentage]
+    [flightPath, fovDegrees, nominalFlightHeight, overlapPercentage, averageNextLineSpacing]
   );
 
   const getSuggestedDistanceForLine = useCallback(
@@ -1097,10 +1131,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
         return lastParallelOffsetRef.current;
       }
       const idx = segmentIndexById.get(lineId);
-      if (idx === undefined) return 50;
+      if (idx === undefined) return averageNextLineSpacing;
       return computeDefaultOffsetForSegmentIndex(idx);
     },
-    [computeDefaultOffsetForSegmentIndex, segmentIndexById]
+    [computeDefaultOffsetForSegmentIndex, segmentIndexById, averageNextLineSpacing]
   );
 
   // Load parallel window position from localStorage on mount
@@ -1154,6 +1188,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
       aoiPolygonRef.current = null;
     }
 
+    // Don't display AOI polygon if DTM is clipped (only show DTM itself)
+    if (propClippedId) {
+      return;
+    }
+
     // Render polygon from currentAoi prop
     if (currentAoi && currentAoi.type === 'polygon' && currentAoi.polygon && currentAoi.polygon.length >= 3) {
       const latlngs = currentAoi.polygon.map(([lon, lat]) => [lat, lon] as [number, number]);
@@ -1176,7 +1215,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         fillOpacity: 0.2
       }).addTo(map.current);
     }
-  }, [currentAoi]);
+  }, [currentAoi, propClippedId]);
 
   // Render polygons from all KML imports
   useEffect(() => {

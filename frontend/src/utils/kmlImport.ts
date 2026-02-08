@@ -196,45 +196,63 @@ function parsePointPlacemark(placemark: Element, fallbackIndex: number): Importe
 
 /**
  * Parse a Placemark containing a Polygon
+ * Supports both standard Polygon format and LineString format (for polygon boundaries)
  */
 function parsePolygonPlacemark(placemark: Element): ImportedPolygon | null {
-  // Find Polygon element (namespace-tolerant)
+  let coordsElement: Element | null = null;
+  let coordsString: string | null = null;
+
+  // First, try to find Polygon element (standard KML format)
   let polygonElement = placemark.getElementsByTagName('Polygon')[0];
   if (!polygonElement) {
     polygonElement = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'Polygon')[0];
   }
-  if (!polygonElement) {
-    return null;
+
+  if (polygonElement) {
+    // Find outerBoundaryIs
+    let outerBoundary = polygonElement.getElementsByTagName('outerBoundaryIs')[0];
+    if (!outerBoundary) {
+      outerBoundary = polygonElement.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'outerBoundaryIs')[0];
+    }
+    if (outerBoundary) {
+      // Find LinearRing
+      let linearRing = outerBoundary.getElementsByTagName('LinearRing')[0];
+      if (!linearRing) {
+        linearRing = outerBoundary.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'LinearRing')[0];
+      }
+      if (linearRing) {
+        // Find coordinates
+        coordsElement = linearRing.getElementsByTagName('coordinates')[0];
+        if (!coordsElement) {
+          coordsElement = linearRing.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'coordinates')[0];
+        }
+      }
+    }
+  } else {
+    // Try LineString format (alternative polygon format)
+    let lineStringElement = placemark.getElementsByTagName('LineString')[0];
+    if (!lineStringElement) {
+      lineStringElement = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'LineString')[0];
+    }
+    if (lineStringElement) {
+      // Find coordinates directly in LineString
+      coordsElement = lineStringElement.getElementsByTagName('coordinates')[0];
+      if (!coordsElement) {
+        coordsElement = lineStringElement.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'coordinates')[0];
+      }
+    }
   }
 
-  // Find outerBoundaryIs
-  let outerBoundary = polygonElement.getElementsByTagName('outerBoundaryIs')[0];
-  if (!outerBoundary) {
-    outerBoundary = polygonElement.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'outerBoundaryIs')[0];
-  }
-  if (!outerBoundary) {
-    return null;
-  }
-
-  // Find LinearRing
-  let linearRing = outerBoundary.getElementsByTagName('LinearRing')[0];
-  if (!linearRing) {
-    linearRing = outerBoundary.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'LinearRing')[0];
-  }
-  if (!linearRing) {
-    return null;
-  }
-
-  // Find coordinates
-  let coordsElement = linearRing.getElementsByTagName('coordinates')[0];
-  if (!coordsElement) {
-    coordsElement = linearRing.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'coordinates')[0];
-  }
   if (!coordsElement || !coordsElement.textContent) {
     return null;
   }
 
-  const coords = parseCoordinates(coordsElement.textContent.trim());
+  coordsString = coordsElement.textContent.trim();
+  if (!coordsString) {
+    return null;
+  }
+
+  const coords = parseCoordinates(coordsString);
   if (coords.length < 3) {
     return null; // Need at least 3 points for a polygon
   }
@@ -249,22 +267,41 @@ function parsePolygonPlacemark(placemark: Element): ImportedPolygon | null {
     coordinates.push([first[0], first[1]]);
   }
 
-  // Extract name
+  // Extract name - priority: ExtendedData "name" field > <name> element
   let name: string | undefined;
-  let nameElement = placemark.getElementsByTagName('name')[0];
-  if (!nameElement) {
-    nameElement = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'name')[0];
-  }
-  if (nameElement && nameElement.textContent) {
-    name = nameElement.textContent.trim();
-  }
-
-  // Extract metadata from ExtendedData
-  const metadata: Record<string, string> = {};
+  
+  // Try ExtendedData first (matches the user's format)
   let extendedData = placemark.getElementsByTagName('ExtendedData')[0];
   if (!extendedData) {
     extendedData = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'ExtendedData')[0];
   }
+  if (extendedData) {
+    const dataElements = extendedData.getElementsByTagName('Data');
+    for (let i = 0; i < dataElements.length; i++) {
+      const dataEl = dataElements[i];
+      if (dataEl.getAttribute('name') === 'name') {
+        const valueElement = dataEl.getElementsByTagName('value')[0];
+        if (valueElement && valueElement.textContent) {
+          name = valueElement.textContent.trim();
+          break;
+        }
+      }
+    }
+  }
+
+  // Fallback to <name> element if ExtendedData didn't have it
+  if (!name) {
+    let nameElement = placemark.getElementsByTagName('name')[0];
+    if (!nameElement) {
+      nameElement = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'name')[0];
+    }
+    if (nameElement && nameElement.textContent) {
+      name = nameElement.textContent.trim();
+    }
+  }
+
+  // Extract metadata from ExtendedData
+  const metadata: Record<string, string> = {};
   if (extendedData) {
     const dataElements = extendedData.getElementsByTagName('Data');
     for (let i = 0; i < dataElements.length; i++) {

@@ -18,7 +18,11 @@ export function useElevationProfile() {
     dtmSource: string,
     nominalFlightHeight: number,
     safetyRadius: number = 50,
-    resolutionRadius?: number
+    resolutionRadius?: number,
+    safetyHeight?: number,
+    resolutionHeight?: number,
+    activeClippedId?: string | null,
+    onDefaultEntryHeightCalculated?: (height: number) => void
   ) => {
     if (flightPath.length < 2) {
       setElevationProfile([]);
@@ -199,6 +203,28 @@ export function useElevationProfile() {
           max: p.maxElevation?.toFixed(1),
           elevation: p.elevation.toFixed(1)
         })));
+      }
+      
+      // Calculate default entrance height if nominalFlightHeight is still at default (250)
+      // and we have the required parameters
+      if (Math.abs(nominalFlightHeight - 250) < 0.1 && 
+          safetyHeight !== undefined && 
+          resolutionHeight !== undefined && 
+          profile.length > 0 &&
+          onDefaultEntryHeightCalculated) {
+        const firstPoint = profile[0];
+        const groundElevation = firstPoint.elevation;
+        
+        if (groundElevation !== null && !isNaN(groundElevation)) {
+          // Calculate default: average of safety and resolution height + ground elevation
+          const avgHeight = (safetyHeight + resolutionHeight) / 2;
+          const calculatedHeight = avgHeight + groundElevation;
+          // Round to 1 decimal place
+          const defaultHeight = Math.round(calculatedHeight * 10) / 10;
+          
+          console.log(`Calculated default entrance height: ${defaultHeight} (ground: ${groundElevation}, avg: ${avgHeight})`);
+          onDefaultEntryHeightCalculated(defaultHeight);
+        }
       }
       
       // Only set profile when server confirms it's ready AND data is complete

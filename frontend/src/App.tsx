@@ -462,7 +462,7 @@ function App() {
     if (baseChanged) {
       if (flightPath.length === 0) {
         // Clear profile immediately when flight path is empty
-        calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
+        calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, setNominalFlightHeight);
       } else if (flightPath.length === 1) {
         // Clear profile immediately when only one point remains
         clearProfile();
@@ -470,7 +470,7 @@ function App() {
         // Debounce profile calculation to wait for user to finish adding points
         // This prevents sending too many requests when points are added quickly
         profileCalculationTimeoutRef.current = setTimeout(() => {
-          calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
+          calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, setNominalFlightHeight);
           profileCalculationTimeoutRef.current = null;
         }, 300); // Wait 300ms after the last change
       }

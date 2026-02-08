@@ -83,8 +83,9 @@ export function useElevationProfile() {
       console.log(`Calculating elevation profile with safety radius ${safetyRadiusToUse}m and resolution radius ${resolutionRadiusToUse}m`);
       
       // Check if dtmSource is a clipped DTM URL and extract clippedId
+      // Use activeClippedId if provided, otherwise extract from dtmSource
       const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
-      const clippedId = clippedIdMatch ? clippedIdMatch[1] : undefined;
+      const clippedId = clippedIdMatch ? clippedIdMatch[1] : (activeClippedId || undefined);
       
       const response = await axios.post('/api/elevation-profile', {
         coordinates,

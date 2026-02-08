@@ -714,6 +714,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const parallelWindowRef = useRef<HTMLDivElement | null>(null);
   const lastParallelOffsetRef = useRef<number | null>(null);
   const lastParallelOffsetByLineIdRef = useRef<Map<string, number>>(new Map());
+  const averageNextLineSpacingRef = useRef<number>(50); // Default fallback
+  const prevParallelModeRef = useRef(false);
   const [successNotification, setSuccessNotification] = useState<{ isOpen: boolean; message: string }>({
     isOpen: false,
     message: ''
@@ -1056,45 +1058,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return m;
   }, [segmentIdByIndex]);
 
-  // Calculate average spacing of all new line suggestions present on the map
-  // NOTE: computeAvgAGLForSegment is declared later in this file.
-  // We intentionally don't include it in deps to avoid TDZ issues and because it's a stable callback.
-  const averageNextLineSpacing = useMemo((): number => {
-    if (flightPath.length < 2) return 50;
-
-    const spacingValues: (number | null)[] = [];
-    
-    for (let i = 0; i < flightPath.length - 1; i++) {
-      const start = flightPath[i];
-      const end = flightPath[i + 1];
-      
-      // Compute line-specific avgAGL (using the same logic as in the suggestion rendering)
-      const avgAGL = computeAvgAGLForSegment(start, end, i, i + 1, nominalFlightHeight);
-      
-      // If avgAGL is unavailable, fall back to average height
-      const effectiveAGL = avgAGL !== null ? avgAGL : (() => {
-        const startHeight = start.height ?? nominalFlightHeight;
-        const endHeight = end.height ?? nominalFlightHeight;
-        return (startHeight + endHeight) / 2;
-      })();
-
-      // Calculate spacing for this segment
-      const spacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
-      spacingValues.push(spacing);
-    }
-
-    // Calculate average of all spacing values using the function from geometry.ts
-    const average = calculateAverageNextLineSpacing(spacingValues);
-    return average !== null && average > 0
-      ? Math.round(average * 10) / 10
-      : 50;
-  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight]);
+  // Average spacing is calculated in the useEffect that renders suggestions
+  // and stored in averageNextLineSpacingRef to use the same AGL calculations
 
   const computeDefaultOffsetForSegmentIndex = useCallback(
     (segmentIndex: number): number => {
+      // Check if DTM is available - required for accurate AGL calculation
+      if (!dtmRasterDataRef.current) {
+        throw new Error('DTM is required for parallel line distance calculation. Please load DTM first.');
+      }
+
       const segmentStart = flightPath[segmentIndex];
       const segmentEnd = flightPath[segmentIndex + 1];
-      if (!segmentStart || !segmentEnd) return averageNextLineSpacing;
+      if (!segmentStart || !segmentEnd) return averageNextLineSpacingRef.current;
 
       const avgAGL = computeAvgAGLForSegment(
         segmentStart,
@@ -1104,37 +1080,57 @@ const MapPanel: React.FC<MapPanelProps> = ({
         nominalFlightHeight
       );
 
-      const effectiveAGL =
-        avgAGL !== null
-          ? avgAGL
-          : (() => {
-              const startHeight = segmentStart.height ?? nominalFlightHeight;
-              const endHeight = segmentEnd.height ?? nominalFlightHeight;
-              return (startHeight + endHeight) / 2;
-            })();
+      // If AGL calculation failed (returns null), DTM is required
+      if (avgAGL === null) {
+        throw new Error('DTM is required for parallel line distance calculation. Please load DTM first.');
+      }
+
+      const effectiveAGL = avgAGL;
 
       const calculatedSpacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
       return calculatedSpacing !== null && calculatedSpacing > 0
         ? Math.round(calculatedSpacing * 10) / 10
-        : averageNextLineSpacing;
+        : averageNextLineSpacingRef.current;
     },
     // NOTE: computeAvgAGLForSegment is declared later in this file.
     // We intentionally don't include it in deps to avoid TDZ issues and because it's a stable callback.
-    [flightPath, fovDegrees, nominalFlightHeight, overlapPercentage, averageNextLineSpacing]
+    // However, we MUST include _climbRequests and elevationProfile to ensure the callback is recreated
+    // when these change, so it uses the updated computeAvgAGLForSegment function.
+    [flightPath, fovDegrees, nominalFlightHeight, overlapPercentage, _climbRequests, elevationProfile]
   );
 
   const getSuggestedDistanceForLine = useCallback(
     (lineId: string): number => {
+      // Check if DTM is available
+      if (!dtmRasterDataRef.current) {
+        // Return a default value but this should be caught by validation before use
+        throw new Error('DTM is required for parallel line distance calculation. Please load DTM first.');
+      }
+
+      // First check if there's a per-line cached value (from previous parallel line operations)
       const perLine = lastParallelOffsetByLineIdRef.current.get(lineId);
       if (typeof perLine === 'number' && isFinite(perLine)) return perLine;
-      if (lastParallelOffsetRef.current !== null && isFinite(lastParallelOffsetRef.current)) {
-        return lastParallelOffsetRef.current;
-      }
+      
+      // Get the segment index for this line
       const idx = segmentIndexById.get(lineId);
-      if (idx === undefined) return averageNextLineSpacing;
-      return computeDefaultOffsetForSegmentIndex(idx);
+      if (idx === undefined) {
+        // Fallback if we can't identify the line
+        return lastParallelOffsetRef.current !== null && isFinite(lastParallelOffsetRef.current)
+          ? lastParallelOffsetRef.current
+          : averageNextLineSpacingRef.current;
+      }
+      
+      // For each line, calculate its own relevant distance based on that specific line segment
+      // This ensures each line gets the spacing appropriate for its own AGL and characteristics
+      // We always calculate for the specific line, not using cached values
+      try {
+        return computeDefaultOffsetForSegmentIndex(idx);
+      } catch (error) {
+        // If DTM is not available, throw the error
+        throw error;
+      }
     },
-    [computeDefaultOffsetForSegmentIndex, segmentIndexById, averageNextLineSpacing]
+    [computeDefaultOffsetForSegmentIndex, segmentIndexById]
   );
 
   // Load parallel window position from localStorage on mount
@@ -1254,22 +1250,90 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
     if (isParallelBatchOffsetOverridden) return;
-    // Use absolute values for averaging
-    const offsets = selectedLineIds.map(getSuggestedDistanceForLine).map(Math.abs).filter((n) => isFinite(n));
-    if (offsets.length === 0) {
-      // Fallback to global default (absolute)
-      const defaultOffset = Math.abs(lastParallelOffsetRef.current ?? 50);
-      setParallelBatchOffset(defaultOffset.toFixed(1));
+    
+    // Check if DTM is available
+    if (!dtmRasterDataRef.current) {
+      setParallelBatchError('טען DTM תחילה.');
+      setParallelBatchOffset('');
       return;
     }
-    const avg = offsets.reduce((sum, n) => sum + n, 0) / offsets.length;
-    setParallelBatchOffset((Math.round(avg * 10) / 10).toFixed(1));
+    
+    // Use absolute values for averaging
+    try {
+      const offsets = selectedLineIds.map(getSuggestedDistanceForLine).map(Math.abs).filter((n) => isFinite(n));
+      if (offsets.length === 0) {
+        // Fallback to global default (absolute)
+        const defaultOffset = Math.abs(lastParallelOffsetRef.current ?? 50);
+        setParallelBatchOffset(defaultOffset.toFixed(1));
+        setParallelBatchError(null);
+        return;
+      }
+      const avg = offsets.reduce((sum, n) => sum + n, 0) / offsets.length;
+      setParallelBatchOffset((Math.round(avg * 10) / 10).toFixed(1));
+      setParallelBatchError(null);
+    } catch (error) {
+      setParallelBatchError('DTM נדרש לחישוב מרחק קוים מקבילים. אנא טען DTM תחילה.');
+      setParallelBatchOffset('');
+    }
   }, [
     getSuggestedDistanceForLine,
     isParallelBatchOffsetOverridden,
     isParallelLineMode,
-    selectedLineIds
+    selectedLineIds,
+    nominalFlightHeight,
+    _climbRequests
   ]);
+
+  // Clear cached parallel offset values when entrance height changes
+  // This ensures fresh calculations with the new height
+  useEffect(() => {
+    lastParallelOffsetRef.current = null;
+    lastParallelOffsetByLineIdRef.current.clear();
+    // Trigger recalculation if in parallel mode
+    if (isParallelLineMode && selectedLineIds.length > 0) {
+      setIsParallelBatchOffsetOverridden(false);
+    }
+  }, [nominalFlightHeight, isParallelLineMode, selectedLineIds]);
+
+  // Clear cached parallel offset values when parallel mode is reactivated
+  // This ensures fresh calculations when re-entering parallel mode
+  useEffect(() => {
+    const wasInParallelMode = prevParallelModeRef.current;
+    prevParallelModeRef.current = isParallelLineMode;
+    
+    // If we just entered parallel mode (was false, now true)
+    if (!wasInParallelMode && isParallelLineMode) {
+      lastParallelOffsetRef.current = null;
+      lastParallelOffsetByLineIdRef.current.clear();
+      setIsParallelBatchOffsetOverridden(false);
+    }
+  }, [isParallelLineMode]);
+
+  // Clear cached parallel offset values when climb points change
+  // This ensures fresh calculations with updated climb constraints
+  useEffect(() => {
+    if (isParallelLineMode) {
+      lastParallelOffsetRef.current = null;
+      lastParallelOffsetByLineIdRef.current.clear();
+      // Trigger recalculation if lines are selected
+      if (selectedLineIds.length > 0) {
+        setIsParallelBatchOffsetOverridden(false);
+      }
+    }
+  }, [_climbRequests, isParallelLineMode, selectedLineIds]);
+
+  // Clear cached parallel offset values when flight path is edited
+  // This ensures fresh calculations with updated line geometry
+  useEffect(() => {
+    if (isParallelLineMode) {
+      lastParallelOffsetRef.current = null;
+      lastParallelOffsetByLineIdRef.current.clear();
+      // Trigger recalculation if lines are selected
+      if (selectedLineIds.length > 0) {
+        setIsParallelBatchOffsetOverridden(false);
+      }
+    }
+  }, [flightPath, isParallelLineMode, selectedLineIds]);
 
   // Reset selection state when leaving parallel tool
   useEffect(() => {
@@ -4824,9 +4888,55 @@ const MapPanel: React.FC<MapPanelProps> = ({
     suggestedLinesRef.current = [];
 
     // Don't render if toggle is off
-    if (!showNextLineSuggestions) return;
+    if (!showNextLineSuggestions) {
+      // Still calculate spacing even when suggestions are hidden, but only if DTM is available
+      if (flightPath.length >= 2 && dtmRasterDataRef.current) {
+        const spacingValues: number[] = [];
+        for (let i = 0; i < flightPath.length - 1; i++) {
+          const start = flightPath[i];
+          const end = flightPath[i + 1];
+          const avgAGL = computeAvgAGLForSegment(start, end, i, i + 1, nominalFlightHeight);
+          // DTM is required - if AGL is null, skip this segment
+          if (avgAGL === null) {
+            continue;
+          }
+          const effectiveAGL = avgAGL;
+          const spacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
+          // Only collect valid spacing values
+          if (spacing !== null && spacing > 0 && Number.isFinite(spacing)) {
+            spacingValues.push(spacing);
+          }
+        }
+        // For single line use exact value, for multiple lines use average
+        if (spacingValues.length === 0) {
+          averageNextLineSpacingRef.current = 50;
+        } else if (spacingValues.length === 1) {
+          averageNextLineSpacingRef.current = Math.round(spacingValues[0] * 10) / 10;
+        } else {
+          const average = calculateAverageNextLineSpacing(spacingValues);
+          averageNextLineSpacingRef.current = average !== null && average > 0
+            ? Math.round(average * 10) / 10
+            : 50;
+        }
+      } else if (flightPath.length >= 2 && !dtmRasterDataRef.current) {
+        // DTM not available - set to default
+        averageNextLineSpacingRef.current = 50;
+      }
+      return;
+    }
 
-    if (flightPath.length < 2) return;
+    if (flightPath.length < 2) {
+      averageNextLineSpacingRef.current = 50;
+      return;
+    }
+
+    // Check if DTM is available - required for accurate calculations
+    if (!dtmRasterDataRef.current) {
+      averageNextLineSpacingRef.current = 50;
+      return;
+    }
+
+    const spacingValues: number[] = [];
 
     for (let i = 0; i < flightPath.length - 1; i++) {
       const start = flightPath[i];
@@ -4835,21 +4945,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Compute line-specific avgAGL
       const avgAGL = computeAvgAGLForSegment(start, end, i, i + 1, nominalFlightHeight);
       
-      // If avgAGL is unavailable, fall back to average height (old behavior)
-      // This ensures suggestions still show even without DTM
-      const effectiveAGL = avgAGL !== null ? avgAGL : (() => {
-        const startHeight = start.height ?? nominalFlightHeight;
-        const endHeight = end.height ?? nominalFlightHeight;
-        const fallbackAGL = (startHeight + endHeight) / 2;
-        return fallbackAGL;
-      })();
+      // DTM is required - if AGL is null, skip this segment
+      if (avgAGL === null) {
+        continue;
+      }
 
-      // Use shared spacing calculation function with line-specific avgAGL (or fallback)
+      const effectiveAGL = avgAGL;
+
+      // Use shared spacing calculation function with line-specific avgAGL
       const spacing = calculateNextLineSpacing(overlapPercentage, fovDegrees, effectiveAGL);
       
       if (spacing === null || spacing <= 0) {
         continue;
       }
+
+      // Collect only valid spacing values for average calculation
+      spacingValues.push(spacing);
 
       [spacing, -spacing].forEach((offset) => {
         const [parallelStart, parallelEnd] = calculateParallelLine(start, end, offset);
@@ -4870,13 +4981,33 @@ const MapPanel: React.FC<MapPanelProps> = ({
         suggestedLinesRef.current.push(suggestion);
       });
     }
+
+    // Calculate and store spacing: for single line use exact value, for multiple lines use average
+    if (spacingValues.length === 0) {
+      averageNextLineSpacingRef.current = 50;
+    } else if (spacingValues.length === 1) {
+      // For a single line, use the exact distance to the dashed suggested line
+      const singleSpacing = spacingValues[0];
+      if (singleSpacing !== undefined && Number.isFinite(singleSpacing)) {
+        averageNextLineSpacingRef.current = Math.round(singleSpacing * 10) / 10;
+      } else {
+        averageNextLineSpacingRef.current = 50;
+      }
+    } else {
+      // For multiple lines, use the average of all valid spacing values
+      const average = calculateAverageNextLineSpacing(spacingValues);
+      averageNextLineSpacingRef.current = average !== null && average > 0
+        ? Math.round(average * 10) / 10
+        : 50;
+    }
+
     return () => {
       suggestedLinesRef.current.forEach((line) => {
         map.current?.removeLayer(line);
       });
       suggestedLinesRef.current = [];
     };
-  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight, activeRouteColor, showNextLineSuggestions, computeAvgAGLForSegment, kmlImports, showClimbLabels, climbMarkers]);
+  }, [flightPath, overlapPercentage, fovDegrees, nominalFlightHeight, activeRouteColor, showNextLineSuggestions, computeAvgAGLForSegment, elevationProfile, _climbRequests, kmlImports, showClimbLabels, climbMarkers]);
 
   // Render passive polylines for non-active routes
   useEffect(() => {

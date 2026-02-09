@@ -46,27 +46,30 @@ export function parseKml(xmlString: string): KmlImportResult {
       return result;
     }
 
-    // Find all Placemarks (namespace-tolerant)
+    // Find all Placemarks (namespace-tolerant and case-insensitive)
     // Use getElementsByTagName which works with namespaces, or querySelector for default namespace
     const placemarks = doc.getElementsByTagName('Placemark');
     // Also check for namespaced versions
     const placemarksNS = doc.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'Placemark');
+    // Check for lowercase version
+    const placemarksLower = doc.getElementsByTagName('placemark');
+    const placemarksNSLower = doc.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'placemark');
     
-    // Combine both collections (convert to array and deduplicate)
+    // Combine all collections (convert to array and deduplicate)
     const allPlacemarks: Element[] = [];
     const seen = new Set<Element>();
-    for (let i = 0; i < placemarks.length; i++) {
-      if (!seen.has(placemarks[i])) {
-        allPlacemarks.push(placemarks[i]);
-        seen.add(placemarks[i]);
+    const addPlacemarks = (collection: HTMLCollectionOf<Element>) => {
+      for (let i = 0; i < collection.length; i++) {
+        if (!seen.has(collection[i])) {
+          allPlacemarks.push(collection[i]);
+          seen.add(collection[i]);
+        }
       }
-    }
-    for (let i = 0; i < placemarksNS.length; i++) {
-      if (!seen.has(placemarksNS[i])) {
-        allPlacemarks.push(placemarksNS[i]);
-        seen.add(placemarksNS[i]);
-      }
-    }
+    };
+    addPlacemarks(placemarks);
+    addPlacemarks(placemarksNS);
+    addPlacemarks(placemarksLower);
+    addPlacemarks(placemarksNSLower);
 
     allPlacemarks.forEach((placemark, index) => {
       try {
@@ -103,20 +106,16 @@ export function parseKml(xmlString: string): KmlImportResult {
  * Parse a Placemark containing a Point
  */
 function parsePointPlacemark(placemark: Element, fallbackIndex: number): ImportedPoint | null {
-  // Find Point element (namespace-tolerant)
-  let pointElement = placemark.getElementsByTagName('Point')[0];
-  if (!pointElement) {
-    pointElement = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'Point')[0];
-  }
+  const kmlNS = 'http://www.opengis.net/kml/2.2';
+  
+  // Find Point element (case-insensitive)
+  const pointElement = findElementCaseInsensitive(placemark, 'Point', kmlNS);
   if (!pointElement) {
     return null;
   }
 
-  // Parse coordinates
-  let coordsElement = pointElement.getElementsByTagName('coordinates')[0];
-  if (!coordsElement) {
-    coordsElement = pointElement.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'coordinates')[0];
-  }
+  // Parse coordinates (case-insensitive)
+  const coordsElement = findElementCaseInsensitive(pointElement, 'coordinates', kmlNS);
   if (!coordsElement || !coordsElement.textContent) {
     return null;
   }
@@ -131,17 +130,21 @@ function parsePointPlacemark(placemark: Element, fallbackIndex: number): Importe
   // Extract label - priority: ExtendedData "name" field > <name> element > fallback
   let label = `Point #${fallbackIndex + 1}`;
   
-  // Try ExtendedData first (our export format)
-  let extendedData = placemark.getElementsByTagName('ExtendedData')[0];
-  if (!extendedData) {
-    extendedData = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'ExtendedData')[0];
-  }
+  // Try ExtendedData first (our export format, case-insensitive)
+  let extendedData = findElementCaseInsensitive(placemark, 'ExtendedData', kmlNS);
   if (extendedData) {
     const dataElements = extendedData.getElementsByTagName('Data');
+    // Also check lowercase
+    if (dataElements.length === 0) {
+      const dataElementsLower = extendedData.getElementsByTagName('data');
+      for (let i = 0; i < dataElementsLower.length; i++) {
+        dataElements[i] = dataElementsLower[i];
+      }
+    }
     for (let i = 0; i < dataElements.length; i++) {
       const dataEl = dataElements[i];
       if (dataEl.getAttribute('name') === 'name') {
-        const valueElement = dataEl.getElementsByTagName('value')[0];
+        const valueElement = findElementCaseInsensitive(dataEl, 'value', kmlNS);
         if (valueElement && valueElement.textContent) {
           label = valueElement.textContent.trim();
           break;
@@ -150,12 +153,9 @@ function parsePointPlacemark(placemark: Element, fallbackIndex: number): Importe
     }
   }
 
-  // Fallback to <name> element if ExtendedData didn't have it
+  // Fallback to <name> element if ExtendedData didn't have it (case-insensitive)
   if (label === `Point #${fallbackIndex + 1}`) {
-    let nameElement = placemark.getElementsByTagName('name')[0];
-    if (!nameElement) {
-      nameElement = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'name')[0];
-    }
+    const nameElement = findElementCaseInsensitive(placemark, 'name', kmlNS);
     if (nameElement && nameElement.textContent) {
       label = nameElement.textContent.trim() || label;
     }
@@ -165,10 +165,18 @@ function parsePointPlacemark(placemark: Element, fallbackIndex: number): Importe
   const metadata: Record<string, string> = {};
   if (extendedData) {
     const dataElements = extendedData.getElementsByTagName('Data');
+    // Also check lowercase
+    const dataElementsLower = extendedData.getElementsByTagName('data');
+    const allDataElements: Element[] = [];
     for (let i = 0; i < dataElements.length; i++) {
-      const dataEl = dataElements[i];
+      allDataElements.push(dataElements[i]);
+    }
+    for (let i = 0; i < dataElementsLower.length; i++) {
+      allDataElements.push(dataElementsLower[i]);
+    }
+    for (const dataEl of allDataElements) {
       const name = dataEl.getAttribute('name');
-      const valueElement = dataEl.getElementsByTagName('value')[0];
+      const valueElement = findElementCaseInsensitive(dataEl, 'value', kmlNS);
       if (name && valueElement && valueElement.textContent) {
         metadata[name] = valueElement.textContent.trim();
       }
@@ -195,65 +203,95 @@ function parsePointPlacemark(placemark: Element, fallbackIndex: number): Importe
 }
 
 /**
+ * Helper function to find element by tag name (case-insensitive)
+ */
+function findElementCaseInsensitive(parent: Element, tagName: string, namespace?: string): Element | null {
+  // Try exact match first (most common case)
+  let element = parent.getElementsByTagName(tagName)[0];
+  if (element) return element;
+  
+  if (namespace) {
+    element = parent.getElementsByTagNameNS(namespace, tagName)[0];
+    if (element) return element;
+  }
+  
+  // Try lowercase
+  const lowerTag = tagName.toLowerCase();
+  if (lowerTag !== tagName) {
+    element = parent.getElementsByTagName(lowerTag)[0];
+    if (element) return element;
+    
+    if (namespace) {
+      element = parent.getElementsByTagNameNS(namespace, lowerTag)[0];
+      if (element) return element;
+    }
+  }
+  
+  // Try uppercase
+  const upperTag = tagName.toUpperCase();
+  if (upperTag !== tagName && upperTag !== lowerTag) {
+    element = parent.getElementsByTagName(upperTag)[0];
+    if (element) return element;
+    
+    if (namespace) {
+      element = parent.getElementsByTagNameNS(namespace, upperTag)[0];
+      if (element) return element;
+    }
+  }
+  
+  return null;
+}
+
+/**
  * Parse a Placemark containing a Polygon
  * Supports both standard Polygon format and LineString format (for polygon boundaries)
+ * Handles case-insensitive tag names and both outerBoundaryIs and innerBoundaryIs
  */
 function parsePolygonPlacemark(placemark: Element): ImportedPolygon | null {
   let coordsElement: Element | null = null;
   let coordsString: string | null = null;
+  const kmlNS = 'http://www.opengis.net/kml/2.2';
 
-  // First, try to find Polygon element (standard KML format)
-  let polygonElement = placemark.getElementsByTagName('Polygon')[0];
-  if (!polygonElement) {
-    polygonElement = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'Polygon')[0];
-  }
+  // First, try to find Polygon element (case-insensitive, standard KML format)
+  let polygonElement = findElementCaseInsensitive(placemark, 'Polygon', kmlNS);
 
   if (polygonElement) {
-    // Find outerBoundaryIs
-    let outerBoundary = polygonElement.getElementsByTagName('outerBoundaryIs')[0];
-    if (!outerBoundary) {
-      outerBoundary = polygonElement.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'outerBoundaryIs')[0];
+    // Try outerBoundaryIs first (standard for main boundary)
+    let boundary = findElementCaseInsensitive(polygonElement, 'outerBoundaryIs', kmlNS);
+    
+    // If no outerBoundaryIs, try innerBoundaryIs (sometimes used incorrectly for main boundary)
+    if (!boundary) {
+      boundary = findElementCaseInsensitive(polygonElement, 'innerBoundaryIs', kmlNS);
     }
-    if (outerBoundary) {
-      // Find LinearRing
-      let linearRing = outerBoundary.getElementsByTagName('LinearRing')[0];
-      if (!linearRing) {
-        linearRing = outerBoundary.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'LinearRing')[0];
-      }
+    
+    if (boundary) {
+      // Find LinearRing (case-insensitive)
+      let linearRing = findElementCaseInsensitive(boundary, 'LinearRing', kmlNS);
+      
       if (linearRing) {
-        // Find coordinates
-        coordsElement = linearRing.getElementsByTagName('coordinates')[0];
-        if (!coordsElement) {
-          coordsElement = linearRing.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'coordinates')[0];
-        }
+        // Find coordinates (case-insensitive)
+        coordsElement = findElementCaseInsensitive(linearRing, 'coordinates', kmlNS);
       }
     }
   } else {
-    // Try LineString format (alternative polygon format)
-    let lineStringElement = placemark.getElementsByTagName('LineString')[0];
-    if (!lineStringElement) {
-      lineStringElement = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'LineString')[0];
-    }
+    // Try LineString format (alternative polygon format, case-insensitive)
+    let lineStringElement = findElementCaseInsensitive(placemark, 'LineString', kmlNS);
+    
     if (lineStringElement) {
-      // Find coordinates directly in LineString
-      coordsElement = lineStringElement.getElementsByTagName('coordinates')[0];
-      if (!coordsElement) {
-        coordsElement = lineStringElement.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'coordinates')[0];
-      }
+      // Find coordinates directly in LineString (case-insensitive)
+      coordsElement = findElementCaseInsensitive(lineStringElement, 'coordinates', kmlNS);
     }
   }
 
-  if (!coordsElement) {
+  if (!coordsElement || !coordsElement.textContent) {
     return null;
   }
 
-  // Get text content - textContent handles all child text nodes including newlines
-  coordsString = coordsElement.textContent;
-  if (!coordsString || !coordsString.trim()) {
+  coordsString = coordsElement.textContent.trim();
+  if (!coordsString) {
     return null;
   }
 
-  // Parse coordinates (handles multiline format)
   const coords = parseCoordinates(coordsString);
   if (coords.length < 3) {
     return null; // Need at least 3 points for a polygon
@@ -272,17 +310,22 @@ function parsePolygonPlacemark(placemark: Element): ImportedPolygon | null {
   // Extract name - priority: ExtendedData "name" field > <name> element
   let name: string | undefined;
   
-  // Try ExtendedData first (matches the user's format)
-  let extendedData = placemark.getElementsByTagName('ExtendedData')[0];
-  if (!extendedData) {
-    extendedData = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'ExtendedData')[0];
-  }
+  // Try ExtendedData first (matches the user's format, case-insensitive)
+  let extendedData = findElementCaseInsensitive(placemark, 'ExtendedData', kmlNS);
   if (extendedData) {
     const dataElements = extendedData.getElementsByTagName('Data');
+    // Also check lowercase
+    const dataElementsLower = extendedData.getElementsByTagName('data');
+    const allDataElements: Element[] = [];
     for (let i = 0; i < dataElements.length; i++) {
-      const dataEl = dataElements[i];
+      allDataElements.push(dataElements[i]);
+    }
+    for (let i = 0; i < dataElementsLower.length; i++) {
+      allDataElements.push(dataElementsLower[i]);
+    }
+    for (const dataEl of allDataElements) {
       if (dataEl.getAttribute('name') === 'name') {
-        const valueElement = dataEl.getElementsByTagName('value')[0];
+        const valueElement = findElementCaseInsensitive(dataEl, 'value', kmlNS);
         if (valueElement && valueElement.textContent) {
           name = valueElement.textContent.trim();
           break;
@@ -291,12 +334,9 @@ function parsePolygonPlacemark(placemark: Element): ImportedPolygon | null {
     }
   }
 
-  // Fallback to <name> element if ExtendedData didn't have it
+  // Fallback to <name> element if ExtendedData didn't have it (case-insensitive)
   if (!name) {
-    let nameElement = placemark.getElementsByTagName('name')[0];
-    if (!nameElement) {
-      nameElement = placemark.getElementsByTagNameNS('http://www.opengis.net/kml/2.2', 'name')[0];
-    }
+    const nameElement = findElementCaseInsensitive(placemark, 'name', kmlNS);
     if (nameElement && nameElement.textContent) {
       name = nameElement.textContent.trim();
     }
@@ -306,10 +346,17 @@ function parsePolygonPlacemark(placemark: Element): ImportedPolygon | null {
   const metadata: Record<string, string> = {};
   if (extendedData) {
     const dataElements = extendedData.getElementsByTagName('Data');
+    const dataElementsLower = extendedData.getElementsByTagName('data');
+    const allDataElements: Element[] = [];
     for (let i = 0; i < dataElements.length; i++) {
-      const dataEl = dataElements[i];
+      allDataElements.push(dataElements[i]);
+    }
+    for (let i = 0; i < dataElementsLower.length; i++) {
+      allDataElements.push(dataElementsLower[i]);
+    }
+    for (const dataEl of allDataElements) {
       const dataName = dataEl.getAttribute('name');
-      const valueElement = dataEl.getElementsByTagName('value')[0];
+      const valueElement = findElementCaseInsensitive(dataEl, 'value', kmlNS);
       if (dataName && valueElement && valueElement.textContent) {
         metadata[dataName] = valueElement.textContent.trim();
       }
@@ -327,6 +374,7 @@ function parsePolygonPlacemark(placemark: Element): ImportedPolygon | null {
  * Parse KML coordinates string
  * Format: "lon,lat,alt lon,lat,alt ..." or multiline
  * Returns array of [lng, lat] pairs (altitude ignored)
+ * Handles any number of points (not limited to 4)
  */
 export function parseCoordinates(coordsString: string): [number, number][] {
   const result: [number, number][] = [];
@@ -335,12 +383,12 @@ export function parseCoordinates(coordsString: string): [number, number][] {
     return result;
   }
 
-  // Normalize the string: trim and replace multiple whitespace/newlines with single space
-  // This handles various formats: space-separated, newline-separated, or mixed
+  // Normalize the string: trim and replace all types of whitespace with single space
+  // This handles newlines, tabs, multiple spaces, etc.
   const normalized = coordsString.trim().replace(/\s+/g, ' ');
 
-  // Split by whitespace (now normalized to single spaces)
-  const parts = normalized.split(/\s+/).filter(part => part.trim().length > 0);
+  // Split by space to get individual coordinate strings
+  const parts = normalized.split(' ').filter(part => part.trim().length > 0);
 
   for (const part of parts) {
     const trimmed = part.trim();
@@ -348,15 +396,15 @@ export function parseCoordinates(coordsString: string): [number, number][] {
 
     // Split by comma and filter out empty values
     const values = trimmed.split(',').map(v => v.trim()).filter(v => v.length > 0);
+    
+    // Need at least longitude and latitude (altitude is optional)
     if (values.length < 2) continue;
 
     const lng = parseFloat(values[0]);
     const lat = parseFloat(values[1]);
 
     // Validate that both are valid numbers
-    if (isNaN(lng) || isNaN(lat) || !isFinite(lng) || !isFinite(lat)) {
-      continue;
-    }
+    if (isNaN(lng) || isNaN(lat)) continue;
 
     result.push([lng, lat]);
   }

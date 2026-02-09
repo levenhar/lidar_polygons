@@ -243,15 +243,17 @@ function parsePolygonPlacemark(placemark: Element): ImportedPolygon | null {
     }
   }
 
-  if (!coordsElement || !coordsElement.textContent) {
+  if (!coordsElement) {
     return null;
   }
 
-  coordsString = coordsElement.textContent.trim();
-  if (!coordsString) {
+  // Get text content - textContent handles all child text nodes including newlines
+  coordsString = coordsElement.textContent;
+  if (!coordsString || !coordsString.trim()) {
     return null;
   }
 
+  // Parse coordinates (handles multiline format)
   const coords = parseCoordinates(coordsString);
   if (coords.length < 3) {
     return null; // Need at least 3 points for a polygon
@@ -329,20 +331,32 @@ function parsePolygonPlacemark(placemark: Element): ImportedPolygon | null {
 export function parseCoordinates(coordsString: string): [number, number][] {
   const result: [number, number][] = [];
 
-  // Split by whitespace (handles both space-separated and newline-separated)
-  const parts = coordsString.trim().split(/\s+/);
+  if (!coordsString || typeof coordsString !== 'string') {
+    return result;
+  }
+
+  // Normalize the string: trim and replace multiple whitespace/newlines with single space
+  // This handles various formats: space-separated, newline-separated, or mixed
+  const normalized = coordsString.trim().replace(/\s+/g, ' ');
+
+  // Split by whitespace (now normalized to single spaces)
+  const parts = normalized.split(/\s+/).filter(part => part.trim().length > 0);
 
   for (const part of parts) {
-    if (!part.trim()) continue;
+    const trimmed = part.trim();
+    if (!trimmed) continue;
 
-    // Split by comma
-    const values = part.split(',').map(v => v.trim()).filter(v => v);
+    // Split by comma and filter out empty values
+    const values = trimmed.split(',').map(v => v.trim()).filter(v => v.length > 0);
     if (values.length < 2) continue;
 
     const lng = parseFloat(values[0]);
     const lat = parseFloat(values[1]);
 
-    if (isNaN(lng) || isNaN(lat)) continue;
+    // Validate that both are valid numbers
+    if (isNaN(lng) || isNaN(lat) || !isFinite(lng) || !isFinite(lat)) {
+      continue;
+    }
 
     result.push([lng, lat]);
   }

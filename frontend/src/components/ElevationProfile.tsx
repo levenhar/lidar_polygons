@@ -1983,9 +1983,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return;
     }
     const absClimbAmount = Math.abs(parsed);
-    if (absClimbAmount < climbConfig.minClimb || absClimbAmount > climbConfig.maxClimb) {
+    // minClimb applies to both increases and decreases
+    if (absClimbAmount < climbConfig.minClimb) {
       setClimbAmountError(
-        `ערך העלייה חייב להיות בין ${climbConfig.minClimb} ל-${climbConfig.maxClimb} מטרים (ערך נוכחי: ${absClimbAmount.toFixed(1)} מ').`
+        `ערך העלייה חייב להיות לפחות ${climbConfig.minClimb} מטרים (ערך נוכחי: ${absClimbAmount.toFixed(1)} מ').`
+      );
+      return;
+    }
+    // maxClimb only applies to increases (positive values), not decreases
+    if (parsed > 0 && parsed > climbConfig.maxClimb) {
+      setClimbAmountError(
+        `ערך העלייה חייב להיות לכל היותר ${climbConfig.maxClimb} מטרים (ערך נוכחי: ${parsed.toFixed(1)} מ').`
       );
       return;
     }

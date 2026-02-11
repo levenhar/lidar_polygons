@@ -264,7 +264,8 @@ type IconName =
   | 'pin'
   | 'sliders'
   | 'eye'
-  | 'eye-off';
+  | 'eye-off'
+  | 'circle';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
 
@@ -527,6 +528,12 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
         <svg {...common}>
           <path {...stroke} d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
           <line {...stroke} x1="1" y1="1" x2="23" y2="23" />
+        </svg>
+      );
+    case 'circle':
+      return (
+        <svg {...common}>
+          <circle {...stroke} cx="12" cy="12" r="10" />
         </svg>
       );
     default:
@@ -835,6 +842,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [dtmColorPalette, setDtmColorPalette] = useState<'gray' | 'jet'>(initialDisplaySettings?.palette ?? 'gray');
   const [dtmColorInverted, setDtmColorInverted] = useState<boolean>(initialDisplaySettings?.inverted ?? false);
   const [displaySettingsOpen, setDisplaySettingsOpen] = useState<boolean>(false);
+  const [showVertexRadius, setShowVertexRadius] = useState<boolean>(true);
+  const [showAzimuthDistanceLabels, setShowAzimuthDistanceLabels] = useState<boolean>(true);
   
   // Apply initial display settings when they change (e.g., from project load)
   useEffect(() => {
@@ -4088,38 +4097,40 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }).addTo(map.current);
 
     // Add segment length labels at midpoints
-    for (let i = 0; i < flightPath.length - 1; i++) {
-      const start = flightPath[i];
-      const end = flightPath[i + 1];
-      const distanceMeters = calculateDistance(start, end);
-      const midpointLat = (start.lat + end.lat) / 2;
-      const midpointLng = (start.lng + end.lng) / 2;
+    if (showAzimuthDistanceLabels) {
+      for (let i = 0; i < flightPath.length - 1; i++) {
+        const start = flightPath[i];
+        const end = flightPath[i + 1];
+        const distanceMeters = calculateDistance(start, end);
+        const midpointLat = (start.lat + end.lat) / 2;
+        const midpointLng = (start.lng + end.lng) / 2;
 
-      const bearingRad = calculateBearing(start, end);
-      const bearingDeg = (bearingRad * 180) / Math.PI;
-      const normalizedBearing = ((bearingDeg % 360) + 360) % 360;
-      const azimuthDeg = Math.round(normalizedBearing);
-      let displayAngle = normalizedBearing <= 270 ? bearingDeg - 90 : bearingDeg + 90;
-      // Add extra 180 degree rotation for azimuth between 180-270
-      if (normalizedBearing >= 180 && normalizedBearing <= 270) {
-        displayAngle += 180;
+        const bearingRad = calculateBearing(start, end);
+        const bearingDeg = (bearingRad * 180) / Math.PI;
+        const normalizedBearing = ((bearingDeg % 360) + 360) % 360;
+        const azimuthDeg = Math.round(normalizedBearing);
+        let displayAngle = normalizedBearing <= 270 ? bearingDeg - 90 : bearingDeg + 90;
+        // Add extra 180 degree rotation for azimuth between 180-270
+        if (normalizedBearing >= 180 && normalizedBearing <= 270) {
+          displayAngle += 180;
+        }
+
+        // Offset label by constant pixel amount perpendicular to the line
+        // Transform order (applied right-to-left): center, rotate, then offset perpendicular
+        const offsetPixels = 12; // pixels
+        const labelIcon = L.divIcon({
+          className: 'segment-length-label',
+          html: `<span style="transform: translateY(-${offsetPixels}px) rotate(${displayAngle}deg) translate(-50%, -50%); direction: ltr; text-align: left;">${formatSegmentLength(distanceMeters)} | ${azimuthDeg}°</span>`
+        });
+
+        const labelMarker = L.marker([midpointLat, midpointLng], {
+          icon: labelIcon,
+          interactive: false,
+          zIndexOffset: 500
+        }).addTo(map.current!);
+
+        segmentLengthLabelsRef.current.push(labelMarker);
       }
-
-      // Offset label by constant pixel amount perpendicular to the line
-      // Transform order (applied right-to-left): center, rotate, then offset perpendicular
-      const offsetPixels = 12; // pixels
-      const labelIcon = L.divIcon({
-        className: 'segment-length-label',
-        html: `<span style="transform: translateY(-${offsetPixels}px) rotate(${displayAngle}deg) translate(-50%, -50%); direction: ltr; text-align: left;">${formatSegmentLength(distanceMeters)} | ${azimuthDeg}°</span>`
-      });
-
-      const labelMarker = L.marker([midpointLat, midpointLng], {
-        icon: labelIcon,
-        interactive: false,
-        zIndexOffset: 500
-      }).addTo(map.current!);
-
-      segmentLengthLabelsRef.current.push(labelMarker);
     }
 
     // Add climb markers (both start and end) with optional labels
@@ -4678,7 +4689,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       markersRef.current.push(marker);
 
       // Add bright circle around point with radius = vertexProximityMeters
-      if (climbConfig && climbConfig.vertexProximityMeters > 0) {
+      if (showVertexRadius && climbConfig && climbConfig.vertexProximityMeters > 0) {
         const circle = L.circle([point.lat, point.lng], {
           radius: climbConfig.vertexProximityMeters,
           color: '#808080', // Gray
@@ -4711,7 +4722,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
     showClimbLabels,
     selectedPointIndices,
     togglePointSelection,
-    climbConfig
+    climbConfig,
+    showVertexRadius,
+    showAzimuthDistanceLabels
   ]);
 
   // Update marker visual state when selection changes
@@ -7894,6 +7907,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
                           aria-label={showNextLineSuggestions ? 'הסתר הצעות קווים' : 'הצג הצעות קווים'}
                         >
                           <Icon name={showNextLineSuggestions ? 'eye' : 'eye-off'} />
+                        </button>
+                      </Tooltip>
+                      <Tooltip tooltip={showVertexRadius ? 'הסתר רדיוס קודקוד' : 'הצג רדיוס קודקוד'}>
+                        <button
+                          type="button"
+                          onClick={() => setShowVertexRadius(!showVertexRadius)}
+                          className={`display-settings-icon-toggle ${showVertexRadius ? 'active' : ''}`}
+                          aria-pressed={showVertexRadius}
+                          aria-label={showVertexRadius ? 'הסתר רדיוס קודקוד' : 'הצג רדיוס קודקוד'}
+                        >
+                          <Icon name="circle" />
+                        </button>
+                      </Tooltip>
+                      <Tooltip tooltip={showAzimuthDistanceLabels ? 'הסתר תוויות אזימוט ומרחק' : 'הצג תוויות אזימוט ומרחק'}>
+                        <button
+                          type="button"
+                          onClick={() => setShowAzimuthDistanceLabels(!showAzimuthDistanceLabels)}
+                          className={`display-settings-icon-toggle ${showAzimuthDistanceLabels ? 'active' : ''}`}
+                          aria-pressed={showAzimuthDistanceLabels}
+                          aria-label={showAzimuthDistanceLabels ? 'הסתר תוויות אזימוט ומרחק' : 'הצג תוויות אזימוט ומרחק'}
+                        >
+                          <Icon name="compass" />
                         </button>
                       </Tooltip>
                     </div>

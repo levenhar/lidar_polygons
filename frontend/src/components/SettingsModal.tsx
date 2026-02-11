@@ -864,7 +864,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="settings-modal__row">
                 <div className="settings-modal__field settings-modal__field--half">
                   <label htmlFor="min-climb" className="settings-modal__label">
-                    עלייה מינימלית
+                    עליה/ירידה מקסימלית
                     <span className="settings-modal__unit">מטרים</span>
                   </label>
                   <input

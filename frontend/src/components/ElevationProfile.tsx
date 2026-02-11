@@ -2418,21 +2418,28 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         const elevationRange = maxElevation - minElevation;
         const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
 
-        // Find minimum flight height across all points (considering climb points)
+        // For each point, calculate height from maximum and height from minimum
+        // Use point.minElevation and point.maxElevation (per-point values) if available, otherwise use point.elevation
+        // This matches the calculation in CoordinateTooltip
         // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
-        const minFlightHeight = Math.min(
-          ...elevationProfile.map(p => {
-            const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
-            return plannedAlt - p.elevation;
-          })
-        );
+        const heightsFromMax = elevationProfile.map(p => {
+          const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
+          // Use point.maxElevation if available, otherwise use point.elevation (matches tooltip logic)
+          const maxElev = p.maxElevation !== undefined ? p.maxElevation : p.elevation;
+          return plannedAlt - maxElev;
+        });
+        const heightsFromMin = elevationProfile.map(p => {
+          const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
+          // Use point.minElevation if available, otherwise use point.elevation (matches tooltip logic)
+          const minElev = p.minElevation !== undefined ? p.minElevation : p.elevation;
+          return plannedAlt - minElev;
+        });
 
-        // Find point with minimum elevation
-        const minElevationPoint = elevationProfile.reduce((min, p) => 
-          p.elevation < min.elevation ? p : min
-        );
-        const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? nominalFlightHeight;
-        const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
+        // Minimum flight height = minimum of all "height from maximum" values
+        const minFlightHeight = Math.min(...heightsFromMax);
+
+        // Maximum flight height = maximum of all "height from minimum" values
+        const maxHeightFromMinPoint = Math.max(...heightsFromMin);
 
         // Change legend text-anchor to 'start' for PNG export
         const legendTexts = svgRef.current!.querySelectorAll('.legend-text');
@@ -3065,21 +3072,28 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           }
         }
 
-        // Find minimum flight height across all points (considering climb points)
+        // For each point, calculate height from maximum and height from minimum
+        // Use point.minElevation and point.maxElevation (per-point values) if available, otherwise use point.elevation
+        // This matches the calculation in CoordinateTooltip
         // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
-        const minFlightHeight = Math.min(
-          ...elevationProfile.map(p => {
-            const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
-            return plannedAlt - p.elevation;
-          })
-        );
+        const heightsFromMax = elevationProfile.map(p => {
+          const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
+          // Use point.maxElevation if available, otherwise use point.elevation (matches tooltip logic)
+          const maxElev = p.maxElevation !== undefined ? p.maxElevation : p.elevation;
+          return plannedAlt - maxElev;
+        });
+        const heightsFromMin = elevationProfile.map(p => {
+          const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
+          // Use point.minElevation if available, otherwise use point.elevation (matches tooltip logic)
+          const minElev = p.minElevation !== undefined ? p.minElevation : p.elevation;
+          return plannedAlt - minElev;
+        });
 
-        // Find point with minimum elevation
-        const minElevationPoint = elevationProfile.reduce((min, p) => 
-          p.elevation < min.elevation ? p : min
-        );
-        const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? nominalFlightHeight;
-        const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
+        // Minimum flight height = minimum of all "height from maximum" values
+        const minFlightHeight = Math.min(...heightsFromMax);
+
+        // Maximum flight height = maximum of all "height from minimum" values
+        const maxHeightFromMinPoint = Math.max(...heightsFromMin);
 
         return (
           <div className="elevation-stats">

@@ -265,7 +265,8 @@ type IconName =
   | 'sliders'
   | 'eye'
   | 'eye-off'
-  | 'circle';
+  | 'circle'
+  | 'rotate';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
 
@@ -534,6 +535,15 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
       return (
         <svg {...common}>
           <circle {...stroke} cx="12" cy="12" r="10" />
+        </svg>
+      );
+    case 'rotate':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M4 10V4h6" />
+          <path {...stroke} d="M20 14v6h-6" />
+          <path {...stroke} d="M5 10a7 7 0 0 1 11.5-4.95L19 4" />
+          <path {...stroke} d="M19 14a7 7 0 0 1-11.5 4.95L5 20" />
         </svg>
       );
     default:
@@ -909,6 +919,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [selectedPointIndices, setSelectedPointIndices] = useState<Set<number>>(new Set());
   const dragStartPositionsRef = useRef<Map<number, Coordinate>>(new Map());
   const isGroupDraggingRef = useRef<boolean>(false);
+  const isMarkerDragActiveRef = useRef<boolean>(false);
+  // Rotate mode state
+  const [isRotateMode, setIsRotateMode] = useState<boolean>(false);
+  const isRotatingRef = useRef<boolean>(false);
+  const rotateCenterRef = useRef<{ lat: number; lng: number } | null>(null);
+  const rotateCenterUtmRef = useRef<{
+    easting: number;
+    northing: number;
+    zone: number;
+    hemisphere: 'N' | 'S';
+  } | null>(null);
+  const rotateStartAngleRef = useRef<number | null>(null);
+  const rotateInitialPointsRef = useRef<Coordinate[] | null>(null);
   const dtmImageOverlayRef = useRef<L.ImageOverlay | null>(null);
   const dtmBoundaryRef = useRef<L.Rectangle | null>(null);
   const viewshedImageOverlayRef = useRef<L.ImageOverlay | null>(null);
@@ -3268,6 +3291,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const handleClick = (e: L.LeafletMouseEvent) => {
       // Skip if in AOI selection mode
       if (isAoiSelectionMode) return;
+      // Skip normal click handling while in rotate mode (let rotate handler take over)
+      if (isRotateMode) {
+        e.originalEvent?.stopPropagation();
+        return;
+      }
       
       // If editing a point, move it to the new location
       const currentEditingIndex = externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
@@ -3361,6 +3389,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
           return;
         }
 
+        // Don't add a point if clicking on a marker (let marker handle the click for dragging)
+        const originalEvent = e.originalEvent as MouseEvent | undefined;
+        const clickTarget = originalEvent?.target as HTMLElement | null;
+        const isMarkerClick = clickTarget?.closest('.flight-point-marker');
+        if (isMarkerClick) {
+          return;
+        }
+
         const lng = e.latlng.lng;
         const lat = e.latlng.lat;
 
@@ -3388,6 +3424,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         e.originalEvent.preventDefault();
         if (!isDrawing && dtmLoaded) {
           setIsDrawing(true);
+          setIsRotateMode(false);
         }
         lastRightClickTimeRef.current = 0; // Reset to prevent triple-click from triggering again
         return;
@@ -3407,6 +3444,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (isDrawing) {
         e.originalEvent.preventDefault();
         setIsDrawing(false);
+      }
+      
+      // Exit rotate mode on right-click
+      if (isRotateMode) {
+        e.originalEvent.preventDefault();
+        setIsRotateMode(false);
       }
     };
 
@@ -3428,6 +3471,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     isAoiSelectionMode,
     isDrawing,
     isParallelLineMode,
+    isRotateMode,
     onAddPoint,
     onAddPoints,
     onEditPointIndexChange,
@@ -3455,6 +3499,115 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setSelectedPointIndices(new Set(flightPath.map((_, i) => i)));
   }, [flightPath]);
 
+  // Rotate helpers - preserves segment lengths and cumulative distances
+  const rotatePointsAroundCenter = useCallback(
+    (
+      initialPoints: Coordinate[],
+      centerUtm: { easting: number; northing: number; zone: number; hemisphere: 'N' | 'S' },
+      angleRad: number
+    ): Coordinate[] => {
+      if (initialPoints.length < 2) return initialPoints;
+
+      const utmProjString = `+proj=utm +zone=${centerUtm.zone} +${
+        centerUtm.hemisphere === 'N' ? 'north' : 'south'
+      } +datum=WGS84 +units=m +no_defs`;
+
+      // Calculate initial segment lengths and bearings in UTM
+      const segmentLengths: number[] = [];
+      const segmentBearings: number[] = [];
+      
+      for (let i = 0; i < initialPoints.length - 1; i++) {
+        const pt1Utm = latLngToUTM(initialPoints[i].lat, initialPoints[i].lng);
+        const pt2Utm = latLngToUTM(initialPoints[i + 1].lat, initialPoints[i + 1].lng);
+        
+        if (!pt1Utm || !pt2Utm) {
+          // Fallback to simple rotation if UTM conversion fails
+          return initialPoints.map((pt) => {
+            const ptUtm = latLngToUTM(pt.lat, pt.lng);
+            if (!ptUtm) return pt;
+            const dx = ptUtm.easting - centerUtm.easting;
+            const dy = ptUtm.northing - centerUtm.northing;
+            const cos = Math.cos(angleRad);
+            const sin = Math.sin(angleRad);
+            const rx = dx * cos - dy * sin;
+            const ry = dx * sin + dy * cos;
+            const newEasting = centerUtm.easting + rx;
+            const newNorthing = centerUtm.northing + ry;
+            try {
+              const [lng, lat] = proj4(utmProjString, 'EPSG:4326', [newEasting, newNorthing]);
+              return { ...pt, lng, lat };
+            } catch (error) {
+              debug.error('Failed to convert rotated UTM back to lat/lng:', error);
+              return pt;
+            }
+          });
+        }
+        
+        const dx = pt2Utm.easting - pt1Utm.easting;
+        const dy = pt2Utm.northing - pt1Utm.northing;
+        const length = Math.sqrt(dx * dx + dy * dy);
+        const bearing = Math.atan2(dy, dx);
+        
+        segmentLengths.push(length);
+        segmentBearings.push(bearing);
+      }
+
+      // Rotate first point around center
+      const firstPtUtm = latLngToUTM(initialPoints[0].lat, initialPoints[0].lng);
+      if (!firstPtUtm) return initialPoints;
+      
+      const dx0 = firstPtUtm.easting - centerUtm.easting;
+      const dy0 = firstPtUtm.northing - centerUtm.northing;
+      const cos = Math.cos(angleRad);
+      const sin = Math.sin(angleRad);
+      const rx0 = dx0 * cos - dy0 * sin;
+      const ry0 = dx0 * sin + dy0 * cos;
+      const newFirstEasting = centerUtm.easting + rx0;
+      const newFirstNorthing = centerUtm.northing + ry0;
+
+      let firstLng: number, firstLat: number;
+      try {
+        [firstLng, firstLat] = proj4(utmProjString, 'EPSG:4326', [newFirstEasting, newFirstNorthing]);
+      } catch (error) {
+        debug.error('Failed to convert rotated first point:', error);
+        return initialPoints;
+      }
+
+      const rotated: Coordinate[] = [{ ...initialPoints[0], lng: firstLng, lat: firstLat }];
+
+      // Build remaining points by placing each segment at the end of the previous one,
+      // maintaining the original segment length but with rotated bearing
+      let currentEasting = newFirstEasting;
+      let currentNorthing = newFirstNorthing;
+
+      for (let i = 0; i < segmentLengths.length; i++) {
+        // Rotate the bearing by the rotation angle
+        const rotatedBearing = segmentBearings[i] + angleRad;
+        const length = segmentLengths[i];
+        
+        // Calculate next point position
+        const nextEasting = currentEasting + length * Math.cos(rotatedBearing);
+        const nextNorthing = currentNorthing + length * Math.sin(rotatedBearing);
+        
+        // Convert back to lat/lng
+        let nextLng: number, nextLat: number;
+        try {
+          [nextLng, nextLat] = proj4(utmProjString, 'EPSG:4326', [nextEasting, nextNorthing]);
+        } catch (error) {
+          debug.error('Failed to convert rotated point:', error);
+          return initialPoints;
+        }
+        
+        rotated.push({ ...initialPoints[i + 1], lng: nextLng, lat: nextLat });
+        currentEasting = nextEasting;
+        currentNorthing = nextNorthing;
+      }
+
+      return rotated;
+    },
+    []
+  );
+
   // Clear selection when flight path changes (points added/removed)
   useEffect(() => {
     // Only clear if indices are out of bounds
@@ -3468,6 +3621,224 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return valid;
     });
   }, [flightPath.length]);
+
+  // Rotate mode: attach map drag handlers to rotate entire path with cursor
+  useEffect(() => {
+    if (!map.current) return;
+
+    const mapInstance = map.current;
+
+    const handleRotateMouseDown = (e: L.LeafletMouseEvent) => {
+      if (!isRotateMode) return;
+      if (flightPath.length < 2) return;
+
+      const originalEvent = e.originalEvent as MouseEvent | undefined;
+      if (originalEvent && originalEvent.button !== 0) return; // left button only
+      
+      // Stop event propagation to prevent other handlers from interfering
+      if (originalEvent) {
+        originalEvent.stopPropagation();
+        originalEvent.preventDefault();
+      }
+      L.DomEvent.stop(e);
+
+      // Compute rotation center as geometric center of current path
+      const avgLat =
+        flightPath.reduce((sum, p) => sum + p.lat, 0) / flightPath.length;
+      const avgLng =
+        flightPath.reduce((sum, p) => sum + p.lng, 0) / flightPath.length;
+
+      const centerLat = avgLat;
+      const centerLng = avgLng;
+
+      const centerUtm = latLngToUTM(centerLat, centerLng);
+      const mouseUtm = latLngToUTM(e.latlng.lat, e.latlng.lng);
+      if (!centerUtm || !mouseUtm) {
+        return;
+      }
+
+      rotateCenterRef.current = { lat: centerLat, lng: centerLng };
+      rotateCenterUtmRef.current = centerUtm as any;
+      rotateInitialPointsRef.current = flightPath.map((p) => ({ ...p }));
+
+      const startAngle = Math.atan2(
+        mouseUtm.northing - centerUtm.northing,
+        mouseUtm.easting - centerUtm.easting
+      );
+      rotateStartAngleRef.current = startAngle;
+      isRotatingRef.current = true;
+
+      // Disable map interactions while rotating
+      mapInstance.dragging.disable();
+      mapInstance.touchZoom.disable();
+      mapInstance.doubleClickZoom.disable();
+      mapInstance.scrollWheelZoom.disable();
+      mapInstance.boxZoom.disable();
+      mapInstance.keyboard.disable();
+    };
+
+    const applyRotationPreview = (angleDelta: number) => {
+      if (
+        !rotateCenterUtmRef.current ||
+        !rotateInitialPointsRef.current ||
+        !map.current
+      ) {
+        return;
+      }
+
+      const rotated = rotatePointsAroundCenter(
+        rotateInitialPointsRef.current,
+        rotateCenterUtmRef.current as any,
+        angleDelta
+      );
+
+      // If any point goes outside DTM bounds, do not preview that step
+      const outOfBounds = rotated.some((p) => !isPointWithinBounds(p.lng, p.lat));
+      if (outOfBounds) return;
+
+      // Update markers and polyline previews without touching React state
+      rotated.forEach((pt, idx) => {
+        const marker = markersRef.current[idx];
+        if (marker) {
+          marker.setLatLng([pt.lat, pt.lng]);
+        }
+      });
+
+      const latlngs = rotated.map((p) => [p.lat, p.lng] as [number, number]);
+      if (flightPathLineRef.current) {
+        flightPathLineRef.current.setLatLngs(latlngs);
+      }
+      if (flightPathClickableLineRef.current) {
+        flightPathClickableLineRef.current.setLatLngs(latlngs);
+      }
+      if (flightPathBufferRef.current) {
+        flightPathBufferRef.current.setLatLngs(latlngs);
+      }
+    };
+
+    const handleRotateMouseMove = (e: L.LeafletMouseEvent) => {
+      if (!isRotatingRef.current) return;
+      if (!rotateCenterUtmRef.current || rotateStartAngleRef.current === null) {
+        return;
+      }
+
+      const mouseUtm = latLngToUTM(e.latlng.lat, e.latlng.lng);
+      if (!mouseUtm) return;
+
+      const centerUtm = rotateCenterUtmRef.current as any;
+      const currentAngle = Math.atan2(
+        mouseUtm.northing - centerUtm.northing,
+        mouseUtm.easting - centerUtm.easting
+      );
+      const angleDelta = currentAngle - rotateStartAngleRef.current;
+      applyRotationPreview(angleDelta);
+    };
+
+    const handleRotateMouseUp = (e: L.LeafletMouseEvent) => {
+      if (!isRotatingRef.current) return;
+
+      isRotatingRef.current = false;
+
+      // Re-enable map interactions
+      mapInstance.dragging.enable();
+      mapInstance.touchZoom.enable();
+      mapInstance.doubleClickZoom.enable();
+      mapInstance.scrollWheelZoom.enable();
+      mapInstance.boxZoom.enable();
+      mapInstance.keyboard.enable();
+
+      if (
+        !rotateCenterUtmRef.current ||
+        !rotateInitialPointsRef.current ||
+        rotateStartAngleRef.current === null
+      ) {
+        rotateCenterRef.current = null;
+        rotateCenterUtmRef.current = null;
+        rotateInitialPointsRef.current = null;
+        rotateStartAngleRef.current = null;
+        return;
+      }
+
+      const mouseUtm = latLngToUTM(e.latlng.lat, e.latlng.lng);
+      if (!mouseUtm) {
+        // Revert to initial positions
+        const original = rotateInitialPointsRef.current;
+        if (original) {
+          onPathChange(original);
+        }
+        rotateCenterRef.current = null;
+        rotateCenterUtmRef.current = null;
+        rotateInitialPointsRef.current = null;
+        rotateStartAngleRef.current = null;
+        return;
+      }
+
+      const centerUtm = rotateCenterUtmRef.current as any;
+      const currentAngle = Math.atan2(
+        mouseUtm.northing - centerUtm.northing,
+        mouseUtm.easting - centerUtm.easting
+      );
+      const angleDelta = currentAngle - rotateStartAngleRef.current;
+
+      const rotated = rotatePointsAroundCenter(
+        rotateInitialPointsRef.current!,
+        centerUtm,
+        angleDelta
+      );
+
+      const outOfBounds = rotated.some((p) => !isPointWithinBounds(p.lng, p.lat));
+      if (outOfBounds) {
+        alert('לא ניתן לסובב: חלק מהנקודות יוצאות מגבולות ה‑DTM.');
+        // Revert visuals and state to original
+        const original = rotateInitialPointsRef.current!;
+        onPathChange(original);
+      } else {
+        // Clear profile first by temporarily setting path to empty, then set rotated path
+        // This forces profile recalculation with new coordinates after rotation
+        onPathChange([]);
+        // Use requestAnimationFrame to ensure the empty path is processed before setting the rotated path
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            onPathChange(rotated);
+          });
+        });
+      }
+
+      rotateCenterRef.current = null;
+      rotateCenterUtmRef.current = null;
+      rotateInitialPointsRef.current = null;
+      rotateStartAngleRef.current = null;
+    };
+
+    mapInstance.on('mousedown', handleRotateMouseDown);
+    mapInstance.on('mousemove', handleRotateMouseMove);
+    mapInstance.on('mouseup', handleRotateMouseUp);
+
+    return () => {
+      mapInstance.off('mousedown', handleRotateMouseDown);
+      mapInstance.off('mousemove', handleRotateMouseMove);
+      mapInstance.off('mouseup', handleRotateMouseUp);
+      isRotatingRef.current = false;
+    };
+  }, [flightPath, isRotateMode, isPointWithinBounds, onPathChange, rotatePointsAroundCenter]);
+
+  // Prevent clickable line from interfering with rotate mode
+  useEffect(() => {
+    if (!flightPathClickableLineRef.current) return;
+    
+    const line = flightPathClickableLineRef.current;
+    
+    // Temporarily remove clickable line from map during rotate mode to allow rotation
+    if (isRotateMode) {
+      if (map.current && map.current.hasLayer(line)) {
+        map.current.removeLayer(line);
+      }
+    } else {
+      if (map.current && !map.current.hasLayer(line)) {
+        line.addTo(map.current);
+      }
+    }
+  }, [isRotateMode]);
 
   // Reset info mode when DTM is unloaded or not available
   useEffect(() => {
@@ -3972,6 +4343,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (originalEvent && originalEvent.button !== 0) return; // left-click only
       if (!dtmLoaded) return;
       if (isParallelLineMode) return;
+      if (isRotateMode) return; // Don't interfere with rotate mode
       
       // Only insert points when draw mode is on
       if (!isDrawing) return;
@@ -4039,6 +4411,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     // Add mousemove handler to flight path to sync with elevation profile
     const handlePathMouseMove = (e: L.LeafletMouseEvent) => {
       if (flightPath.length < 2) return;
+      if (isRotateMode) return; // Don't interfere with rotate mode
 
       const mousePt = { lng: e.latlng.lng, lat: e.latlng.lat };
       let minSegDist = Infinity;
@@ -4245,11 +4618,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
       el.addEventListener('mousedown', (e) => {
         // Only handle left mouse button (button 0)
         if (e.button !== 0) return;
-        // Only allow dragging when draw mode is on
-        if (!isDrawing) return;
+        // Don't interfere with rotate mode
+        if (isRotateMode) return;
+        // Always allow dragging when DTM is loaded (regardless of draw mode)
+        if (!dtmLoaded) return;
 
         e.preventDefault();
         e.stopPropagation();
+        
+        // Disable map dragging immediately to prevent conflicts
+        if (map.current) {
+          map.current.dragging.disable();
+        }
 
         const isModifierPressed = e.ctrlKey || e.metaKey;
 
@@ -4272,6 +4652,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
         // Start left-click drag mode (but don't disable interactions yet - wait for actual drag)
         isDraggingWithLeftClick = true;
+        isMarkerDragActiveRef.current = true;
         hasStartedDragging = false; // Reset drag flag
         lastValidPosition = [point.lat, point.lng];
         el.style.cursor = 'grabbing';
@@ -4298,6 +4679,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
           dragStartPositionsRef.current.clear();
           dragStartPositionsRef.current.set(index, { ...point });
         }
+
+        // Use window-level events with capture phase to ensure we get all events
+        // Disable map dragging first to prevent conflicts
+        window.addEventListener('mousemove', handleMouseMove, true);
+        window.addEventListener('mouseup', handleMouseUp, true);
+        document.addEventListener('keydown', handleKeyDown, true);
+        document.addEventListener('keyup', handleKeyUp, true);
 
         // Don't disable map interactions on mousedown - only disable when actual dragging starts (on mousemove)
       });
@@ -4426,7 +4814,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         e.stopPropagation();
 
         // Use Leaflet's helper to convert the mouse event to map coordinates
-        const currentLatLng = map.current.mouseEventToLatLng(e as any);
+        const currentLatLng = map.current.mouseEventToLatLng(e);
         const currentLng = currentLatLng.lng;
         const currentLat = currentLatLng.lat;
 
@@ -4496,8 +4884,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
             return; // Don't update if outside bounds
           }
 
-          // Update marker position
-          marker.setLatLng([targetLat, targetLng]);
+          // Update marker position (use markersRef to get the current marker,
+          // which may have been re-created by React during drag)
+          const currentDragMarker = markersRef.current[index];
+          if (currentDragMarker) {
+            currentDragMarker.setLatLng([targetLat, targetLng]);
+          }
           lastValidPosition = [targetLat, targetLng];
         }
       };
@@ -4505,6 +4897,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Handle mouse up to end drag
       const handleMouseUp = (e: MouseEvent) => {
         if (!isDraggingWithLeftClick) return;
+
+        // Remove window event listeners when drag ends (must match capture phase)
+        window.removeEventListener('mousemove', handleMouseMove, true);
+        window.removeEventListener('mouseup', handleMouseUp, true);
+        document.removeEventListener('keydown', handleKeyDown, true);
+        document.removeEventListener('keyup', handleKeyUp, true);
 
         e.preventDefault();
         e.stopPropagation();
@@ -4523,14 +4921,20 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
 
         if (!map.current || !dragStartLatLng) {
+          // Clean up even if drag wasn't valid
           isDraggingWithLeftClick = false;
+          isMarkerDragActiveRef.current = false;
           hasStartedDragging = false;
           isAltPressed = false;
+          const curMarker = markersRef.current[index];
+          const curEl = curMarker?.getElement() as HTMLElement | null;
+          if (curEl) { curEl.style.cursor = ''; curEl.classList.remove('is-dragging'); }
+          if (curMarker) curMarker.setZIndexOffset(0);
           return;
         }
 
         // On release, drop the point where the mouse was released (or constrained position)
-        const dropLatLng = map.current.mouseEventToLatLng(e as any);
+        const dropLatLng = map.current.mouseEventToLatLng(e);
         let dropLng = dropLatLng.lng;
         let dropLat = dropLatLng.lat;
 
@@ -4607,30 +5011,41 @@ const MapPanel: React.FC<MapPanelProps> = ({
             }
           }
 
+          // Use markersRef to get the current marker (may have been re-created)
+          const dropMarker = markersRef.current[index];
           if (isPointWithinBounds(dropLng, dropLat)) {
-            marker.setLatLng([dropLat, dropLng]);
+            if (dropMarker) dropMarker.setLatLng([dropLat, dropLng]);
             lastValidPosition = [dropLat, dropLng];
             // Update React state ONCE at the end to avoid re-rendering/remounting markers mid-drag
             onUpdatePoint(index, { lng: dropLng, lat: dropLat, height: point.height });
           }
 
           // Validate final position
-          const finalLatLng = marker.getLatLng();
-          if (!isPointWithinBounds(finalLatLng.lng, finalLatLng.lat)) {
-            // Reset to last valid position if outside bounds
-            marker.setLatLng(lastValidPosition);
-            onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
-            alert('לא ניתן להזיז נקודה מחוץ לתיבת התוחם של ה-DTM. הנקודה אופסה למיקום החוקי הקודם.');
+          const finalMarker = markersRef.current[index];
+          if (finalMarker) {
+            const finalLatLng = finalMarker.getLatLng();
+            if (!isPointWithinBounds(finalLatLng.lng, finalLatLng.lat)) {
+              // Reset to last valid position if outside bounds
+              finalMarker.setLatLng(lastValidPosition);
+              onUpdatePoint(index, { lng: lastValidPosition[1], lat: lastValidPosition[0] });
+              alert('לא ניתן להזיז נקודה מחוץ לתיבת התוחם של ה-DTM. הנקודה אופסה למיקום החוקי הקודם.');
+            }
           }
         }
 
         isDraggingWithLeftClick = false;
+        isMarkerDragActiveRef.current = false;
         hasStartedDragging = false;
         isAltPressed = false;
         altConstraintToastShown = false;
-        el.style.cursor = 'pointer';
-        el.classList.remove('is-dragging');
-        marker.setZIndexOffset(0);
+        // Use markersRef for cleanup (original el/marker may have been removed)
+        const cleanupMarker = markersRef.current[index];
+        const cleanupEl = cleanupMarker?.getElement() as HTMLElement | null;
+        if (cleanupEl) {
+          cleanupEl.style.cursor = 'pointer';
+          cleanupEl.classList.remove('is-dragging');
+        }
+        if (cleanupMarker) cleanupMarker.setZIndexOffset(0);
         isGroupDraggingRef.current = false;
         dragStartPositionsRef.current.clear();
 
@@ -4644,18 +5059,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }, 100);
       };
 
-      // Add event listeners to document for mouse move and up, and keyboard for ALT
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-      document.addEventListener('keydown', handleKeyDown);
-      document.addEventListener('keyup', handleKeyUp);
-
-      // Store cleanup function
+      // Store cleanup function for when marker is removed
       marker.on('remove', () => {
-        document.removeEventListener('mousemove', handleMouseMove);
-        document.removeEventListener('mouseup', handleMouseUp);
-        document.removeEventListener('keydown', handleKeyDown);
-        document.removeEventListener('keyup', handleKeyUp);
+        // Do NOT remove window listeners if a drag is in progress — the markers are being
+        // re-created by React but the drag should survive the re-creation.
+        if (isMarkerDragActiveRef.current) return;
+        // Clean up any active window event listeners if marker is removed outside of drag
+        window.removeEventListener('mousemove', handleMouseMove, true);
+        window.removeEventListener('mouseup', handleMouseUp, true);
+        document.removeEventListener('keydown', handleKeyDown, true);
+        document.removeEventListener('keyup', handleKeyUp, true);
       });
 
       el.addEventListener('mouseenter', () => {
@@ -4704,6 +5117,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     dtmLoaded,
     isDrawing,
     isParallelLineMode,
+    isRotateMode,
     nominalFlightHeight,
     editingPointIndex,
     externalEditPointIndex,
@@ -5197,10 +5611,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const currentEditingIndex = externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
     if (isParallelLineMode) {
       map.current.getContainer().style.cursor = 'crosshair';
+    } else if (isRotateMode) {
+      map.current.getContainer().style.cursor = 'grab';
     } else if (!isDrawing && currentEditingIndex === null) {
       map.current.getContainer().style.cursor = '';
     }
-  }, [isParallelLineMode, isDrawing, editingPointIndex, externalEditPointIndex]);
+  }, [isParallelLineMode, isRotateMode, isDrawing, editingPointIndex, externalEditPointIndex]);
 
   // Prevent display settings popover clicks from creating points in draw mode
   useEffect(() => {
@@ -5891,6 +6307,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const handleDeleteAllPoints = () => {
     if (window.confirm('למחוק את כל הנקודות?')) {
       onPathChange([]);
+      setIsRotateMode(false);
     }
   };
 
@@ -7343,12 +7760,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip tooltip={isDrawing ? 'עצור שרטוט' : 'צייר מסלול (קליק על המפה)'}>
                 <button
                   onClick={() => {
-                    setIsDrawing(!isDrawing);
+                    const nextIsDrawing = !isDrawing;
+                    setIsDrawing(nextIsDrawing);
                     setEditingPointIndex(null);
                     if (onEditPointIndexChange) {
                       onEditPointIndexChange(null);
                     }
                     setIsParallelLineMode(false);
+                    if (nextIsDrawing) {
+                      setIsRotateMode(false);
+                    }
                   }}
                   className={isDrawing ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
                   disabled={!dtmLoaded}
@@ -7436,6 +7857,32 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <div className="group-title">מתקדם</div>
           <div className="group-columns">
             <div className="group-column group-column-icons">
+              <Tooltip tooltip={isRotateMode ? 'עצור מצב סיבוב מסלול' : 'סובב את כל המסלול בעזרת גרירת העכבר'}>
+                <button
+                  onClick={() => {
+                    const next = !isRotateMode;
+                    setIsRotateMode(next);
+                    // Turning on rotate mode should disable other interactive tools
+                    if (next) {
+                      setIsDrawing(false);
+                      setIsParallelLineMode(false);
+                      setEditingPointIndex(null);
+                      if (onEditPointIndexChange) {
+                        onEditPointIndexChange(null);
+                      }
+                    } else {
+                      isRotatingRef.current = false;
+                    }
+                  }}
+                  className={isRotateMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  aria-label={isRotateMode ? 'עצור מצב סיבוב מסלול' : 'סובב מסלול'}
+                  type="button"
+                  disabled={!dtmLoaded || flightPath.length < 2}
+                >
+                  <Icon name="rotate" />
+                  <span className="sr-only">{isRotateMode ? 'עצור מצב סיבוב מסלול' : 'סובב מסלול'}</span>
+                </button>
+              </Tooltip>
               <Tooltip tooltip={hasViewshedResult ? 'פתח הגדרות שדה ראייה' : 'חשב שדה ראייה (visibility analysis)'}>
                 <button
                   onClick={handleViewshedButtonClick}

@@ -28,6 +28,7 @@ import { generateKMLForRoute } from './utils/kmlGenerator';
 import { debug } from './utils/debug';
 import { importKmlFile } from './utils/importKmlFlow';
 import KmlManagerModal, { KmlImport } from './components/KmlManagerModal';
+import { calculateDistance } from './utils/geometry';
 import './App.css';
 
 export interface Coordinate {
@@ -875,30 +876,156 @@ function App() {
           flightHeight: interpolatedFlightHeight
         });
       } else {
-        // Fallback: find the closest point in full profile by coordinates
-        let closest = fullProfileResult.points[0];
-        let minSqDist = Math.pow(closest.longitude - point.lng, 2) + Math.pow(closest.latitude - point.lat, 2);
-
-        for (const p of fullProfileResult.points) {
-          const sqDist = Math.pow(p.longitude - point.lng, 2) + Math.pow(p.latitude - point.lat, 2);
-          if (sqDist < minSqDist) {
-            minSqDist = sqDist;
-            closest = p;
+        // When hovering over a vertex, calculate distance along current flightPath
+        // This ensures correct connection after route rotation
+        if (flightPath.length >= 2) {
+          // Find which vertex in flightPath matches the hovered point
+          let vertexIndex = -1;
+          let minDist = Infinity;
+          
+          for (let i = 0; i < flightPath.length; i++) {
+            const dist = Math.pow(flightPath[i].lng - point.lng, 2) + Math.pow(flightPath[i].lat - point.lat, 2);
+            if (dist < minDist) {
+              minDist = dist;
+              vertexIndex = i;
+            }
           }
+
+          // Calculate cumulative distance to this vertex
+          let vertexDistance = 0;
+          if (vertexIndex > 0) {
+            for (let i = 1; i <= vertexIndex; i++) {
+              vertexDistance += calculateDistance(flightPath[i - 1], flightPath[i]);
+            }
+          }
+
+          // Find the points in full profile to interpolate between using the calculated distance
+          let leftIdx = 0;
+          let rightIdx = fullProfileResult.points.length - 1;
+
+          // Find the segment containing this distance
+          for (let i = 0; i < fullProfileResult.points.length - 1; i++) {
+            if (vertexDistance >= fullProfileResult.points[i].distance && vertexDistance <= fullProfileResult.points[i + 1].distance) {
+              leftIdx = i;
+              rightIdx = i + 1;
+              break;
+            }
+          }
+
+          const p1 = fullProfileResult.points[leftIdx];
+          const p2 = fullProfileResult.points[rightIdx];
+          const distRange = p2.distance - p1.distance;
+          const t = distRange > 0 ? (vertexDistance - p1.distance) / distRange : 0;
+
+          const interpolatedElevation = p1.elevation + (p2.elevation - p1.elevation) * t;
+          const interpolatedMin = (p1.minElevation !== undefined && p2.minElevation !== undefined)
+            ? p1.minElevation + (p2.minElevation - p1.minElevation) * t : undefined;
+          const interpolatedMax = (p1.maxElevation !== undefined && p2.maxElevation !== undefined)
+            ? p1.maxElevation + (p2.maxElevation - p1.maxElevation) * t : undefined;
+
+          const interpolatedPlanned = (p1.plannedAltitude !== undefined && p2.plannedAltitude !== undefined)
+            ? p1.plannedAltitude + (p2.plannedAltitude - p1.plannedAltitude) * t : undefined;
+
+          const interpolatedFlightHeight = (interpolatedPlanned !== undefined)
+            ? interpolatedPlanned - interpolatedElevation : undefined;
+
+          setHoveredElevationPoint({
+            distance: vertexDistance,
+            elevation: interpolatedElevation,
+            longitude: point.lng,
+            latitude: point.lat,
+            minElevation: interpolatedMin,
+            maxElevation: interpolatedMax,
+            plannedAltitude: interpolatedPlanned,
+            flightHeight: interpolatedFlightHeight
+          });
+        } else {
+          // Fallback: find the closest point in full profile by coordinates (if flightPath is too short)
+          let closest = fullProfileResult.points[0];
+          let minSqDist = Math.pow(closest.longitude - point.lng, 2) + Math.pow(closest.latitude - point.lat, 2);
+
+          for (const p of fullProfileResult.points) {
+            const sqDist = Math.pow(p.longitude - point.lng, 2) + Math.pow(p.latitude - point.lat, 2);
+            if (sqDist < minSqDist) {
+              minSqDist = sqDist;
+              closest = p;
+            }
+          }
+          setHoveredElevationPoint(closest);
         }
-        setHoveredElevationPoint(closest);
       }
       setHoverSource('map');
     } else {
       setHoveredElevationPoint(null);
       setHoverSource(null);
     }
-  }, [fullProfileResult.points]);
+  }, [fullProfileResult.points, flightPath]);
 
   const handleElevationPointHover = useCallback((point: ElevationPoint | null) => {
-    setHoveredElevationPoint(point);
-    setHoverSource(point ? 'profile' : null);
-  }, []);
+    if (!point) {
+      setHoveredElevationPoint(null);
+      setHoverSource(null);
+      return;
+    }
+
+    // Recalculate coordinates based on current flightPath using distance
+    // This ensures the hover marker shows the correct point after route rotation
+    if (flightPath.length >= 2) {
+      // Calculate cumulative distances along the current flight path
+      const cumulativeDistances: number[] = [0];
+      let totalDist = 0;
+      for (let i = 1; i < flightPath.length; i++) {
+        const segDist = calculateDistance(flightPath[i - 1], flightPath[i]);
+        totalDist += segDist;
+        cumulativeDistances.push(totalDist);
+      }
+
+      // Find the segment and position where the distance matches
+      const targetDistance = point.distance;
+      let found = false;
+
+      for (let i = 0; i < cumulativeDistances.length - 1; i++) {
+        const segStartDist = cumulativeDistances[i];
+        const segEndDist = cumulativeDistances[i + 1];
+
+        if (targetDistance >= segStartDist && targetDistance <= segEndDist) {
+          // Interpolate position within this segment
+          const segLength = segEndDist - segStartDist;
+          const t = segLength > 0 ? (targetDistance - segStartDist) / segLength : 0;
+
+          const start = flightPath[i];
+          const end = flightPath[i + 1];
+          const newLat = start.lat + (end.lat - start.lat) * t;
+          const newLng = start.lng + (end.lng - start.lng) * t;
+
+          // Update the point with new coordinates while preserving other properties
+          setHoveredElevationPoint({
+            ...point,
+            latitude: newLat,
+            longitude: newLng
+          });
+          setHoverSource('profile');
+          found = true;
+          break;
+        }
+      }
+
+      // If distance is beyond the path, use the last point
+      if (!found && flightPath.length > 0) {
+        const lastPoint = flightPath[flightPath.length - 1];
+        setHoveredElevationPoint({
+          ...point,
+          latitude: lastPoint.lat,
+          longitude: lastPoint.lng
+        });
+        setHoverSource('profile');
+      }
+    } else {
+      // Fallback: use original coordinates if flight path is too short
+      setHoveredElevationPoint(point);
+      setHoverSource('profile');
+    }
+  }, [flightPath]);
 
   const handleDtmLoad = useCallback((source: string, info?: any, clippedId?: string, options?: {
     sourceType?: 'local' | 'server';

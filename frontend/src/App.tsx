@@ -841,14 +841,19 @@ function App() {
     return markers;
   }, [climbRequests, fullProfileResult.points, climbConfig, flightPath]);
 
-  const deleteDtmOnServer = useCallback(async (pathToDelete?: string, clippedIdToDelete?: string, keepalive: boolean = false) => {
+  const deleteDtmOnServer = useCallback(async (
+    pathToDelete?: string,
+    clippedIdToDelete?: string,
+    keepalive: boolean = false,
+    forceDelete: boolean = false
+  ) => {
     const targetPath = pathToDelete || dtmSource;
     const targetClippedId = clippedIdToDelete || activeClippedId;
 
     // If we have a clipped ID, delete that first
     if (targetClippedId) {
       try {
-        const response = await fetch(`/api/dtm/clipped/${targetClippedId}`, {
+        const response = await fetch(`/api/dtm/clipped/${targetClippedId}?force=${forceDelete}`, {
           method: 'DELETE',
           keepalive
         });
@@ -870,7 +875,7 @@ function App() {
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ path: targetPath }),
+          body: JSON.stringify({ path: targetPath, force: forceDelete }),
           keepalive
         });
         
@@ -1135,7 +1140,7 @@ function App() {
     }
 
     if (dtmSource || activeClippedId) {
-      deleteDtmOnServer(dtmSource || undefined, activeClippedId || undefined).catch((error) => {
+      deleteDtmOnServer(dtmSource || undefined, activeClippedId || undefined, false, true).catch((error) => {
         debug.error('Failed to clean up DTM cache:', error);
       });
     }

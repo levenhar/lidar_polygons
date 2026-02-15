@@ -604,6 +604,7 @@ interface MapPanelProps {
   }>;
   onPathPointHover: (point: Coordinate | null, distance?: number) => void;
   onPathChange: (path: Coordinate[]) => void;
+  onGroupMoveCommitted?: (path: Coordinate[]) => void;
   onDeleteAllPoints: () => void;
   onAddPoint: (point: Coordinate) => void;
   onAddPoints: (points: Coordinate[]) => void;
@@ -663,6 +664,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   flightPath,
   onPathPointHover,
   onPathChange,
+  onGroupMoveCommitted,
   onDeleteAllPoints,
   onAddPoint,
   onAddPoints,
@@ -4973,6 +4975,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           if (allValid && updates.length > 0) {
             // Batch update using onPathChange for single undo entry
             onPathChange(updatedPath);
+            onGroupMoveCommitted?.(updatedPath);
           } else {
             // Revert all markers to original positions
             selectedPointIndices.forEach((idx) => {

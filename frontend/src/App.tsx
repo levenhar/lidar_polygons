@@ -571,6 +571,45 @@ function AppContent() {
   // Stable profile that only updates when queue is empty AND server confirms it's ready
   const [stableProfileResult, setStableProfileResult] = React.useState(() => fullProfileResultInternal);
   const profileLockedRef = React.useRef(false);
+
+  const handleGroupMoveCommitted = React.useCallback((updatedPath: Coordinate[]) => {
+    // Cancel pending debounced recalculation and run an immediate recalculation for group moves.
+    if (profileCalculationTimeoutRef.current) {
+      clearTimeout(profileCalculationTimeoutRef.current);
+      profileCalculationTimeoutRef.current = null;
+    }
+
+    profileLockedRef.current = false;
+    setStableProfileResult({ points: [], warnings: [] });
+
+    if (updatedPath.length === 0) {
+      calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, setNominalFlightHeight);
+    } else if (updatedPath.length === 1) {
+      clearProfile();
+    } else if (dtmSource) {
+      calculateProfile(updatedPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, setNominalFlightHeight);
+    }
+
+    // Keep the effect's previous-value tracker in sync to avoid scheduling a duplicate debounce run.
+    lastProfileParamsRef.current = {
+      flightPath: updatedPath,
+      dtmSource,
+      safetySearchRadius,
+      resolutionSearchRadius,
+      nominalFlightHeight
+    };
+  }, [
+    activeClippedId,
+    calculateProfile,
+    clearProfile,
+    dtmSource,
+    nominalFlightHeight,
+    resolutionHeight,
+    safetyHeight,
+    resolutionSearchRadius,
+    safetySearchRadius,
+    setNominalFlightHeight
+  ]);
   
   // Unlock profile when a new calculation starts
   React.useEffect(() => {
@@ -1969,6 +2008,7 @@ function AppContent() {
             flightPath={flightPath}
             onPathPointHover={handlePathPointHover}
             onPathChange={setFlightPath}
+            onGroupMoveCommitted={handleGroupMoveCommitted}
             onDeleteAllPoints={handleDeleteAllPoints}
             onAddPoint={addPointWrapped}
             onAddPoints={addPointsWrapped}

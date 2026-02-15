@@ -370,7 +370,10 @@ export function useFlightPath(
 
   const addPoints = useCallback(
     (points: Coordinate[]) => {
-      updateActiveRoute((route) => ({ ...route, points: [...route.points, ...points.map(ensurePointId)] }));
+      updateActiveRoute((route) => {
+        const nextPoints = [...route.points, ...points.map(ensurePointId)];
+        return { ...route, points: nextPoints };
+      });
     },
     [updateActiveRoute]
   );

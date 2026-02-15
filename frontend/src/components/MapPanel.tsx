@@ -1664,6 +1664,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     clearSelectedLines,
     createParallelLinesBatch,
     dtmLoaded,
+    flightPath.length,
     onAddPoints,
     parallelBatchOffset,
     parallelBatchDirection,

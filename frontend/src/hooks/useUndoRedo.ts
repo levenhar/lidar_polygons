@@ -67,24 +67,30 @@ export function useUndoRedo<T>(initialState: T, options?: UndoRedoOptions) {
         // Create undo/redo functions that directly manipulate state
         const undoFn = () => {
           isUndoRedoOperationRef.current = true;
-          // Find current index and go back
-          const idx = historyRef.current.indexOf(newState);
+          // Move back from the current history cursor and keep refs in sync.
+          const idx = currentIndexRef.current;
           if (idx > 0) {
             const prevIdx = idx - 1;
+            const prevState = historyRef.current[prevIdx];
+            currentIndexRef.current = prevIdx;
+            stateRef.current = prevState;
             setCurrentIndex(prevIdx);
-            setState(historyRef.current[prevIdx]);
+            setState(prevState);
           }
           isUndoRedoOperationRef.current = false;
         };
         
         const redoFn = () => {
           isUndoRedoOperationRef.current = true;
-          // Find previous state index and go forward
-          const idx = historyRef.current.indexOf(previousState);
+          // Move forward from the current history cursor and keep refs in sync.
+          const idx = currentIndexRef.current;
           if (idx >= 0 && idx < historyRef.current.length - 1) {
             const nextIdx = idx + 1;
+            const nextState = historyRef.current[nextIdx];
+            currentIndexRef.current = nextIdx;
+            stateRef.current = nextState;
             setCurrentIndex(nextIdx);
-            setState(historyRef.current[nextIdx]);
+            setState(nextState);
           }
           isUndoRedoOperationRef.current = false;
         };

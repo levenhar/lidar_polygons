@@ -1156,32 +1156,59 @@ function App() {
     resetToSingleRoute();
   }, [dtmSource, activeClippedId, deleteDtmOnServer, resetToSingleRoute, clearProfile]);
 
-  // Warn users that refreshing will clear points and unload the DTM
-  // NOTE: We do NOT cleanup on page events anymore because:
-  // 1. The lease protection system will handle cleanup when leases expire
-  // 2. Aggressive cleanup can delete DTMs that are still in use
-  // 3. If user refreshes, they may want to keep using the same DTM
-  //
-  // The lease protection system now handles cleanup:
-  // - If client stops using DTM, lease expires after 2-5 minutes
-  // - DTM can then be cleaned up by scheduled jobs
-  // - But it won't be deleted while actively in use
-  React.useEffect(() => {
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!dtmSource && !activeClippedId && flightPath.length === 0) return;
+  // Best-effort cleanup for browser refresh/close navigation events.
+  // Uses sendBeacon when possible because async work is limited during unload.
+  const triggerPageExitDtmCleanup = useCallback(() => {
+    const targetPath = dtmSource || undefined;
+    const targetClippedId = activeClippedId || undefined;
+    if (!targetPath && !targetClippedId) return;
 
-      const warning = 'רענון ימחק את כל הנקודות ויסיר את ה‑DTM. להמשיך?';
-      event.preventDefault();
-      event.returnValue = warning;
-      return warning;
+    const payload = {
+      path: targetPath,
+      clippedId: targetClippedId,
+      force: true
     };
 
-    window.addEventListener('beforeunload', handleBeforeUnload);
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+        const body = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        const queued = navigator.sendBeacon('/api/dtm/cleanup', body);
+        if (queued) return;
+      }
+    } catch (error) {
+      debug.error('Failed to queue DTM cleanup with sendBeacon:', error);
+    }
+
+    fetch('/api/dtm/cleanup', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload),
+      keepalive: true
+    }).catch((error) => {
+      debug.error('Failed to clean up DTM on page exit:', error);
+    });
+  }, [dtmSource, activeClippedId]);
+
+  // Ensure DTM cleanup is attempted on refresh/close/tab close.
+  React.useEffect(() => {
+    let cleanupTriggered = false;
+
+    const handlePageExit = () => {
+      if (cleanupTriggered) return;
+      cleanupTriggered = true;
+      triggerPageExitDtmCleanup();
+    };
+
+    window.addEventListener('beforeunload', handlePageExit);
+    window.addEventListener('pagehide', handlePageExit);
     
     return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('beforeunload', handlePageExit);
+      window.removeEventListener('pagehide', handlePageExit);
     };
-  }, [dtmSource, activeClippedId, flightPath.length]);
+  }, [triggerPageExitDtmCleanup]);
 
   // Process the edit queue
   const processEditQueue = React.useCallback(() => {

@@ -3,7 +3,7 @@
  * Handles file picker, parsing, and integration with app state
  */
 
-import { parseKml, ImportedPoint, ImportedPolygon, calculateBounds } from './kmlImport';
+import { parseKml, calculateBounds } from './kmlImport';
 import { KmlImport, PointSymbol } from '../components/KmlManagerModal';
 
 export interface ImportKmlOptions {
@@ -15,86 +15,122 @@ export interface ImportKmlOptions {
 }
 
 /**
- * Trigger file picker and import KML
+ * Trigger file picker and import one or more KML files
  */
 export async function importKmlFile(options: ImportKmlOptions): Promise<void> {
   return new Promise((resolve) => {
-    // Create file input
+    // Create file input - allow multiple KML files
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.kml';
+    input.multiple = true;
     input.style.display = 'none';
 
     input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) {
+      const files = (e.target as HTMLInputElement).files;
+      if (!files?.length) {
+        document.body.removeChild(input);
         resolve();
         return;
       }
 
-      const fileName = file.name;
+      const fileArray = Array.from(files);
+      const allBounds: { minLon: number; minLat: number; maxLon: number; maxLat: number }[] = [];
+      let totalPoints = 0;
+      let totalPolygons = 0;
+      let successCount = 0;
+      const errors: string[] = [];
 
       try {
-        // Read file
-        const text = await file.text();
+        for (let i = 0; i < fileArray.length; i++) {
+          const file = fileArray[i];
+          const fileName = file.name;
 
-        // Parse KML
-        const result = parseKml(text);
+          try {
+            const text = await file.text();
+            const result = parseKml(text);
 
-        // Check for errors
-        if (result.errors.length > 0 && result.points.length === 0 && result.polygons.length === 0) {
-          options.onError(result.errors[0] || 'Failed to import KML');
-          resolve();
-          return;
+            if (result.errors.length > 0 && result.points.length === 0 && result.polygons.length === 0) {
+              errors.push(`${fileName}: ${result.errors[0] || 'Failed to import KML'}`);
+              continue;
+            }
+
+            options.onShowSummary({
+              points: result.points.length,
+              polygons: result.polygons.length
+            });
+
+            const labeledPoints = result.points.map(point => ({
+              lng: point.lng,
+              lat: point.lat,
+              label: point.label
+            }));
+
+            const polygons = result.polygons.map(polygon => ({
+              coordinates: polygon.coordinates,
+              name: polygon.name
+            }));
+
+            const colorPalette = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#10b981', '#06b6d4'];
+            const colorIndex = (fileName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) + i) % colorPalette.length;
+            const defaultColor = colorPalette[colorIndex];
+            const defaultSymbol: PointSymbol = 'circle';
+
+            const kmlImport = {
+              id: `kml-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 9)}`,
+              name: fileName,
+              points: labeledPoints,
+              polygons: polygons,
+              color: defaultColor,
+              symbol: defaultSymbol,
+              visible: true,
+              rawKml: text
+            };
+
+            options.onKmlImported(kmlImport);
+
+            const bounds = calculateBounds(result.points, result.polygons);
+            if (bounds) allBounds.push(bounds);
+
+            totalPoints += result.points.length;
+            totalPolygons += result.polygons.length;
+            successCount++;
+          } catch (err) {
+            errors.push(`${fileName}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+          }
         }
 
-        // Show summary
-        options.onShowSummary({
-          points: result.points.length,
-          polygons: result.polygons.length
-        });
+        if (errors.length > 0) {
+          options.onError(errors.join('\n'));
+        }
 
-        // Convert points and polygons to the format expected by the app
-        const labeledPoints = result.points.map(point => ({
-          lng: point.lng,
-          lat: point.lat,
-          label: point.label
-        }));
+        if (successCount > 0) {
+          if (allBounds.length > 0) {
+            const combined = allBounds.reduce((acc, b) => ({
+              minLon: Math.min(acc.minLon, b.minLon),
+              minLat: Math.min(acc.minLat, b.minLat),
+              maxLon: Math.max(acc.maxLon, b.maxLon),
+              maxLat: Math.max(acc.maxLat, b.maxLat)
+            }), allBounds[0]);
+            options.onZoomToBounds(combined);
+          }
 
-        const polygons = result.polygons.map(polygon => ({
-          coordinates: polygon.coordinates,
-          name: polygon.name
-        }));
-
-        // Generate a default color from a palette (cycling through colors)
-        const colorPalette = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#10b981', '#06b6d4'];
-        // Use a simple hash of the filename to pick a color (consistent for same filename)
-        const colorIndex = fileName.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0) % colorPalette.length;
-        const defaultColor = colorPalette[colorIndex];
-
-        // Default symbol is circle
-        const defaultSymbol: PointSymbol = 'circle';
-
-        // Create KML import object
-        const kmlImport = {
-          id: `kml-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-          name: fileName,
-          points: labeledPoints,
-          polygons: polygons,
-          color: defaultColor,
-          symbol: defaultSymbol,
-          visible: true,
-          rawKml: text
-        };
-
-        // Import everything as visual overlays (polygons are just for display, not AOI)
-        finishImport(result, kmlImport, options);
-      } catch (error) {
-        options.onError(`Failed to read file: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        resolve();
+          const pointText = totalPoints === 1 ? 'point' : 'points';
+          const polygonText = totalPolygons === 1 ? 'polygon' : 'polygons';
+          const message = successCount === 1
+            ? (totalPoints > 0 && totalPolygons > 0
+                ? `Imported ${totalPoints} ${pointText}, ${totalPolygons} ${polygonText}`
+                : totalPoints > 0
+                  ? `Imported ${totalPoints} ${pointText}`
+                  : totalPolygons > 0
+                    ? `Imported ${totalPolygons} ${polygonText}`
+                    : 'Imported 1 file')
+            : `Imported ${successCount} KML files (${totalPoints} ${pointText}, ${totalPolygons} ${polygonText})`;
+          options.onSuccess(message);
+        }
       } finally {
-        // Clean up
         document.body.removeChild(input);
+        resolve();
       }
     };
 
@@ -103,42 +139,9 @@ export async function importKmlFile(options: ImportKmlOptions): Promise<void> {
       resolve();
     };
 
-    // Trigger file picker
     document.body.appendChild(input);
     input.click();
   });
 }
 
-/**
- * Finish import process: add points and zoom to bounds
- */
-function finishImport(
-  result: { points: ImportedPoint[]; polygons: ImportedPolygon[] },
-  kmlImport: Omit<KmlImport, 'importedAt'>,
-  options: ImportKmlOptions
-): void {
-  // Add the KML import to the app state
-  options.onKmlImported(kmlImport);
-
-  // Zoom to bounds
-  const bounds = calculateBounds(result.points, result.polygons);
-  if (bounds) {
-    options.onZoomToBounds(bounds);
-  }
-
-  // Show success message
-  const pointText = result.points.length === 1 ? 'point' : 'points';
-  const polygonText = result.polygons.length === 1 ? 'polygon' : 'polygons';
-  let message = '';
-  if (result.points.length > 0 && result.polygons.length > 0) {
-    message = `Imported ${result.points.length} ${pointText}, ${result.polygons.length} ${polygonText}`;
-  } else if (result.points.length > 0) {
-    message = `Imported ${result.points.length} ${pointText}`;
-  } else if (result.polygons.length > 0) {
-    message = `Imported ${result.polygons.length} ${polygonText}`;
-  }
-  if (message) {
-    options.onSuccess(message);
-  }
-}
 

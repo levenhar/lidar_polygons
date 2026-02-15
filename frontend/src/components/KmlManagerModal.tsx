@@ -73,8 +73,8 @@ const KmlManagerModal: React.FC<KmlManagerModalProps> = ({
               type="button"
               className="kml-manager-modal__import-btn"
               onClick={onImport}
-              aria-label="ייבא KML"
-              title="ייבא KML"
+              aria-label="ייבא קבצי KML (ניתן לבחור מספר קבצים)"
+              title="ייבא קבצי KML (ניתן לבחור מספר קבצים)"
             >
               <svg
                 viewBox="0 0 24 24"

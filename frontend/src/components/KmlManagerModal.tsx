@@ -12,6 +12,7 @@ export interface KmlImport {
   color: string; // hex color for points and polygons
   symbol: PointSymbol; // symbol type for points
   visible: boolean; // visibility state
+  rawKml: string; // original uploaded KML content
 }
 
 interface KmlManagerModalProps {

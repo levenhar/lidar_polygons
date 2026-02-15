@@ -4,18 +4,10 @@
  */
 
 import { parseKml, ImportedPoint, ImportedPolygon, calculateBounds } from './kmlImport';
-import { PointSymbol } from '../components/KmlManagerModal';
+import { KmlImport, PointSymbol } from '../components/KmlManagerModal';
 
 export interface ImportKmlOptions {
-  onKmlImported: (kmlImport: {
-    id: string;
-    name: string;
-    points: Array<{ lng: number; lat: number; label: string }>;
-    polygons: Array<{ coordinates: [number, number][]; name?: string }>;
-    color: string;
-    symbol: PointSymbol;
-    visible: boolean;
-  }) => void;
+  onKmlImported: (kmlImport: Omit<KmlImport, 'importedAt'>) => void;
   onError: (error: string) => void;
   onSuccess: (message: string) => void;
   onShowSummary: (summary: { points: number; polygons: number }) => void;
@@ -91,7 +83,8 @@ export async function importKmlFile(options: ImportKmlOptions): Promise<void> {
           polygons: polygons,
           color: defaultColor,
           symbol: defaultSymbol,
-          visible: true
+          visible: true,
+          rawKml: text
         };
 
         // Import everything as visual overlays (polygons are just for display, not AOI)
@@ -121,7 +114,7 @@ export async function importKmlFile(options: ImportKmlOptions): Promise<void> {
  */
 function finishImport(
   result: { points: ImportedPoint[]; polygons: ImportedPolygon[] },
-  kmlImport: { id: string; name: string; points: Array<{ lng: number; lat: number; label: string }>; polygons: Array<{ coordinates: [number, number][]; name?: string }>; color: string; symbol: PointSymbol; visible: boolean },
+  kmlImport: Omit<KmlImport, 'importedAt'>,
   options: ImportKmlOptions
 ): void {
   // Add the KML import to the app state

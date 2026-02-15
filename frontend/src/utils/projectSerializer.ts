@@ -14,7 +14,8 @@ import { ClimbConfig } from './climb';
 
 // Schema version for backwards compatibility
 // Version 2: Entry height changed from AGL to ASL
-export const PROJECT_SCHEMA_VERSION = 2;
+// Version 3: Persist uploaded KML overlays (including raw KML text)
+export const PROJECT_SCHEMA_VERSION = 3;
 
 // Project file extension
 export const PROJECT_FILE_EXTENSION = '.routeproj';
@@ -65,6 +66,21 @@ export interface PlanningAreaGeometry {
     maxLat: number;
   };
   polygon?: [number, number][]; // [lon, lat] pairs
+}
+
+/**
+ * Persisted uploaded KML overlay
+ */
+export interface SavedKmlImport {
+  id: string;
+  name: string;
+  points: Array<{ lng: number; lat: number; label: string }>;
+  polygons: Array<{ coordinates: [number, number][]; name?: string }>;
+  importedAt: number;
+  color: string;
+  symbol: 'square' | 'circle' | 'triangle' | 'star' | 'diamond' | 'cross';
+  visible: boolean;
+  rawKml: string;
 }
 
 /**
@@ -160,6 +176,9 @@ export interface ProjectFileData {
   
   // Planning area
   planningArea?: PlanningAreaGeometry;
+
+  // Uploaded KML overlays
+  kmlImports: SavedKmlImport[];
   
   // Map camera (optional)
   mapCamera?: MapCameraState;
@@ -202,6 +221,9 @@ export function exportProject(params: {
   
   // Planning area
   planningArea?: PlanningAreaGeometry;
+
+  // Uploaded KML overlays
+  kmlImports?: SavedKmlImport[];
   
   // Map camera (optional)
   mapCamera?: MapCameraState;
@@ -222,6 +244,7 @@ export function exportProject(params: {
     ascendDescend,
     display,
     planningArea,
+    kmlImports,
     mapCamera
   } = params;
   
@@ -309,6 +332,20 @@ export function exportProject(params: {
     ascendDescend,
     display,
     ...(planningArea && { planningArea }),
+    kmlImports: (kmlImports || []).map((kml) => ({
+      id: kml.id,
+      name: kml.name,
+      points: kml.points.map((p) => ({ lng: p.lng, lat: p.lat, label: p.label })),
+      polygons: kml.polygons.map((poly) => ({
+        coordinates: poly.coordinates.map(([lon, lat]) => [lon, lat] as [number, number]),
+        ...(poly.name ? { name: poly.name } : {})
+      })),
+      importedAt: kml.importedAt,
+      color: kml.color,
+      symbol: kml.symbol,
+      visible: kml.visible,
+      rawKml: kml.rawKml
+    })),
     ...(mapCamera && { mapCamera })
   };
 }
@@ -359,6 +396,10 @@ export function validateProject(data: any): ProjectFileData {
   if (!migrated.display || typeof migrated.display !== 'object') {
     throw new ProjectValidationError('Invalid project file: missing or invalid display settings');
   }
+
+  if (!Array.isArray(migrated.kmlImports)) {
+    throw new ProjectValidationError('Invalid project file: missing or invalid kmlImports');
+  }
   
   return migrated as ProjectFileData;
 }
@@ -376,6 +417,17 @@ function migrateProject(data: any): any {
     migrated._needsEntryHeightMigration = true;
     migrated.schemaVersion = 2;
     console.log('Project migration: Marked for entry height migration (AGL -> ASL). Conversion will happen when DTM is loaded.');
+  }
+
+  // Migration from v2 to v3: persist uploaded KML overlays
+  if (migrated.schemaVersion < 3) {
+    migrated.kmlImports = Array.isArray(migrated.kmlImports) ? migrated.kmlImports : [];
+    migrated.schemaVersion = 3;
+  }
+
+  // Safety net for partially-corrupted files
+  if (!Array.isArray(migrated.kmlImports)) {
+    migrated.kmlImports = [];
   }
   
   return migrated;

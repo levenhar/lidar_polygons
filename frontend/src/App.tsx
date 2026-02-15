@@ -1508,7 +1508,8 @@ function AppContent() {
           showMetadata,
           showClimbLabels,
           showNextLineSuggestions
-        }
+        },
+        kmlImports
       });
       
       // Show save dialog with project data
@@ -1533,7 +1534,7 @@ function AppContent() {
     overlapPercentage, fovDegrees,
     selectedClimbPresetId, climbConfig,
     showMetadata, showClimbLabels,
-    dtmDisplaySettings
+    dtmDisplaySettings, showNextLineSuggestions, kmlImports
   ]);
 
   // Migrate entry height from AGL to ASL for old projects
@@ -1692,6 +1693,7 @@ function AppContent() {
         setShowMetadata(projectData.display.showMetadata ?? true);
         setShowClimbLabels(projectData.display.showClimbLabels ?? true);
         setShowNextLineSuggestions(projectData.display.showNextLineSuggestions ?? true);
+        setKmlImports(projectData.kmlImports || []);
         
         // Step 2: Restore DTM
         if (projectData.dtm) {

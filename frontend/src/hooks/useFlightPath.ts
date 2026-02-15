@@ -162,13 +162,22 @@ export function useFlightPath(
 
   const updateActiveRoute = useCallback(
     (updater: (route: FlightRoute) => FlightRoute) => {
-      if (!activeRoute) return;
-      const nextRoutes = state.routes.map((route) =>
-        route.id === activeRoute.id ? updater(route) : route
+      setState(
+        (prevState) => {
+          const prevActiveRoute =
+            prevState.routes.find((route) => route.id === prevState.activeRouteId) || prevState.routes[0];
+          if (!prevActiveRoute) return prevState;
+
+          const nextRoutes = prevState.routes.map((route) =>
+            route.id === prevActiveRoute.id ? updater(route) : route
+          );
+
+          return { ...prevState, routes: nextRoutes };
+        },
+        true
       );
-      setState({ ...state, routes: nextRoutes }, true);
     },
-    [activeRoute, setState, state]
+    [setState]
   );
 
   const ensureActiveRoute = useCallback(

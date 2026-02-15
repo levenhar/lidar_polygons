@@ -16,6 +16,8 @@ export function useUndoRedo<T>(initialState: T, options?: UndoRedoOptions) {
   const [state, setState] = useState<T>(initialState);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const historyRef = useRef<T[]>([initialState]);
+  const stateRef = useRef<T>(initialState);
+  const currentIndexRef = useRef<number>(0);
   
   // Flag to track if we're in the middle of an undo/redo operation
   // This prevents registering the same action twice
@@ -28,17 +30,16 @@ export function useUndoRedo<T>(initialState: T, options?: UndoRedoOptions) {
   }, [currentIndex]);
 
   const setStateWithHistory = useCallback((newStateOrUpdater: T | ((prevState: T) => T), addToHistory: boolean = true) => {
-    // Support both direct state and functional updates
-    const newState = typeof newStateOrUpdater === 'function' 
-      ? (newStateOrUpdater as (prevState: T) => T)(state)
+    const previousState = stateRef.current;
+    // Support both direct state and functional updates against latest state snapshot
+    const newState = typeof newStateOrUpdater === 'function'
+      ? (newStateOrUpdater as (prevState: T) => T)(previousState)
       : newStateOrUpdater;
-    
-    const previousState = state;
-    
+
     if (addToHistory && !isUndoRedoOperationRef.current) {
       // Remove any future history if we're not at the end
-      if (currentIndex < historyRef.current.length - 1) {
-        historyRef.current = historyRef.current.slice(0, currentIndex + 1);
+      if (currentIndexRef.current < historyRef.current.length - 1) {
+        historyRef.current = historyRef.current.slice(0, currentIndexRef.current + 1);
       }
       
       // Add new state to history
@@ -52,10 +53,12 @@ export function useUndoRedo<T>(initialState: T, options?: UndoRedoOptions) {
         historyRef.current = historyRef.current.slice(itemsToRemove);
         // Adjust currentIndex to account for removed items
         const newIndex = historyRef.current.length - 1;
+        currentIndexRef.current = newIndex;
         setCurrentIndex(newIndex);
       } else {
         // Normal case: just update index to the new state
         const newIndex = historyRef.current.length - 1;
+        currentIndexRef.current = newIndex;
         setCurrentIndex(newIndex);
       }
       
@@ -89,15 +92,18 @@ export function useUndoRedo<T>(initialState: T, options?: UndoRedoOptions) {
         options.onActionRegistered(previousState, newState, undoFn, redoFn);
       }
     }
-    
+
+    stateRef.current = newState;
     setState(newState);
-  }, [currentIndex, state, options]);
+  }, [options]);
 
   const undo = useCallback(() => {
     if (currentIndex > 0) {
       isUndoRedoOperationRef.current = true;
       const newIndex = currentIndex - 1;
       const previousState = historyRef.current[newIndex];
+      currentIndexRef.current = newIndex;
+      stateRef.current = previousState;
       setCurrentIndex(newIndex);
       setState(previousState);
       isUndoRedoOperationRef.current = false;
@@ -109,6 +115,8 @@ export function useUndoRedo<T>(initialState: T, options?: UndoRedoOptions) {
       isUndoRedoOperationRef.current = true;
       const newIndex = currentIndex + 1;
       const nextState = historyRef.current[newIndex];
+      currentIndexRef.current = newIndex;
+      stateRef.current = nextState;
       setCurrentIndex(newIndex);
       setState(nextState);
       isUndoRedoOperationRef.current = false;
@@ -117,6 +125,8 @@ export function useUndoRedo<T>(initialState: T, options?: UndoRedoOptions) {
 
   const resetHistory = useCallback((newState: T) => {
     historyRef.current = [newState];
+    currentIndexRef.current = 0;
+    stateRef.current = newState;
     setCurrentIndex(0);
     setState(newState);
   }, []);

@@ -413,6 +413,15 @@ function App() {
       return { ...prev, [activeRouteId]: next };
     });
   }, [activeRouteId, setClimbRequestsByRoute, flightPath]);
+
+  const handleDeleteAllPoints = React.useCallback(() => {
+    // Clear climb requests first so both start/end climb markers become invalid.
+    setClimbRequestsByRoute((prev) => {
+      return { ...prev, [activeRouteId]: [] };
+    });
+    // Then clear regular route points.
+    setFlightPath([]);
+  }, [activeRouteId, setClimbRequestsByRoute, setFlightPath]);
   
   // State for anchor point warning modal
   const [anchorWarningModal, setAnchorWarningModal] = useState<{
@@ -1630,6 +1639,7 @@ function App() {
             flightPath={flightPath}
             onPathPointHover={handlePathPointHover}
             onPathChange={setFlightPath}
+            onDeleteAllPoints={handleDeleteAllPoints}
             onAddPoint={addPointWrapped}
             onAddPoints={addPointsWrapped}
             onInsertPoints={insertPointsWrapped}

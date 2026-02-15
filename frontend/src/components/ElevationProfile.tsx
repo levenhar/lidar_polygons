@@ -217,6 +217,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     fileContent: string | Blob;
     mimeType: string;
   } | null>(null);
+
   const hoveredUtm = useMemo(() => {
     if (!hoveredPoint) return null;
     return latLngToUTM(hoveredPoint.latitude, hoveredPoint.longitude);

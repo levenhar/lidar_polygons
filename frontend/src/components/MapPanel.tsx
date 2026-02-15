@@ -604,6 +604,7 @@ interface MapPanelProps {
   }>;
   onPathPointHover: (point: Coordinate | null, distance?: number) => void;
   onPathChange: (path: Coordinate[]) => void;
+  onDeleteAllPoints: () => void;
   onAddPoint: (point: Coordinate) => void;
   onAddPoints: (points: Coordinate[]) => void;
   onInsertPoints: (index: number, points: Coordinate[]) => void;
@@ -662,6 +663,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   flightPath,
   onPathPointHover,
   onPathChange,
+  onDeleteAllPoints,
   onAddPoint,
   onAddPoints,
   onInsertPoints,
@@ -6316,7 +6318,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleDeleteAllPoints = () => {
     if (window.confirm('למחוק את כל הנקודות?')) {
-      onPathChange([]);
+      // Remove climb markers immediately so both start/end markers disappear right away.
+      climbMarkersRef.current.forEach(marker => marker.remove());
+      climbMarkersRef.current = [];
+
+      // Source-of-truth cleanup in App: clear climb requests and route points together.
+      onDeleteAllPoints();
       setIsRotateMode(false);
     }
   };

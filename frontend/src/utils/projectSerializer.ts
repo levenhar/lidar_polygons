@@ -15,7 +15,8 @@ import { ClimbConfig } from './climb';
 // Schema version for backwards compatibility
 // Version 2: Entry height changed from AGL to ASL
 // Version 3: Persist uploaded KML overlays (including raw KML text)
-export const PROJECT_SCHEMA_VERSION = 3;
+// Version 4: Server DTM persistence stores only server ID + AOI bbox (no clippedId cache reference)
+export const PROJECT_SCHEMA_VERSION = 4;
 
 // Project file extension
 export const PROJECT_FILE_EXTENSION = '.routeproj';
@@ -43,13 +44,13 @@ export interface ServerDtmDescriptor {
   displayName?: string; // For display purposes
   sizeBytes?: number;
   modifiedAt?: string;
-  // AOI used to clip the DTM (if applicable)
+  // AOI used to clip the DTM (if applicable). Persisted as bbox for cache-independent restore.
   aoi?: {
-    type: 'bbox' | 'polygon';
+    type: 'bbox' | 'polygon'; // 'polygon' kept for backwards compatibility with older files
     bbox?: [number, number, number, number]; // [minLon, minLat, maxLon, maxLat]
     polygon?: [number, number][]; // [lon, lat] pairs
   };
-  clippedId?: string; // If this was a clipped DTM
+  clippedId?: string; // Legacy field from older project files (not persisted anymore)
 }
 
 export type DtmDescriptor = LocalDtmDescriptor | ServerDtmDescriptor;
@@ -185,6 +186,34 @@ export interface ProjectFileData {
   mapCamera?: MapCameraState;
 }
 
+function deriveAoiBbox(
+  aoiGeometry?: PlanningAreaGeometry | null
+): [number, number, number, number] | undefined {
+  if (!aoiGeometry) return undefined;
+
+  if (aoiGeometry.bbox) {
+    return [
+      aoiGeometry.bbox.minLon,
+      aoiGeometry.bbox.minLat,
+      aoiGeometry.bbox.maxLon,
+      aoiGeometry.bbox.maxLat
+    ];
+  }
+
+  if (aoiGeometry.polygon && aoiGeometry.polygon.length > 0) {
+    const lons = aoiGeometry.polygon.map(([lon]) => lon);
+    const lats = aoiGeometry.polygon.map(([, lat]) => lat);
+    return [
+      Math.min(...lons),
+      Math.min(...lats),
+      Math.max(...lons),
+      Math.max(...lats)
+    ];
+  }
+
+  return undefined;
+}
+
 /**
  * Validation error
  */
@@ -267,6 +296,7 @@ export function exportProject(params: {
         // originHint: can be stored if File System Access API handle is available
       };
     } else if (dtmSourceType === 'server' && serverDtmId) {
+      const aoiBbox = deriveAoiBbox(aoiGeometry);
       // Server DTM
       dtm = {
         sourceType: 'server',
@@ -274,16 +304,9 @@ export function exportProject(params: {
         displayName: serverDtmMetadata?.displayName,
         sizeBytes: serverDtmMetadata?.sizeBytes,
         modifiedAt: serverDtmMetadata?.modifiedAt,
-        clippedId: activeClippedId || undefined,
-        aoi: aoiGeometry ? {
-          type: aoiGeometry.type === 'bbox' ? 'bbox' : 'polygon',
-          bbox: aoiGeometry.bbox ? [
-            aoiGeometry.bbox.minLon,
-            aoiGeometry.bbox.minLat,
-            aoiGeometry.bbox.maxLon,
-            aoiGeometry.bbox.maxLat
-          ] as [number, number, number, number] : undefined,
-          polygon: aoiGeometry.polygon
+        aoi: aoiBbox ? {
+          type: 'bbox',
+          bbox: aoiBbox
         } : undefined
       };
     }
@@ -428,6 +451,32 @@ function migrateProject(data: any): any {
   if (migrated.schemaVersion < 3) {
     migrated.kmlImports = Array.isArray(migrated.kmlImports) ? migrated.kmlImports : [];
     migrated.schemaVersion = 3;
+  }
+
+  // Migration from v3 to v4:
+  // Normalize server AOI persistence to bbox-only and drop stale clippedId cache references.
+  if (migrated.schemaVersion < 4) {
+    if (migrated?.dtm?.sourceType === 'server') {
+      const oldAoi = migrated.dtm.aoi;
+      const bboxFromAoi: [number, number, number, number] | undefined =
+        Array.isArray(oldAoi?.bbox) && oldAoi.bbox.length === 4
+          ? [oldAoi.bbox[0], oldAoi.bbox[1], oldAoi.bbox[2], oldAoi.bbox[3]]
+          : Array.isArray(oldAoi?.polygon) && oldAoi.polygon.length > 0
+            ? [
+                Math.min(...oldAoi.polygon.map((p: [number, number]) => p[0])),
+                Math.min(...oldAoi.polygon.map((p: [number, number]) => p[1])),
+                Math.max(...oldAoi.polygon.map((p: [number, number]) => p[0])),
+                Math.max(...oldAoi.polygon.map((p: [number, number]) => p[1]))
+              ]
+            : undefined;
+
+      migrated.dtm = {
+        ...migrated.dtm,
+        aoi: bboxFromAoi ? { type: 'bbox', bbox: bboxFromAoi } : migrated.dtm.aoi,
+        clippedId: undefined
+      };
+    }
+    migrated.schemaVersion = 4;
   }
 
   // Safety net for partially-corrupted files

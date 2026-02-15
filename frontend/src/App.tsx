@@ -197,6 +197,7 @@ function AppContent() {
     flightPath,
     nominalFlightHeight,
     setNominalFlightHeight,
+    setRouteNominalFlightHeight,
     climbRequestsByRoute,
     addRoute,
     setActiveRoute,
@@ -308,38 +309,42 @@ function AppContent() {
     }
   }, [dtmSource, activeClippedId, safetyHeight, resolutionHeight]);
 
-  // Track previous first point to detect edits
-  const previousFirstPointRef = React.useRef<{ lng: number; lat: number } | null>(null);
+  // Track previous first point per route to detect route-specific edits
+  const previousRouteFirstPointsRef = React.useRef<Record<string, { lng: number; lat: number }>>({});
 
-  // Update entry height when first point is added or edited
+  // Update entry height per route when that route's first point is added or edited
   React.useEffect(() => {
-    if (flightPath.length === 0) {
-      previousFirstPointRef.current = null;
-      return;
-    }
+    const previousFirstPoints = previousRouteFirstPointsRef.current;
+    const nextFirstPoints: Record<string, { lng: number; lat: number }> = {};
 
-    const firstPoint = flightPath[0];
-    const previousFirstPoint = previousFirstPointRef.current;
+    routes.forEach((route) => {
+      if (route.points.length === 0) {
+        return;
+      }
 
-    // Check if first point was just added (no previous point) or edited (coordinates changed)
-    const isFirstPointAdded = previousFirstPoint === null;
-    const isFirstPointEdited = previousFirstPoint !== null && 
-      (previousFirstPoint.lng !== firstPoint.lng || previousFirstPoint.lat !== firstPoint.lat);
+      const firstPoint = route.points[0];
+      nextFirstPoints[route.id] = { lng: firstPoint.lng, lat: firstPoint.lat };
 
-    // Update entry height when:
-    // 1. First point is added and entry height is still at default (250), OR
-    // 2. First point is edited (coordinates changed)
-    if ((isFirstPointAdded && Math.abs(nominalFlightHeight - 250) < 0.1) || isFirstPointEdited) {
-      calculateDefaultEntryHeight(firstPoint).then((defaultHeight) => {
-        if (defaultHeight !== null && !isNaN(defaultHeight)) {
-          setNominalFlightHeight(defaultHeight);
-        }
-      });
-    }
+      const previousFirstPoint = previousFirstPoints[route.id];
+      const isFirstPointAdded = !previousFirstPoint;
+      const isFirstPointEdited =
+        !!previousFirstPoint &&
+        (previousFirstPoint.lng !== firstPoint.lng || previousFirstPoint.lat !== firstPoint.lat);
 
-    // Update the ref to track the current first point coordinates
-    previousFirstPointRef.current = { lng: firstPoint.lng, lat: firstPoint.lat };
-  }, [flightPath, nominalFlightHeight, calculateDefaultEntryHeight, setNominalFlightHeight]);
+      // Update entry height when:
+      // 1. First point is added and route entry height is still at default (250), OR
+      // 2. First point is edited (coordinates changed)
+      if (isFirstPointAdded || isFirstPointEdited) {
+        calculateDefaultEntryHeight(firstPoint).then((defaultHeight) => {
+          if (defaultHeight !== null && !isNaN(defaultHeight)) {
+            setRouteNominalFlightHeight(route.id, defaultHeight);
+          }
+        });
+      }
+    });
+
+    previousRouteFirstPointsRef.current = nextFirstPoints;
+  }, [routes, calculateDefaultEntryHeight, setRouteNominalFlightHeight]);
 
   // Wrap addPoint and addPoints to mark them as insert operations
   const addPointWrapped = React.useCallback((point: Coordinate) => {
@@ -2018,6 +2023,7 @@ function AppContent() {
             onAddRoute={addRoute}
             onActiveRouteChange={setActiveRoute}
             onRenameRoute={renameRoute}
+            onRouteNominalFlightHeightChange={setRouteNominalFlightHeight}
             onToggleRouteVisibility={toggleRouteVisibility}
             onDeleteRoute={(routeId) => {
               deleteRoute(routeId);
@@ -2070,7 +2076,7 @@ function AppContent() {
                   ? (climbRequestsByRoute[activeRoute.id] || [])
                   : (climbRequests && activeRoute.id === activeRouteId ? climbRequests : []);
                 
-                const kmlContent = generateKMLForRoute(activeRoute, routeClimbRequests, nominalFlightHeight);
+                const kmlContent = generateKMLForRoute(activeRoute, routeClimbRequests, activeRoute.nominalFlightHeight);
                 const defaultFilename = `${activeRoute.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
                 
                 setSaveFileDialog({
@@ -2139,7 +2145,7 @@ function AppContent() {
               ? (climbRequestsByRoute[route.id] || [])
               : (climbRequests && route.id === activeRouteId ? climbRequests : []);
             
-            const kmlContent = generateKMLForRoute(route, routeClimbRequests, nominalFlightHeight);
+            const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
             const defaultFilename = `${route.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
             
             setSaveFileDialog({
@@ -2160,7 +2166,7 @@ function AppContent() {
                 ? (climbRequestsByRoute[route.id] || [])
                 : (climbRequests && route.id === activeRouteId ? climbRequests : []);
               
-              const kmlContent = generateKMLForRoute(route, routeClimbRequests, nominalFlightHeight);
+              const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
               return { route, kmlContent };
             });
 
@@ -2194,8 +2200,6 @@ function AppContent() {
       <SettingsModal
         isOpen={showSettingsModal}
         onClose={() => setShowSettingsModal(false)}
-        nominalFlightHeight={nominalFlightHeight}
-        setNominalFlightHeight={setNominalFlightHeight}
         safetyRadius={safetySearchRadius}
         setSafetyRadius={setSafetySearchRadius}
         safetyHeight={safetyHeight}
@@ -2211,9 +2215,6 @@ function AppContent() {
         onSelectClimbPreset={handleSelectClimbPreset}
         climbConfig={climbConfig}
         setClimbConfig={setClimbConfig}
-        dtmSource={dtmSource}
-        flightPath={flightPath}
-        activeClippedId={activeClippedId}
       />
       <AnchorPointWarningModal
         isOpen={anchorWarningModal.isOpen}

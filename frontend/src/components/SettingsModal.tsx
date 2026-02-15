@@ -28,8 +28,6 @@ interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   // General settings
-  nominalFlightHeight: number;
-  setNominalFlightHeight: (value: number) => void;
   safetyRadius: number;
   setSafetyRadius: (value: number) => void;
   safetyHeight: number;
@@ -47,10 +45,6 @@ interface SettingsModalProps {
   onSelectClimbPreset: (presetId: string) => void;
   climbConfig: ClimbConfig;
   setClimbConfig: React.Dispatch<React.SetStateAction<ClimbConfig>>;
-  // For calculating default entry height
-  dtmSource?: string | null;
-  flightPath?: Array<{ lng: number; lat: number }>;
-  activeClippedId?: string | null;
 }
 
 // Helper to convert ClimbConfig to draft state for editing
@@ -73,8 +67,6 @@ interface ValidationError {
 const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
-  nominalFlightHeight,
-  setNominalFlightHeight,
   safetyRadius,
   setSafetyRadius,
   safetyHeight,
@@ -89,10 +81,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   selectedClimbPresetId,
   onSelectClimbPreset,
   climbConfig,
-  setClimbConfig,
-  dtmSource,
-  flightPath,
-  activeClippedId
+  setClimbConfig
 }) => {
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const [errors, setErrors] = useState<ValidationError[]>([]);
@@ -102,7 +91,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Draft state for all settings (allows Cancel to discard changes)
   const [generalDraft, setGeneralDraft] = useState({
-    nominalFlightHeight: nominalFlightHeight.toString(),
     safetyRadius: safetyRadius.toString(),
     safetyHeight: safetyHeight.toString(),
     outputHeight: outputHeight.toString()
@@ -116,97 +104,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
   const [climbDraft, setClimbDraft] = useState(() => toDraft(climbConfig));
   const [selectedPresetId, setSelectedPresetId] = useState(selectedClimbPresetId);
 
-  // Calculate default entry height: (safetyHeight + outputHeight) / 2 + groundElevation
-  const calculateDefaultEntryHeight = useCallback(async (): Promise<number | null> => {
-    if (!dtmSource || !flightPath || flightPath.length === 0) {
-      return null; // Can't calculate without DTM and flight path
-    }
-
-    try {
-      const firstPoint = flightPath[0];
-      const secondPoint = flightPath[1] || firstPoint;
-      const coordinates = [
-        [firstPoint.lng, firstPoint.lat],
-        [secondPoint.lng, secondPoint.lat]
-      ];
-
-      const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
-      const clippedId = clippedIdMatch ? clippedIdMatch[1] : activeClippedId || undefined;
-
-      const response = await fetch('/api/elevation-profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          coordinates,
-          dtmPath: dtmSource,
-          safetyRadiusMeters: 50,
-          resolutionRadiusMeters: 50,
-          ...(clippedId && { clippedId })
-        })
-      });
-
-      if (!response.ok) {
-        return null;
-      }
-
-      const data = await response.json();
-      let groundElevation: number | null = null;
-
-      if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
-        groundElevation = data.profile[0].elevation;
-      } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
-        groundElevation = data.elevations[0];
-      } else if (data.elevation !== undefined) {
-        groundElevation = data.elevation;
-      }
-
-      if (groundElevation === null || isNaN(groundElevation)) {
-        return null;
-      }
-
-      // Calculate default: average of safety and output height + ground elevation
-      const avgHeight = (safetyHeight + outputHeight) / 2;
-      const calculatedHeight = avgHeight + groundElevation;
-      // Round to 1 decimal place
-      return Math.round(calculatedHeight * 10) / 10;
-    } catch (error) {
-      console.error('Failed to calculate default entry height:', error);
-      return null;
-    }
-  }, [dtmSource, flightPath, activeClippedId, safetyHeight, outputHeight]);
-
-  // Reset draft values when modal opens and calculate default entry height if needed
+  // Reset draft values when modal opens
   useEffect(() => {
     if (isOpen) {
-      const currentEntryHeight = nominalFlightHeight;
-      const isDefaultValue = Math.abs(currentEntryHeight - 250) < 0.1; // Check if still at default (250)
-
-      // Calculate default entry height if at default value
-      if (isDefaultValue) {
-        calculateDefaultEntryHeight().then((defaultHeight) => {
-          if (defaultHeight !== null && !isNaN(defaultHeight)) {
-            setGeneralDraft(prev => ({
-              ...prev,
-              nominalFlightHeight: defaultHeight.toFixed(1)
-            }));
-          } else {
-            // Fallback: use current values
-            setGeneralDraft({
-              nominalFlightHeight: nominalFlightHeight.toString(),
-              safetyRadius: safetyRadius.toString(),
-              safetyHeight: safetyHeight.toString(),
-              outputHeight: outputHeight.toString()
-            });
-          }
-        });
-      } else {
-        setGeneralDraft({
-          nominalFlightHeight: nominalFlightHeight.toString(),
-          safetyRadius: safetyRadius.toString(),
-          safetyHeight: safetyHeight.toString(),
-          outputHeight: outputHeight.toString()
-        });
-      }
+      setGeneralDraft({
+        safetyRadius: safetyRadius.toString(),
+        safetyHeight: safetyHeight.toString(),
+        outputHeight: outputHeight.toString()
+      });
 
       setMissionDraft({
         overlapPercentage: overlapPercentage.toString(),
@@ -226,7 +131,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     return () => {
       document.body.style.overflow = '';
     };
-  }, [isOpen, nominalFlightHeight, safetyRadius, safetyHeight, outputHeight, overlapPercentage, fovDegrees, climbConfig, selectedClimbPresetId, calculateDefaultEntryHeight]);
+  }, [isOpen, safetyRadius, safetyHeight, outputHeight, overlapPercentage, fovDegrees, climbConfig, selectedClimbPresetId]);
 
   // Focus first input when tab changes
   useEffect(() => {
@@ -286,11 +191,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const newErrors: ValidationError[] = [];
 
     // General validations
-    const entryHeight = parseFloat(generalDraft.nominalFlightHeight);
-    if (isNaN(entryHeight) || entryHeight < 0 || entryHeight > 10000) {
-      newErrors.push({ field: 'nominalFlightHeight', message: 'גובה כניסה חייב להיות בין 0 ל-10000' });
-    }
-
     const safetyRad = parseFloat(generalDraft.safetyRadius);
     if (isNaN(safetyRad) || safetyRad < 1) {
       newErrors.push({ field: 'safetyRadius', message: 'רדיוס בטיחות חייב להיות לפחות 1' });
@@ -356,7 +256,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     if (isOpen) {
       validateAll();
     }
-  }, [isOpen, generalDraft.nominalFlightHeight, generalDraft.safetyHeight, generalDraft.outputHeight, validateAll]);
+  }, [isOpen, generalDraft.safetyRadius, generalDraft.safetyHeight, generalDraft.outputHeight, validateAll]);
 
   const getFieldError = (field: string): string | undefined => {
     return errors.find(e => e.field === field)?.message;
@@ -368,7 +268,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     }
 
     // Apply general settings
-    setNominalFlightHeight(parseFloat(generalDraft.nominalFlightHeight));
     setSafetyRadius(parseFloat(generalDraft.safetyRadius));
     setSafetyHeight(parseFloat(generalDraft.safetyHeight));
     setOutputHeight(parseFloat(generalDraft.outputHeight));
@@ -390,7 +289,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     });
 
     onClose();
-  }, [validateAll, generalDraft, missionDraft, climbDraft, selectedPresetId, setNominalFlightHeight, setSafetyRadius, setSafetyHeight, setOutputHeight, setOverlapPercentage, setFovDegrees, onSelectClimbPreset, setClimbConfig, onClose]);
+  }, [validateAll, generalDraft, missionDraft, climbDraft, selectedPresetId, setSafetyRadius, setSafetyHeight, setOutputHeight, setOverlapPercentage, setFovDegrees, onSelectClimbPreset, setClimbConfig, onClose]);
 
   // Handle Enter key to save
   useEffect(() => {
@@ -532,41 +431,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
               className="settings-modal__panel"
             >
               <div className="settings-modal__field">
-                <label htmlFor="entry-height" className="settings-modal__label">
-                  גובה כניסה
-                  <span className="settings-modal__unit">מטרים</span>
-                </label>
-                <input
-                  ref={firstInputRef}
-                  id="entry-height"
-                  type="number"
-                  min="0"
-                  max="10000"
-                  step="0.1"
-                  required
-                  inputMode="decimal"
-                  aria-required="true"
-                  value={generalDraft.nominalFlightHeight}
-                  onChange={(e) => {
-                    setGeneralDraft(prev => ({ ...prev, nominalFlightHeight: e.target.value }));
-                  }}
-                  className={`settings-modal__input ${getFieldError('nominalFlightHeight') ? 'error' : ''}`}
-                  aria-describedby={getFieldError('nominalFlightHeight') ? 'entry-height-error' : undefined}
-                />
-                {getFieldError('nominalFlightHeight') && (
-                  <span id="entry-height-error" className="settings-modal__error" role="alert">
-                    {getFieldError('nominalFlightHeight')}
-                  </span>
-                )}
-                <span className="settings-modal__hint">גובה הטיסה ההתחלתי מעל פני הים (ASL)</span>
-              </div>
-
-              <div className="settings-modal__field">
                 <label htmlFor="safety-radius" className="settings-modal__label">
                   רדיוס בטיחות
                   <span className="settings-modal__unit">מטרים</span>
                 </label>
                 <input
+                  ref={firstInputRef}
                   id="safety-radius"
                   type="number"
                   min="1"

@@ -614,6 +614,7 @@ interface MapPanelProps {
   onAddRoute: () => void;
   onActiveRouteChange: (routeId: string) => void;
   onRenameRoute: (routeId: string, name: string) => void;
+  onRouteNominalFlightHeightChange: (routeId: string, height: number) => void;
   onToggleRouteVisibility: (routeId: string) => void;
   onDeleteRoute: (routeId: string) => void;
   onShowAllRoutes: () => void;
@@ -674,6 +675,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onAddRoute,
   onActiveRouteChange,
   onRenameRoute,
+  onRouteNominalFlightHeightChange,
   onToggleRouteVisibility,
   onDeleteRoute,
   onShowAllRoutes,
@@ -7992,101 +7994,111 @@ const MapPanel: React.FC<MapPanelProps> = ({
             <div className="group-columns">
               <div className="group-column route-list">
                 {routes.map((route, idx) => (
-                  <div
-                    key={route.id}
-                    className={`route-row ${route.id === activeRouteId ? 'active' : ''} ${editingRouteId === route.id ? 'editing' : ''}`}
-                  >
-                    <div 
-                      className="route-main" 
-                      title="בחר מסלול פעיל"
-                      onClick={() => onActiveRouteChange(route.id)}
-                      style={{ cursor: 'pointer' }}
-                    >
-                      <span
-                        className="route-color-dot"
-                        style={{ backgroundColor: route.color }}
-                        aria-hidden
-                      />
-                      <span 
-                        className="route-name-block"
-                        onClick={(e) => {
-                          // Detect double-click using detail property (detail === 2 means double-click)
-                          if (e.detail === 2) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            if (editingRouteId !== route.id) {
-                              setEditingRouteId(route.id);
-                              setEditingRouteName(route.name);
+                  <div key={route.id} className="route-card">
+                    <div className="route-card-title-wrap">
+                      {editingRouteId === route.id ? (
+                        <input
+                          className="route-name-input"
+                          value={editingRouteName}
+                          autoFocus
+                          onChange={(e) => setEditingRouteName(e.target.value)}
+                          onClick={(e) => e.stopPropagation()}
+                          onBlur={() => {
+                            if (editingRouteId) {
+                              onRenameRoute(editingRouteId, editingRouteName);
+                              setEditingRouteId(null);
+                              setEditingRouteName('');
                             }
-                          } else {
-                            // Single click - prevent route selection
-                            e.stopPropagation();
-                          }
-                        }}
-                      >
-                        <span className="route-index">#{idx + 1}</span>
-                        {editingRouteId === route.id ? (
-                          <input
-                            className="route-name-input"
-                            value={editingRouteName}
-                            autoFocus
-                            onChange={(e) => setEditingRouteName(e.target.value)}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                            }}
-                            onBlur={() => {
-                              // Only save if we're still in editing mode (not cancelled)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
                               if (editingRouteId) {
                                 onRenameRoute(editingRouteId, editingRouteName);
-                                setEditingRouteId(null);
-                                setEditingRouteName('');
                               }
-                            }}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                if (editingRouteId) {
-                                  onRenameRoute(editingRouteId, editingRouteName);
-                                }
-                                setEditingRouteId(null);
-                                setEditingRouteName('');
-                                e.currentTarget.blur();
-                              } else if (e.key === 'Escape') {
-                                e.preventDefault();
-                                // Clear editing state first to prevent onBlur from saving
-                                setEditingRouteId(null);
-                                setEditingRouteName('');
-                                e.currentTarget.blur();
+                              setEditingRouteId(null);
+                              setEditingRouteName('');
+                              e.currentTarget.blur();
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault();
+                              setEditingRouteId(null);
+                              setEditingRouteName('');
+                              e.currentTarget.blur();
+                            }
+                          }}
+                          placeholder={`מסלול ${idx + 1}`}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          className="route-card-title"
+                          title={`${route.name} (לחיצה כפולה לשינוי שם)`}
+                          onClick={(e) => {
+                            if (e.detail === 2) {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              if (editingRouteId !== route.id) {
+                                setEditingRouteId(route.id);
+                                setEditingRouteName(route.name);
                               }
-                            }}
-                            placeholder={`מסלול ${idx + 1}`}
-                          />
-                        ) : (
-                          <button
-                            type="button"
-                            className="route-name-button"
-                            title={`${route.name} (לחיצה כפולה לשינוי שם)`}
-                            onClick={(e) => {
-                              // Detect double-click using detail property (detail === 2 means double-click)
-                              if (e.detail === 2) {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                if (editingRouteId !== route.id) {
-                                  setEditingRouteId(route.id);
-                                  setEditingRouteName(route.name);
-                                }
-                              } else {
-                                // Single click - prevent route selection
-                                e.stopPropagation();
-                              }
-                            }}
-                          >
-                            <span className="route-name-text">{route.name}</span>
-                          </button>
-                        )}
-                      </span>
+                            } else {
+                              e.stopPropagation();
+                            }
+                          }}
+                        >
+                          {route.name}
+                        </button>
+                      )}
                     </div>
-                    <div className="route-actions">
+                    <div
+                      className={`route-row ${route.id === activeRouteId ? 'active' : ''} ${editingRouteId === route.id ? 'editing' : ''}`}
+                      title={route.name}
+                    >
+                      <div
+                        className="route-main"
+                        title={route.name}
+                        onClick={() => onActiveRouteChange(route.id)}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <span
+                          className="route-color-dot"
+                          style={{ backgroundColor: route.color }}
+                          aria-hidden
+                        />
+                        <span className="route-index">#{idx + 1}</span>
+                      </div>
+                      <div className="route-actions">
+                      <div className="route-height-field" onClick={(e) => e.stopPropagation()}>
+                        <label
+                          htmlFor={`route-height-${route.id}`}
+                          className="route-height-label"
+                          title="גובה כניסה למסלול זה"
+                        >
+                          גובה כניסה
+                        </label>
+                        <div className="route-height-input-wrap">
+                          <input
+                            id={`route-height-${route.id}`}
+                            type="number"
+                            min={0}
+                            max={10000}
+                            step={0.1}
+                            className="route-height-input"
+                            value={Number.isFinite(route.nominalFlightHeight) ? route.nominalFlightHeight : 0}
+                            onChange={(e) => {
+                              e.stopPropagation();
+                              const parsed = parseFloat(e.target.value);
+                              if (Number.isFinite(parsed)) {
+                                onRouteNominalFlightHeightChange(route.id, parsed);
+                              }
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            onFocus={(e) => e.stopPropagation()}
+                            aria-label={`גובה כניסה עבור ${route.name}`}
+                          />
+                          <span className="route-height-unit">מ׳</span>
+                        </div>
+                      </div>
                       <Tooltip tooltip={
                         route.id === activeRouteId
                           ? 'המסלול הפעיל נשאר גלוי.'
@@ -8127,6 +8139,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                           <span className="sr-only">מחיקת מסלול</span>
                         </button>
                       </Tooltip>
+                      </div>
                     </div>
                   </div>
                 ))}

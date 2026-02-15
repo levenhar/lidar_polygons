@@ -137,7 +137,9 @@ interface ElevationProfileProps {
   loading: boolean;
   nominalFlightHeight: number;
   safetyHeight: number;
+  safetyRadius: number;
   resolutionHeight: number;
+  overlapPercentage: number;
   selectedPoint: Coordinate | null;
   flightPath: Coordinate[];
   onDeletePoint: (index: number) => void;
@@ -162,7 +164,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   loading,
   nominalFlightHeight,
   safetyHeight,
+  safetyRadius,
   resolutionHeight,
+  overlapPercentage,
   selectedPoint,
   flightPath,
   onDeletePoint,
@@ -2587,29 +2591,58 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         const url = URL.createObjectURL(svgBlob);
 
         img.onload = () => {
-          // Add extra height for statistics
-          const statsHeight = 100;
+          // Add extra height for statistics and a top metadata strip.
+          const topMetadataHeight = 44;
+          const statsHeight = 140;
           canvas.width = img.width;
-          canvas.height = img.height + statsHeight;
+          canvas.height = topMetadataHeight + img.height + statsHeight;
 
           if (ctx) {
         // Fill canvas with white background
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
+        // Draw top metadata background
+        ctx.fillStyle = '#f9fafb';
+        ctx.fillRect(0, 0, canvas.width, topMetadataHeight);
+
+        // Draw top metadata border
+        ctx.strokeStyle = '#e5e7eb';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, topMetadataHeight);
+        ctx.lineTo(canvas.width, topMetadataHeight);
+        ctx.stroke();
+
+        const statPadding = 20;
+        const topMetadata = [
+          `שם מסלול: ${activeRouteName || '-'}`,
+          `אחוז חפיפה: ${overlapPercentage.toFixed(1)}%`,
+          `רדיוס בטיחות: ${safetyRadius.toFixed(1)} מ'`
+        ];
+        ctx.fillStyle = '#374151';
+        ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.textAlign = 'right';
+        if ('direction' in ctx) {
+          (ctx as any).direction = 'rtl';
+        }
+        ctx.fillText(topMetadata.join('   |   '), canvas.width - statPadding, 28);
+
         // Draw the SVG image
-        ctx.drawImage(img, 0, 0);
+        ctx.drawImage(img, 0, topMetadataHeight);
+
+        const statsTopY = topMetadataHeight + img.height;
 
         // Draw statistics background
         ctx.fillStyle = '#f9fafb';
-        ctx.fillRect(0, img.height, canvas.width, statsHeight);
+        ctx.fillRect(0, statsTopY, canvas.width, statsHeight);
 
         // Draw statistics border
         ctx.strokeStyle = '#e5e7eb';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(0, img.height);
-        ctx.lineTo(canvas.width, img.height);
+        ctx.moveTo(0, statsTopY);
+        ctx.lineTo(canvas.width, statsTopY);
         ctx.stroke();
 
         // Configure text style - use Apple system font and right alignment for RTL
@@ -2622,10 +2655,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         }
 
         // Calculate positions for statistics (right-to-left layout)
-        const statPadding = 20;
         const statSpacing = 120;
-        const labelY = img.height + 30;
-        const valueY = img.height + 55;
+        const labelY = statsTopY + 30;
+        const valueY = statsTopY + 55;
 
         // Draw statistics in RTL order (first item on the right)
         const stats = [
@@ -2661,6 +2693,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
           xPos -= statSpacing;
         });
+
           }
 
           canvas.toBlob((blob) => {

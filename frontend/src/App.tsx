@@ -2131,7 +2131,9 @@ function AppContent() {
             loading={flightPath.length >= 2 && dtmSource !== null && (loading || isProcessingQueue || editQueue.length > 0 || !profileReady)}
             nominalFlightHeight={nominalFlightHeight}
             safetyHeight={safetyHeight}
+            safetyRadius={safetySearchRadius}
             resolutionHeight={resolutionHeight}
+            overlapPercentage={overlapPercentage}
             selectedPoint={selectedPoint}
             flightPath={flightPath}
             onDeletePoint={handleDeletePoint}

@@ -169,20 +169,19 @@ export function GlobalUndoRedoProvider({ children }: GlobalUndoRedoProviderProps
       // Check for Ctrl+Z (undo) or Ctrl+Y / Ctrl+Shift+Z (redo)
       const isMac = navigator.platform?.toUpperCase().indexOf('MAC') >= 0;
       const modifier = isMac ? e.metaKey : e.ctrlKey;
+      // Use physical key codes so shortcuts work across layouts (e.g., Hebrew Ctrl+ז on KeyZ).
+      const isKeyZ = e.code === 'KeyZ' || e.key === 'z' || e.key === 'Z';
+      const isKeyY = e.code === 'KeyY' || e.key === 'y' || e.key === 'Y';
       
       if (modifier) {
-        if ((e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+        if (isKeyZ && !e.shiftKey) {
           // Ctrl+Z or Cmd+Z: Undo
           e.preventDefault();
           e.stopPropagation();
           if (undoStackRef.current.length > 0) {
             undo();
           }
-        } else if (
-          e.key === 'y' || 
-          e.key === 'Y' || 
-          ((e.key === 'z' || e.key === 'Z') && e.shiftKey)
-        ) {
+        } else if (isKeyY || (isKeyZ && e.shiftKey)) {
           // Ctrl+Y or Ctrl+Shift+Z or Cmd+Shift+Z: Redo
           e.preventDefault();
           e.stopPropagation();

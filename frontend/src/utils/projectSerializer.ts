@@ -148,6 +148,7 @@ export interface ProjectFileData {
     id: string;
     name: string;
     color: string;
+    lineWidth?: number;
     visible: boolean;
     points: Array<{
       lng: number;
@@ -290,6 +291,7 @@ export function exportProject(params: {
     id: route.id,
     name: route.name,
     color: route.color,
+    lineWidth: route.lineWidth,
     visible: route.visible,
     points: route.points.map(p => ({
       lng: p.lng,
@@ -428,6 +430,14 @@ function migrateProject(data: any): any {
   // Safety net for partially-corrupted files
   if (!Array.isArray(migrated.kmlImports)) {
     migrated.kmlImports = [];
+  }
+
+  // Ensure route style fields exist for older project files
+  if (Array.isArray(migrated.routes)) {
+    migrated.routes = migrated.routes.map((route: any) => ({
+      ...route,
+      lineWidth: Number.isFinite(route?.lineWidth) ? route.lineWidth : 3
+    }));
   }
   
   return migrated;

@@ -615,6 +615,8 @@ interface MapPanelProps {
   onActiveRouteChange: (routeId: string) => void;
   onRenameRoute: (routeId: string, name: string) => void;
   onRouteNominalFlightHeightChange: (routeId: string, height: number) => void;
+  onRouteColorChange: (routeId: string, color: string) => void;
+  onRouteLineWidthChange: (routeId: string, width: number) => void;
   onToggleRouteVisibility: (routeId: string) => void;
   onDeleteRoute: (routeId: string) => void;
   onShowAllRoutes: () => void;
@@ -677,6 +679,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onActiveRouteChange,
   onRenameRoute,
   onRouteNominalFlightHeightChange,
+  onRouteColorChange,
+  onRouteLineWidthChange,
   onToggleRouteVisibility,
   onDeleteRoute,
   onShowAllRoutes,
@@ -2652,6 +2656,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const activeRoute = routes.find((route) => route.id === activeRouteId) || routes[0];
   const activeRouteColor = activeRoute?.color || '#ff0000';
+  const activeRouteLineWidth = Number.isFinite(activeRoute?.lineWidth) ? activeRoute.lineWidth : 3;
   const flightPathSignature = useMemo(() => {
     return flightPath
       .map((point) => {
@@ -4482,7 +4487,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     // Add flight path line (will be on top visually)
     flightPathLineRef.current = L.polyline(latlngs, {
       color: activeRouteColor,
-      weight: 3,
+      weight: activeRouteLineWidth,
       opacity: 0.8,
       interactive: false // Disable interaction to prevent flickering with the wide clickable layer
     }).addTo(map.current);
@@ -5151,6 +5156,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     editingPointIndex,
     externalEditPointIndex,
     activeRouteColor,
+    activeRouteLineWidth,
     climbMarkers,
     showClimbLabels,
     selectedPointIndices,
@@ -5487,13 +5493,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       const latlngs = route.points.map((p) => [p.lat, p.lng] as [number, number]);
       const existing = passiveRouteLinesRef.current[route.id];
+      const routeLineWidth = Number.isFinite(route.lineWidth) ? route.lineWidth : 3;
       if (existing) {
         existing.setLatLngs(latlngs);
-        existing.setStyle({ color: route.color });
+        existing.setStyle({ color: route.color, weight: routeLineWidth });
       } else {
         passiveRouteLinesRef.current[route.id] = L.polyline(latlngs, {
           color: route.color,
-          weight: 3,
+          weight: routeLineWidth,
           opacity: 0.6,
           dashArray: '6 6',
           interactive: false
@@ -8075,21 +8082,74 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     <div
                       className={`route-row ${route.id === activeRouteId ? 'active' : ''} ${editingRouteId === route.id ? 'editing' : ''}`}
                       title={route.name}
+                      onClick={(e) => {
+                        const target = e.target as Element | null;
+                        if (target?.closest('input, button, select, textarea, label, a, .route-actions')) {
+                          return;
+                        }
+                        if (e.detail === 2) {
+                          onActiveRouteChange(route.id);
+                        }
+                      }}
+                      onDoubleClick={(e) => {
+                        const target = e.target as Element | null;
+                        if (target?.closest('input, button, select, textarea, label, a, .route-actions')) {
+                          return;
+                        }
+                        onActiveRouteChange(route.id);
+                      }}
                     >
                       <div
                         className="route-main"
                         title={route.name}
-                        onClick={() => onActiveRouteChange(route.id)}
-                        style={{ cursor: 'pointer' }}
+                        style={{ cursor: 'default' }}
                       >
-                        <span
-                          className="route-color-dot"
-                          style={{ backgroundColor: route.color }}
-                          aria-hidden
+                        <input
+                          id={`route-color-${route.id}`}
+                          type="color"
+                          className="route-color-dot-input"
+                          value={route.color}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            onRouteColorChange(route.id, e.target.value);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          onFocus={(e) => e.stopPropagation()}
+                          aria-label={`צבע קו עבור ${route.name}`}
+                          title="שינוי צבע קו"
                         />
-                        <span className="route-index">#{idx + 1}</span>
+                        <div className="route-style-field" onClick={(e) => e.stopPropagation()}>
+                          <label
+                            htmlFor={`route-width-${route.id}`}
+                            className="route-height-label route-style-label"
+                            title="עובי הקו למסלול זה"
+                          >
+                            עובי
+                          </label>
+                          <div className="route-width-input-wrap">
+                            <input
+                              id={`route-width-${route.id}`}
+                              type="number"
+                              min={1}
+                              max={12}
+                              step={0.5}
+                              className="route-width-input"
+                              value={Number.isFinite(route.lineWidth) ? route.lineWidth : 3}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                const parsed = parseFloat(e.target.value);
+                                if (Number.isFinite(parsed)) {
+                                  onRouteLineWidthChange(route.id, parsed);
+                                }
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              onFocus={(e) => e.stopPropagation()}
+                              aria-label={`עובי קו עבור ${route.name}`}
+                            />
+                          </div>
+                        </div>
                       </div>
-                      <div className="route-actions">
+                      <div className="route-actions" onDoubleClick={(e) => e.stopPropagation()}>
                       <div className="route-height-field" onClick={(e) => e.stopPropagation()}>
                         <label
                           htmlFor={`route-height-${route.id}`}

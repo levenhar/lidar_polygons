@@ -198,6 +198,8 @@ function AppContent() {
     nominalFlightHeight,
     setNominalFlightHeight,
     setRouteNominalFlightHeight,
+    setRouteColor,
+    setRouteLineWidth,
     climbRequestsByRoute,
     addRoute,
     setActiveRoute,
@@ -1722,6 +1724,9 @@ function AppContent() {
       id: routeData.id,
       name: routeData.name,
       color: routeData.color,
+      lineWidth: typeof routeData.lineWidth === 'number' && Number.isFinite(routeData.lineWidth)
+        ? routeData.lineWidth
+        : 3,
       visible: routeData.visible,
       points: routeData.points.map(p => ({
         lng: p.lng,
@@ -2056,6 +2061,8 @@ function AppContent() {
             onActiveRouteChange={setActiveRoute}
             onRenameRoute={renameRoute}
             onRouteNominalFlightHeightChange={setRouteNominalFlightHeight}
+            onRouteColorChange={setRouteColor}
+            onRouteLineWidthChange={setRouteLineWidth}
             onToggleRouteVisibility={toggleRouteVisibility}
             onDeleteRoute={(routeId) => {
               deleteRoute(routeId);

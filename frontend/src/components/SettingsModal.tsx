@@ -392,6 +392,23 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     onClose();
   }, [validateAll, generalDraft, missionDraft, climbDraft, selectedPresetId, setNominalFlightHeight, setSafetyRadius, setSafetyHeight, setOutputHeight, setOverlapPercentage, setFovDegrees, onSelectClimbPreset, setClimbConfig, onClose]);
 
+  // Handle Enter key to save
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleSave();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [isOpen, handleSave]);
+
   const handlePresetChange = useCallback((presetId: string) => {
     setSelectedPresetId(presetId);
     const preset = climbPresets.find(p => p.id === presetId);

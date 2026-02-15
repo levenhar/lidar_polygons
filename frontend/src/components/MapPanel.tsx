@@ -7030,6 +7030,23 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   };
 
+  // Handle Enter key in quick add-point dialog
+  useEffect(() => {
+    if (!dialog) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleDialogSubmit();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [dialog]);
+
   const renderDialogFields = () => {
     if (!dialog) return null;
     if (dialog.type === 'height') {

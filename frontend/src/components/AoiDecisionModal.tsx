@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import './AoiDecisionModal.css';
 
 interface AoiDecisionModalProps {
@@ -12,6 +12,23 @@ const AoiDecisionModal: React.FC<AoiDecisionModalProps> = ({
   onReplace,
   onAddAsOverlay
 }) => {
+  // Handle Enter key to replace AOI (primary action)
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        onReplace();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [isOpen, onReplace]);
+
   if (!isOpen) return null;
 
   return (

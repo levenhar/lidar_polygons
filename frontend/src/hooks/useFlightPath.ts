@@ -70,6 +70,7 @@ export interface FlightRoute {
   id: string;
   name: string;
   color: string;
+  lineWidth: number;
   visible: boolean;
   points: Coordinate[];
   // Nominal flight height (AGL) associated with this route
@@ -85,12 +86,21 @@ interface FlightRoutesState {
 const colorPalette = ['#ff4d4f', '#0ea5e9', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
 
 const DEFAULT_NOMINAL_FLIGHT_HEIGHT = 250;
+const DEFAULT_ROUTE_LINE_WIDTH = 3;
+const MIN_ROUTE_LINE_WIDTH = 1;
+const MAX_ROUTE_LINE_WIDTH = 12;
+
+function sanitizeRouteLineWidth(width: number): number {
+  if (!Number.isFinite(width)) return DEFAULT_ROUTE_LINE_WIDTH;
+  return Math.min(MAX_ROUTE_LINE_WIDTH, Math.max(MIN_ROUTE_LINE_WIDTH, width));
+}
 
 function createRoute(index: number, nominalFlightHeight: number = DEFAULT_NOMINAL_FLIGHT_HEIGHT): FlightRoute {
   return {
     id: `route-${index}-${Date.now()}`,
     name: `מסלול ${index}`,
     color: colorPalette[(index - 1) % colorPalette.length],
+    lineWidth: DEFAULT_ROUTE_LINE_WIDTH,
     visible: true,
     points: [],
     nominalFlightHeight
@@ -228,6 +238,47 @@ export function useFlightPath(
       );
     },
     [setState, state]
+  );
+
+  const setRouteColor = useCallback(
+    (routeId: string, color: string) => {
+      if (!routeId || !color) return;
+      setState(
+        (prevState) => {
+          const hasRoute = prevState.routes.some((route) => route.id === routeId);
+          if (!hasRoute) return prevState;
+          return {
+            ...prevState,
+            routes: prevState.routes.map((route) =>
+              route.id === routeId ? { ...route, color } : route
+            )
+          };
+        },
+        true
+      );
+    },
+    [setState]
+  );
+
+  const setRouteLineWidth = useCallback(
+    (routeId: string, width: number) => {
+      if (!routeId) return;
+      const safeWidth = sanitizeRouteLineWidth(width);
+      setState(
+        (prevState) => {
+          const hasRoute = prevState.routes.some((route) => route.id === routeId);
+          if (!hasRoute) return prevState;
+          return {
+            ...prevState,
+            routes: prevState.routes.map((route) =>
+              route.id === routeId ? { ...route, lineWidth: safeWidth } : route
+            )
+          };
+        },
+        true
+      );
+    },
+    [setState]
   );
 
   const toggleRouteVisibility = useCallback(
@@ -1287,6 +1338,10 @@ export function useFlightPath(
         const routesWithNominal = nominalFlightHeight !== undefined
           ? routes.map((r) => ({ ...r, nominalFlightHeight }))
           : routes;
+        const routesWithStyleDefaults = routesWithNominal.map((route) => ({
+          ...route,
+          lineWidth: sanitizeRouteLineWidth(route.lineWidth)
+        }));
 
         setState(
           (prevState) => {
@@ -1297,11 +1352,11 @@ export function useFlightPath(
             const updatedClimbRequestsByRoute = { ...prevState.climbRequestsByRoute };
             const nextRoutes = [...prevState.routes];
 
-            let nextActiveRouteId = routesWithNominal[0].id;
+            let nextActiveRouteId = routesWithStyleDefaults[0].id;
 
             if (emptyRouteIndex !== -1) {
               const existingEmpty = prevState.routes[emptyRouteIndex];
-              const firstImported = routesWithNominal[0];
+              const firstImported = routesWithStyleDefaults[0];
 
               // Keep the existing route identity (id/color/visibility), but inject imported geometry + metadata.
               nextRoutes[emptyRouteIndex] = {
@@ -1314,15 +1369,15 @@ export function useFlightPath(
               nextActiveRouteId = existingEmpty.id;
 
               // Append any additional imported routes (if KML contains multiple LineStrings)
-              if (routesWithNominal.length > 1) {
-                nextRoutes.push(...routesWithNominal.slice(1));
+              if (routesWithStyleDefaults.length > 1) {
+                nextRoutes.push(...routesWithStyleDefaults.slice(1));
               }
             } else {
-              nextRoutes.push(...routesWithNominal);
+              nextRoutes.push(...routesWithStyleDefaults);
             }
 
             // Attach climb requests to the first imported route (or the reused empty route)
-            if (climbRequests.length > 0 && routesWithNominal.length > 0) {
+            if (climbRequests.length > 0 && routesWithStyleDefaults.length > 0) {
               updatedClimbRequestsByRoute[nextActiveRouteId] = climbRequests;
             }
 
@@ -1336,7 +1391,7 @@ export function useFlightPath(
           true
         );
 
-        return { routes: routesWithNominal, climbRequests, nominalFlightHeight };
+        return { routes: routesWithStyleDefaults, climbRequests, nominalFlightHeight };
       } catch (error) {
         console.error('Error importing KML:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1368,26 +1423,31 @@ export function useFlightPath(
   const importRoutes = useCallback(
     (routesToImport: FlightRoute[], climbRequestsByRouteToImport?: Record<string, { endDistance: number; climbAmount: number; anchorPointIdA?: string; anchorPointIdB?: string; segmentRatio?: number }[]>) => {
       if (routesToImport.length === 0) return;
+      const normalizedRoutesToImport = routesToImport.map((route) => ({
+        ...route,
+        lineWidth: sanitizeRouteLineWidth(route.lineWidth)
+      }));
       
       setState(
         (prevState) => {
           // Find empty route to reuse, or append new routes
           const emptyRouteIndex = prevState.routes.findIndex((r) => r.points.length === 0);
           const nextRoutes = [...prevState.routes];
-          let nextActiveRouteId = routesToImport[0]?.id || prevState.activeRouteId;
+          let nextActiveRouteId = normalizedRoutesToImport[0]?.id || prevState.activeRouteId;
           const updatedClimbRequestsByRoute = climbRequestsByRouteToImport 
             ? { ...prevState.climbRequestsByRoute, ...climbRequestsByRouteToImport }
             : prevState.climbRequestsByRoute;
 
-          if (emptyRouteIndex !== -1 && routesToImport.length > 0) {
+          if (emptyRouteIndex !== -1 && normalizedRoutesToImport.length > 0) {
             // Reuse empty route for first imported route
             const existingEmpty = prevState.routes[emptyRouteIndex];
-            const firstImported = routesToImport[0];
+            const firstImported = normalizedRoutesToImport[0];
             nextRoutes[emptyRouteIndex] = {
               ...existingEmpty,
               id: firstImported.id,
               name: firstImported.name || existingEmpty.name,
               color: firstImported.color || existingEmpty.color,
+              lineWidth: sanitizeRouteLineWidth(firstImported.lineWidth),
               visible: firstImported.visible !== undefined ? firstImported.visible : existingEmpty.visible,
               points: firstImported.points,
               nominalFlightHeight: firstImported.nominalFlightHeight
@@ -1395,13 +1455,13 @@ export function useFlightPath(
             nextActiveRouteId = firstImported.id;
 
             // Append additional routes
-            if (routesToImport.length > 1) {
-              nextRoutes.push(...routesToImport.slice(1));
+            if (normalizedRoutesToImport.length > 1) {
+              nextRoutes.push(...normalizedRoutesToImport.slice(1));
             }
           } else {
             // No empty route, replace all routes
-            nextRoutes.splice(0, nextRoutes.length, ...routesToImport);
-            nextActiveRouteId = routesToImport[0]?.id || '';
+            nextRoutes.splice(0, nextRoutes.length, ...normalizedRoutesToImport);
+            nextActiveRouteId = normalizedRoutesToImport[0]?.id || '';
           }
 
           return {
@@ -1424,6 +1484,8 @@ export function useFlightPath(
     nominalFlightHeight,
     setNominalFlightHeight,
     setRouteNominalFlightHeight,
+    setRouteColor,
+    setRouteLineWidth,
     climbRequestsByRoute: state.climbRequestsByRoute,
     addRoute,
     setActiveRoute,

@@ -218,6 +218,8 @@ function App() {
     nominalFlightHeight,
     setNominalFlightHeight,
     setRouteNominalFlightHeight,
+    setRouteColor,
+    setRouteLineWidth,
     climbRequestsByRoute,
     addRoute,
     setActiveRoute,
@@ -1726,6 +1728,8 @@ function App() {
             onActiveRouteChange={setActiveRoute}
             onRenameRoute={renameRoute}
             onRouteNominalFlightHeightChange={setRouteNominalFlightHeight}
+            onRouteColorChange={setRouteColor}
+            onRouteLineWidthChange={setRouteLineWidth}
             onToggleRouteVisibility={toggleRouteVisibility}
             onDeleteRoute={(routeId) => {
               deleteRoute(routeId);

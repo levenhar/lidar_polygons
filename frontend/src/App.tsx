@@ -1791,13 +1791,97 @@ function AppContent() {
           } else if (projectData.dtm.sourceType === 'server') {
             // Server DTM - re-fetch from server
             try {
-              // If it was a clipped DTM, we need to re-clip it
-              if (projectData.dtm.clippedId) {
-                // Try to use the existing clipped DTM
+              if (!projectData.dtm.dtmServerId) {
+                throw new Error('Missing server DTM identifier in project file');
+              }
+
+              const savedAoi = projectData.dtm.aoi ? {
+                type: projectData.dtm.aoi.type,
+                bbox: projectData.dtm.aoi.bbox ? {
+                  minLon: projectData.dtm.aoi.bbox[0],
+                  minLat: projectData.dtm.aoi.bbox[1],
+                  maxLon: projectData.dtm.aoi.bbox[2],
+                  maxLat: projectData.dtm.aoi.bbox[3]
+                } : undefined,
+                polygon: projectData.dtm.aoi.polygon
+              } : undefined;
+
+              // Keep project AOI/metadata in state for later replacements and UI hints.
+              setServerDtmId(projectData.dtm.dtmServerId);
+              setServerDtmMetadata({
+                displayName: projectData.dtm.displayName,
+                sizeBytes: projectData.dtm.sizeBytes,
+                modifiedAt: projectData.dtm.modifiedAt
+              });
+              if (savedAoi) {
+                setAoiGeometry(savedAoi);
+              }
+
+              if (savedAoi) {
+                // Always re-clip from source DTM; do not rely on old clipped cache IDs.
+                const clipBbox = savedAoi.bbox
+                  ? [savedAoi.bbox.minLon, savedAoi.bbox.minLat, savedAoi.bbox.maxLon, savedAoi.bbox.maxLat]
+                  : savedAoi.polygon && savedAoi.polygon.length > 0
+                    ? [
+                        Math.min(...savedAoi.polygon.map(([lon]) => lon)),
+                        Math.min(...savedAoi.polygon.map(([, lat]) => lat)),
+                        Math.max(...savedAoi.polygon.map(([lon]) => lon)),
+                        Math.max(...savedAoi.polygon.map(([, lat]) => lat))
+                      ]
+                    : null;
+
+                if (!clipBbox) {
+                  throw new Error('Project DTM AOI is missing a valid bbox/polygon');
+                }
+
+                const clipResponse = await fetch('/api/dtm/clip', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    dtmId: projectData.dtm.dtmServerId,
+                    aoi: {
+                      type: 'bbox',
+                      crs: 'EPSG:4326',
+                      bbox: clipBbox
+                    }
+                  })
+                });
+
+                if (!clipResponse.ok) {
+                  const errorData = await clipResponse.json().catch(() => ({}));
+                  throw new Error(errorData.detail || errorData.error || `Failed to clip DTM: ${clipResponse.status}`);
+                }
+
+                const clipResult = await clipResponse.json();
+                handleDtmLoad(clipResult.dataUrl, {
+                  bounds: {
+                    minX: clipResult.raster.bbox[0],
+                    minY: clipResult.raster.bbox[1],
+                    maxX: clipResult.raster.bbox[2],
+                    maxY: clipResult.raster.bbox[3]
+                  },
+                  resolution: {
+                    width: clipResult.raster.width,
+                    height: clipResult.raster.height
+                  },
+                  clippedId: clipResult.clippedId,
+                  crs: clipResult.raster.crs
+                }, clipResult.clippedId, {
+                  sourceType: 'server',
+                  serverId: projectData.dtm.dtmServerId,
+                  serverMetadata: {
+                    displayName: projectData.dtm.displayName,
+                    sizeBytes: projectData.dtm.sizeBytes,
+                    modifiedAt: projectData.dtm.modifiedAt
+                  },
+                  aoi: savedAoi
+                });
+              } else {
+                // No AOI, just load the full server DTM directly.
                 handleDtmLoad(
-                  `/api/dtm/clipped/${projectData.dtm.clippedId}/data`,
-                  { clippedId: projectData.dtm.clippedId },
-                  projectData.dtm.clippedId,
+                  `/api/dtm/${projectData.dtm.dtmServerId}/data`,
+                  {},
+                  undefined,
                   {
                     sourceType: 'server',
                     serverId: projectData.dtm.dtmServerId,
@@ -1805,62 +1889,9 @@ function AppContent() {
                       displayName: projectData.dtm.displayName,
                       sizeBytes: projectData.dtm.sizeBytes,
                       modifiedAt: projectData.dtm.modifiedAt
-                    },
-                    aoi: projectData.dtm.aoi ? {
-                      type: projectData.dtm.aoi.type,
-                      bbox: projectData.dtm.aoi.bbox ? {
-                        minLon: projectData.dtm.aoi.bbox[0],
-                        minLat: projectData.dtm.aoi.bbox[1],
-                        maxLon: projectData.dtm.aoi.bbox[2],
-                        maxLat: projectData.dtm.aoi.bbox[3]
-                      } : undefined,
-                      polygon: projectData.dtm.aoi.polygon
-                    } : undefined
+                    }
                   }
                 );
-              } else {
-                // Regular server DTM - need to re-clip if AOI was used
-                if (projectData.dtm.aoi) {
-                  // Re-clip the DTM
-                  // This will be handled by MapPanel's DTM loading flow
-                  setServerDtmId(projectData.dtm.dtmServerId);
-                  setServerDtmMetadata({
-                    displayName: projectData.dtm.displayName,
-                    sizeBytes: projectData.dtm.sizeBytes,
-                    modifiedAt: projectData.dtm.modifiedAt
-                  });
-                  setAoiGeometry({
-                    type: projectData.dtm.aoi.type,
-                    bbox: projectData.dtm.aoi.bbox ? {
-                      minLon: projectData.dtm.aoi.bbox[0],
-                      minLat: projectData.dtm.aoi.bbox[1],
-                      maxLon: projectData.dtm.aoi.bbox[2],
-                      maxLat: projectData.dtm.aoi.bbox[3]
-                    } : undefined,
-                    polygon: projectData.dtm.aoi.polygon
-                  });
-                  // Store project data for later restore after DTM is loaded
-                  (window as any).__pendingProjectRestore = projectData;
-                  setIsLoadingProject(false);
-                  alert('בחר DTM מהשרת ואזור עבודה כדי להמשיך את שחזור הפרויקט.');
-                  return;
-                } else {
-                  // No AOI, just load the DTM directly
-                  handleDtmLoad(
-                    `/api/dtm/${projectData.dtm.dtmServerId}/data`,
-                    {},
-                    undefined,
-                    {
-                      sourceType: 'server',
-                      serverId: projectData.dtm.dtmServerId,
-                      serverMetadata: {
-                        displayName: projectData.dtm.displayName,
-                        sizeBytes: projectData.dtm.sizeBytes,
-                        modifiedAt: projectData.dtm.modifiedAt
-                      }
-                    }
-                  );
-                }
               }
             } catch (error) {
               console.error('Failed to load server DTM:', error);

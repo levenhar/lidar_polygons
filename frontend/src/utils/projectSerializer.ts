@@ -12,6 +12,9 @@
 import { FlightRoute } from '../hooks/useFlightPath';
 import { ClimbConfig } from './climb';
 
+// Project format marker for quick identification
+export const PROJECT_FORMAT_NAME = 'nehorai';
+
 // Schema version for backwards compatibility
 // Version 2: Entry height changed from AGL to ASL
 // Version 3: Persist uploaded KML overlays (including raw KML text)
@@ -19,7 +22,9 @@ import { ClimbConfig } from './climb';
 export const PROJECT_SCHEMA_VERSION = 4;
 
 // Project file extension
-export const PROJECT_FILE_EXTENSION = '.routeproj';
+export const PROJECT_FILE_EXTENSION = '.nehorai';
+export const LEGACY_PROJECT_FILE_EXTENSION = '.routeproj';
+export const PROJECT_FILE_ACCEPT = `${PROJECT_FILE_EXTENSION},${LEGACY_PROJECT_FILE_EXTENSION}`;
 
 /**
  * Local DTM file descriptor
@@ -136,6 +141,7 @@ export interface AscendDescendSettings {
  * Complete project data structure
  */
 export interface ProjectFileData {
+  format?: string;
   schemaVersion: number;
   createdAt: string; // ISO 8601 timestamp
   appVersion?: string; // Optional app version
@@ -348,6 +354,7 @@ export function exportProject(params: {
   });
   
   return {
+    format: PROJECT_FORMAT_NAME,
     schemaVersion: PROJECT_SCHEMA_VERSION,
     createdAt: new Date().toISOString(),
     projectId: generateUUID(),
@@ -384,6 +391,11 @@ export function exportProject(params: {
 export function validateProject(data: any): ProjectFileData {
   if (!data || typeof data !== 'object') {
     throw new ProjectValidationError('Invalid project file: not an object');
+  }
+
+  // If format marker is present, ensure we can read it.
+  if (typeof data.format !== 'undefined' && data.format !== PROJECT_FORMAT_NAME) {
+    throw new ProjectValidationError(`Invalid project file format: expected "${PROJECT_FORMAT_NAME}"`);
   }
   
   if (typeof data.schemaVersion !== 'number') {
@@ -437,6 +449,11 @@ export function validateProject(data: any): ProjectFileData {
  */
 function migrateProject(data: any): any {
   let migrated = { ...data };
+
+  // Older files may not include a format marker.
+  if (typeof migrated.format === 'undefined') {
+    migrated.format = PROJECT_FORMAT_NAME;
+  }
   
   // Migration from v1 to v2: Entry height changed from AGL to ASL
   if (migrated.schemaVersion < 2) {
@@ -516,7 +533,7 @@ export function downloadProjectFile(projectData: ProjectFileData, filename?: str
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename || `project_${new Date().toISOString().split('T')[0]}.routeproj`;
+  a.download = filename || `project_${new Date().toISOString().split('T')[0]}${PROJECT_FILE_EXTENSION}`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

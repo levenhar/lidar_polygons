@@ -19,6 +19,7 @@ import { computeCumulativeDistances } from './utils/constraints';
 import { 
   exportProject, 
   readProjectFile, 
+  PROJECT_FILE_ACCEPT,
   PROJECT_FILE_EXTENSION,
   LocalDtmDescriptor,
   ProjectFileData,

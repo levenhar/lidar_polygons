@@ -1746,6 +1746,7 @@ function App() {
             onShowClimbLabelsChange={setShowClimbLabels}
             kmlImports={kmlImports}
             nominalFlightHeight={nominalFlightHeight}
+            safetyRadius={safetySearchRadius}
             overlapPercentage={overlapPercentage}
             fovDegrees={fovDegrees}
             resolutionHeight={resolutionHeight}

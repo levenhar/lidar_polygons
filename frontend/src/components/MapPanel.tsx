@@ -634,6 +634,7 @@ interface MapPanelProps {
   onDisplaySettingsChange?: (settings: { palette: 'gray' | 'jet'; inverted: boolean; opacity: number }) => void;
   initialDisplaySettings?: { palette: 'gray' | 'jet'; inverted: boolean; opacity: number };
   nominalFlightHeight: number;
+  safetyRadius: number;
   overlapPercentage: number;
   fovDegrees: number;
   resolutionHeight: number;
@@ -686,6 +687,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onDisplaySettingsChange,
   initialDisplaySettings,
   nominalFlightHeight,
+  safetyRadius,
   overlapPercentage,
   fovDegrees,
   resolutionHeight,
@@ -2697,8 +2699,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return false;
     }
     const [minLng, minLat, maxLng, maxLat] = dtmBounds;
-    return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
-  }, [dtmBounds]);
+    const safetyRadiusMeters = Math.max(0, Number.isFinite(safetyRadius) ? safetyRadius : 0);
+
+    if (safetyRadiusMeters <= 0) {
+      return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
+    }
+
+    const centerLat = (minLat + maxLat) / 2;
+    const centerLng = (minLng + maxLng) / 2;
+
+    // Convert safety radius in meters into inner-bound offsets on each axis.
+    const innerSouth = calculateDestination({ lng: centerLng, lat: minLat }, 0, safetyRadiusMeters).lat;
+    const innerNorth = calculateDestination({ lng: centerLng, lat: maxLat }, Math.PI, safetyRadiusMeters).lat;
+    const innerWest = calculateDestination({ lng: minLng, lat: centerLat }, Math.PI / 2, safetyRadiusMeters).lng;
+    const innerEast = calculateDestination({ lng: maxLng, lat: centerLat }, -Math.PI / 2, safetyRadiusMeters).lng;
+
+    // Safety buffer covers the whole area (too small DTM for configured radius).
+    if (innerWest > innerEast || innerSouth > innerNorth) {
+      return false;
+    }
+
+    return lng >= innerWest && lng <= innerEast && lat >= innerSouth && lat <= innerNorth;
+  }, [dtmBounds, safetyRadius]);
 
   // Helper to read numeric preview values per basemap from backend-provided config
   const getPreviewNumericValue = useCallback((baseMapId: string, key: 'ZOOM' | 'X' | 'Y'): number => {

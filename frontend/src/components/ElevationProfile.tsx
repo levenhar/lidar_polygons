@@ -2727,18 +2727,33 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const exportCSV = () => {
     if (elevationProfile.length === 0) return;
 
-    const headers = ['Distance (מ\')', 'Ground Elevation (מ\')', 'Flight Altitude (מ\')', 'AGL (מ\')', 'Longitude', 'Latitude'];
+    const headers = [
+      'Distance (מ\')',
+      'Ground Elevation (מ\')',
+      'Flight Altitude (מ\')',
+      'AGL (מ\')',
+      'Longitude',
+      'Latitude',
+      'UTM Easting',
+      'UTM Northing',
+      'UTM Zone'
+    ];
     // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
     const rows = elevationProfile.map((point) => {
       const flightAltitude = point.plannedAltitude ?? nominalFlightHeight;
       const agl = flightAltitude - point.elevation;
+      const utm = latLngToUTM(point.latitude, point.longitude);
+      const utmZone = utm ? `${utm.zone}${utm.hemisphere}` : '';
       return [
         point.distance.toFixed(2),
         point.elevation.toFixed(2),
         flightAltitude.toFixed(2),
         agl.toFixed(2),
         point.longitude.toFixed(6),
-        point.latitude.toFixed(6)
+        point.latitude.toFixed(6),
+        utm ? utm.easting.toFixed(3) : '',
+        utm ? utm.northing.toFixed(3) : '',
+        utmZone
       ];
     });
 

@@ -269,7 +269,6 @@ export function exportProject(params: {
 
   const { 
     dtmSource, 
-    activeClippedId,
     dtmSourceType,
     localDtmFile,
     serverDtmId,

@@ -148,7 +148,7 @@ export interface ProjectFileData {
     id: string;
     name: string;
     color: string;
-    lineWidth?: number;
+    lineWidth: number;
     visible: boolean;
     points: Array<{
       lng: number;
@@ -229,6 +229,9 @@ export function exportProject(params: {
   // Map camera (optional)
   mapCamera?: MapCameraState;
 }): ProjectFileData {
+  const DEFAULT_ROUTE_COLOR = '#ff4d4f';
+  const DEFAULT_ROUTE_LINE_WIDTH = 3;
+
   const { 
     dtmSource, 
     activeClippedId,
@@ -290,8 +293,8 @@ export function exportProject(params: {
   const serializedRoutes = routes.map(route => ({
     id: route.id,
     name: route.name,
-    color: route.color,
-    lineWidth: route.lineWidth,
+    color: route.color || DEFAULT_ROUTE_COLOR,
+    lineWidth: Number.isFinite(route.lineWidth) ? route.lineWidth : DEFAULT_ROUTE_LINE_WIDTH,
     visible: route.visible,
     points: route.points.map(p => ({
       lng: p.lng,
@@ -436,6 +439,7 @@ function migrateProject(data: any): any {
   if (Array.isArray(migrated.routes)) {
     migrated.routes = migrated.routes.map((route: any) => ({
       ...route,
+      color: typeof route?.color === 'string' && route.color.trim() ? route.color : '#ff4d4f',
       lineWidth: Number.isFinite(route?.lineWidth) ? route.lineWidth : 3
     }));
   }

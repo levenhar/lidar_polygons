@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './FolderSelectionDialog.css';
 
 interface FolderSelectionDialogProps {
@@ -46,16 +46,33 @@ const FolderSelectionDialog: React.FC<FolderSelectionDialogProps> = ({
     };
   }, [isOpen, onClose]);
 
-  if (!isOpen) return null;
-
-  const handleSelectNewFolder = async () => {
+  const handleSelectNewFolder = useCallback(async () => {
     setIsSelecting(true);
     try {
       await onSelectFolder();
     } finally {
       setIsSelecting(false);
     }
-  };
+  }, [onSelectFolder]);
+
+  // Handle Enter key to select folder
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter' && !isSelecting && !isUsingExisting) {
+        event.preventDefault();
+        handleSelectNewFolder();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [isOpen, isSelecting, isUsingExisting, handleSelectNewFolder]);
+
+  if (!isOpen) return null;
 
   const handleUseExisting = async () => {
     setIsUsingExisting(true);

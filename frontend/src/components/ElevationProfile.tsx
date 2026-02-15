@@ -2196,6 +2196,57 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     setShowDeleteAllConfirmation(false);
   }, []);
 
+  // Handle Enter in climb amount modal
+  useEffect(() => {
+    if (!isClimbAmountOpen) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleConfirmClimb();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [isClimbAmountOpen, handleConfirmClimb]);
+
+  // Handle Enter in climb validation popup
+  useEffect(() => {
+    if (!climbValidationPopup) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        setClimbValidationPopup(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [climbValidationPopup]);
+
+  // Handle Enter in delete-all confirmation
+  useEffect(() => {
+    if (!showDeleteAllConfirmation) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleConfirmDeleteAll();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [showDeleteAllConfirmation, handleConfirmDeleteAll]);
+
   const handleRemoveSingleClimb = useCallback((endDistance: number, climbAmount: number) => {
     console.log('========================================');
     console.log('[DELETE_CLIMB] handleRemoveSingleClimb CALLED');

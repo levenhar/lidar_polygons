@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import './AnchorPointWarningModal.css';
 
 interface AnchorPointWarningModalProps {
@@ -14,6 +14,23 @@ const AnchorPointWarningModal: React.FC<AnchorPointWarningModalProps> = ({
   onCancel,
   onContinue
 }) => {
+  // Handle Enter key to continue (primary action)
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        onContinue();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [isOpen, onContinue]);
+
   if (!isOpen) return null;
 
   return (

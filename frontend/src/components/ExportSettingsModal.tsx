@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { FlightRoute } from '../hooks/useFlightPath';
 import './ExportSettingsModal.css';
 
@@ -78,6 +78,32 @@ const ExportSettingsModal: React.FC<ExportSettingsModalProps> = ({
     };
   }, [isOpen, onClose]);
 
+  const handleExport = useCallback(() => {
+    if (selectedRouteIds.size === 0) {
+      alert('אנא בחר לפחות מסלול אחד לייצוא');
+      return;
+    }
+    onExport(Array.from(selectedRouteIds));
+    onClose();
+  }, [selectedRouteIds, onExport, onClose]);
+
+  // Handle Enter key to export
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleExport();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [isOpen, handleExport]);
+
   // Early return after all hooks
   if (!isOpen) return null;
 
@@ -97,15 +123,6 @@ const ExportSettingsModal: React.FC<ExportSettingsModalProps> = ({
       newSelected.add(routeId);
     }
     setSelectedRouteIds(newSelected);
-  };
-
-  const handleExport = () => {
-    if (selectedRouteIds.size === 0) {
-      alert('אנא בחר לפחות מסלול אחד לייצוא');
-      return;
-    }
-    onExport(Array.from(selectedRouteIds));
-    onClose();
   };
 
   const handleCancel = () => {

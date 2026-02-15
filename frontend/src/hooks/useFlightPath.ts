@@ -192,7 +192,7 @@ export function useFlightPath(
 
   const addRoute = useCallback(() => {
     const nextIndex = state.routes.length + 1;
-    const newRoute = createRoute(nextIndex, activeRoute?.nominalFlightHeight ?? DEFAULT_NOMINAL_FLIGHT_HEIGHT);
+    const newRoute = createRoute(nextIndex, DEFAULT_NOMINAL_FLIGHT_HEIGHT);
     setState(
       {
         ...state,
@@ -201,7 +201,7 @@ export function useFlightPath(
       },
       true
     );
-  }, [activeRoute?.nominalFlightHeight, setState, state]);
+  }, [setState, state]);
 
   const setActiveRoute = useCallback(
     (routeId: string) => {
@@ -407,6 +407,27 @@ export function useFlightPath(
       updateActiveRoute((route) => ({ ...route, nominalFlightHeight: safe }));
     },
     [updateActiveRoute]
+  );
+
+  const setRouteNominalFlightHeight = useCallback(
+    (routeId: string, height: number) => {
+      if (!routeId) return;
+      const safe = Number.isFinite(height) ? Math.max(0, height) : DEFAULT_NOMINAL_FLIGHT_HEIGHT;
+      setState(
+        (prevState) => {
+          const hasRoute = prevState.routes.some((route) => route.id === routeId);
+          if (!hasRoute) return prevState;
+          return {
+            ...prevState,
+            routes: prevState.routes.map((route) =>
+              route.id === routeId ? { ...route, nominalFlightHeight: safe } : route
+            )
+          };
+        },
+        true
+      );
+    },
+    [setState]
   );
 
   /**
@@ -814,7 +835,7 @@ export function useFlightPath(
       climbRequests?: { endDistance: number; climbAmount: number }[], 
       climbRequestsByRoute?: Record<string, { endDistance: number; climbAmount: number }[]>,
       selectedRouteIds?: string[],
-      nominalFlightHeight?: number,
+      _nominalFlightHeight?: number,
       _firstTurnPointElevation?: number, // Unused parameter, kept for API compatibility
       filename?: string // Optional filename for single route export
     ) => {
@@ -859,7 +880,7 @@ export function useFlightPath(
             ? (climbRequestsByRoute[route.id] || [])
             : (climbRequests && route.id === active?.id ? climbRequests : []);
           
-          const kmlContent = generateKMLForRoute(route, routeClimbRequests, nominalFlightHeight);
+          const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
           const filenameBase = route.name.toLowerCase().replace(/\s+/g, '-');
           // Use base timestamp + index to ensure unique filenames and add delay between downloads
           const timestamp = Date.now() + index;
@@ -874,7 +895,7 @@ export function useFlightPath(
         const route = routesToExport[0];
         const routeClimbRequests = climbRequests && route.id === active?.id ? climbRequests : (climbRequestsByRoute ? (climbRequestsByRoute[route.id] || []) : []);
         
-        const kmlContent = generateKMLForRoute(route, routeClimbRequests, nominalFlightHeight);
+        const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
         // Use provided filename or generate default
         const finalFilename = filename || `${route.name.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}.kml`;
         downloadKML(kmlContent, finalFilename);
@@ -1402,6 +1423,7 @@ export function useFlightPath(
     flightPath,
     nominalFlightHeight,
     setNominalFlightHeight,
+    setRouteNominalFlightHeight,
     climbRequestsByRoute: state.climbRequestsByRoute,
     addRoute,
     setActiveRoute,

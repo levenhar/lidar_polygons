@@ -695,6 +695,12 @@ async def get_elevation_profile(
             # Get raster data properties
             nodata = src.nodata
             res_x, res_y = src.res # Resolution in CRS units
+            res_min = min(abs(res_x), abs(res_y))
+            if res_min <= 0 or not np.isfinite(res_min):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"DTM has invalid resolution (res_x={res_x}, res_y={res_y}). Cannot compute elevation profile."
+                )
             
             # Pre-calculate sampling points' pixel coordinates and distances
             for i in range(len(all_points)):
@@ -731,10 +737,10 @@ async def get_elevation_profile(
                     elevation = 0.0
                 
                 # Min/Max in radius
-                # Calculate pixel radius
+                # Calculate pixel radius (res_min already validated above)
                 # Using max of resolution because pixels might not be square
-                pixel_radius_safety = int(np.ceil(request.safetyRadiusMeters / min(abs(res_x), abs(res_y))))
-                pixel_radius_resolution = int(np.ceil(request.resolutionRadiusMeters / min(abs(res_x), abs(res_y))))
+                pixel_radius_safety = int(np.ceil(request.safetyRadiusMeters / res_min))
+                pixel_radius_resolution = int(np.ceil(request.resolutionRadiusMeters / res_min))
                 
                 max_pixel_radius = max(pixel_radius_safety, pixel_radius_resolution)
                 

@@ -1082,9 +1082,19 @@ app.post('/api/elevation-profile', async (req, res) => {
     });
   } catch (error) {
     console.error('Error proxying elevation profile request:', error);
-    res.status(500).json({
+    // Forward Python backend error detail when present (e.g. "Python backend error: 500 - {\"detail\":\"...\"}")
+    let details = error.message;
+    const match = error.message && error.message.match(/Python backend error: \d+ [^-]* - (.+)/s);
+    if (match && match[1]) {
+      try {
+        const body = JSON.parse(match[1].trim());
+        if (body.detail) details = body.detail;
+      } catch (_) { /* use full message */ }
+    }
+    const status = error.message && error.message.includes('Python backend error: 400') ? 400 : 500;
+    res.status(status).json({
       error: 'Could not calculate elevation profile',
-      details: error.message
+      details
     });
   }
 });

@@ -244,7 +244,8 @@ export function useElevationProfile() {
         console.log('Profile calculation cancelled:', error.message);
         return;
       }
-      console.error('Error calculating elevation profile:', error);
+      const errDetails = (error as { response?: { data?: { details?: string } } })?.response?.data?.details;
+      console.error('Error calculating elevation profile:', error, errDetails ? `Backend: ${errDetails}` : '');
       // Fallback to mock data if API fails
       const calculateDistance = (coord1: Coordinate, coord2: Coordinate): number => {
         const R = 6371000; // Earth radius in meters

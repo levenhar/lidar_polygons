@@ -11,7 +11,13 @@ export default defineConfig({
         changeOrigin: true
       }
     }
-  }
+  },
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    include: ['src/**/*.test.{ts,tsx}'],
+    setupFiles: ['src/test/setup.ts'],
+  },
 })
 
 

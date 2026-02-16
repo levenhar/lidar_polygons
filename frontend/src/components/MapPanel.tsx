@@ -1055,8 +1055,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [isViewshedModalOpen, setIsViewshedModalOpen] = useState(false);
   const [viewshedModalMode, setViewshedModalMode] = useState<'progress' | 'settings' | null>(null);
 
-  // Overlap graph float window (after viewshed done)
+  // Overlap graph float window (after viewshed done) — data comes from viewshed job status when done
   const [overlapGraphWindowOpen, setOverlapGraphWindowOpen] = useState(false);
+  const [viewshedOverlapGraphPngBase64, setViewshedOverlapGraphPngBase64] = useState<string | null>(null);
+  const [viewshedOverlapByPoint, setViewshedOverlapByPoint] = useState<number[] | null>(null);
   const [overlapGraphHtml, setOverlapGraphHtml] = useState<string | null>(null);
   const [overlapGraphLoading, setOverlapGraphLoading] = useState(false);
   const [overlapGraphError, setOverlapGraphError] = useState<string | null>(null);
@@ -1297,27 +1299,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [overlapGraphWindowSize]);
 
-  // Fetch overlap graph HTML when float window opens
+  // Show overlap graph from viewshed job data when float window opens (no separate API call)
   useEffect(() => {
     if (!overlapGraphWindowOpen) return;
-    setOverlapGraphError(null);
-    setOverlapGraphLoading(true);
-    setOverlapGraphHtml(null);
-    fetch('/api/viewshed/overlap-graph')
-      .then((res) => {
-        if (!res.ok) throw new Error(res.statusText || 'Failed to load graph');
-        return res.text();
-      })
-      .then((html) => {
-        setOverlapGraphHtml(html);
-        setOverlapGraphError(null);
-      })
-      .catch((err) => {
-        setOverlapGraphError(err instanceof Error ? err.message : 'Failed to load graph');
-        setOverlapGraphHtml(null);
-      })
-      .finally(() => setOverlapGraphLoading(false));
-  }, [overlapGraphWindowOpen]);
+    setOverlapGraphLoading(false);
+    if (viewshedOverlapGraphPngBase64) {
+      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Overlap %</title>
+<style>body{margin:0;padding:8px;background:#fff;} img{max-width:100%;height:auto;}</style></head>
+<body><img src="data:image/png;base64,${viewshedOverlapGraphPngBase64}" alt="Overlap graph"/></body></html>`;
+      setOverlapGraphHtml(html);
+      setOverlapGraphError(null);
+    } else {
+      setOverlapGraphHtml(null);
+      setOverlapGraphError('הרץ שדה ראייה כדי לראות את גרף החפיפה');
+    }
+  }, [overlapGraphWindowOpen, viewshedOverlapGraphPngBase64]);
 
   // Zoom to bounds when zoomToBounds prop changes
   useEffect(() => {
@@ -6886,6 +6882,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const startPayload = await response.json();
       const jobId = startPayload.jobId as string;
       setViewshedJobId(jobId);
+      setViewshedOverlapGraphPngBase64(null);
+      setViewshedOverlapByPoint(null);
 
       viewshedPollRef.current = window.setInterval(async () => {
         try {
@@ -6899,6 +6897,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           setViewshedStatus(status);
           if (status === 'done') {
             stopViewshedPolling();
+            setViewshedOverlapGraphPngBase64(statusJson.overlapGraphPngBase64 ?? null);
+            setViewshedOverlapByPoint(Array.isArray(statusJson.overlapByPoint) ? statusJson.overlapByPoint : null);
             const resultRes = await fetch(`/api/viewshed/result/${jobId}`);
             if (!resultRes.ok) {
               const errorText = await resultRes.text();
@@ -6911,6 +6911,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
             stopViewshedPolling();
             setIsViewshedProcessing(false);
             setViewshedJobId(null);
+            setViewshedOverlapGraphPngBase64(null);
+            setViewshedOverlapByPoint(null);
             if (status === 'error') {
               alert(`שגיאה ביצירת שדה ראייה: ${statusJson.error || 'שגיאה לא ידועה'}`);
             }
@@ -6921,6 +6923,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           setIsViewshedProcessing(false);
           setViewshedStatus('error');
           setViewshedJobId(null);
+          setViewshedOverlapGraphPngBase64(null);
+          setViewshedOverlapByPoint(null);
         }
       }, 1500);
     } catch (error) {
@@ -6988,17 +6992,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
   }, [viewshedJobId, viewshedStatus]);
 
   const handleSaveOverlapGraphPng = useCallback(async () => {
+    if (!viewshedOverlapGraphPngBase64) {
+      alert('אין גרף חפיפה לשמירה. הרץ שדה ראייה קודם.');
+      return;
+    }
     try {
-      const response = await fetch('/api/viewshed/overlap-graph?format=png');
-      if (!response.ok) throw new Error('Failed to fetch PNG');
-      const blob = await response.blob();
+      const binary = atob(viewshedOverlapGraphPngBase64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: 'image/png' });
       const filename = `viewshed_overlap_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 10)}.png`;
       await saveFileWithLocation(blob, filename, 'image/png');
     } catch (err) {
       console.error('Save overlap graph PNG failed:', err);
       alert(`שגיאה בשמירת גרף: ${err instanceof Error ? err.message : 'שגיאה לא ידועה'}`);
     }
-  }, []);
+  }, [viewshedOverlapGraphPngBase64]);
 
   const handleViewshedRouteRecalculate = useCallback(() => {
     setIsViewshedRouteModalOpen(false);
@@ -7016,6 +7025,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setViewshedStatus('idle');
     setViewshedProgress(0);
     setViewshedJobId(null);
+    setViewshedOverlapGraphPngBase64(null);
+    setViewshedOverlapByPoint(null);
     viewshedSignatureRef.current = null;
     viewshedRouteSnapshotRef.current = null;
   }, [clearViewshedOverlay]);

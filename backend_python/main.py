@@ -580,11 +580,25 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
             duration = time.time() - start_time
             logger.info(f"[{job_id}] Viewshed generated in {duration:.2f}s: {output_name}")
 
+            # Compute overlap-by-point and build graph for this job
+            fov_deg = request.fovDegrees if request.fovDegrees is not None else 75.0
+            agl = request.outputHeight if request.outputHeight and request.outputHeight > 0 else None
+            if agl is None and trajectory:
+                heights = [p.get("height") for p in trajectory if p.get("height") is not None]
+                agl = float(np.mean(heights)) if heights else 100.0
+            if agl is None or agl <= 0:
+                agl = 100.0
+            overlap_by_point = _compute_overlap_by_point(trajectory, fov_deg, agl)
+            overlap_png_bytes = _build_overlap_graph_png(overlap_by_point)
+            overlap_graph_png_base64 = base64.b64encode(overlap_png_bytes).decode("ascii")
+
             with viewshed_jobs_lock:
                 if job_id in viewshed_jobs:
                     viewshed_jobs[job_id]["status"] = "done"
                     viewshed_jobs[job_id]["progress"] = 100
                     viewshed_jobs[job_id]["result_path"] = output_path
+                    viewshed_jobs[job_id]["overlap_by_point"] = overlap_by_point
+                    viewshed_jobs[job_id]["overlap_graph_png_base64"] = overlap_graph_png_base64
     except RuntimeError as e:
         if str(e) == "cancelled":
             logger.info(f"[{job_id}] Viewshed cancelled")
@@ -892,12 +906,18 @@ async def viewshed_status(job_id: str):
         job = viewshed_jobs.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
-        return {
+        payload = {
             "jobId": job_id,
             "status": job.get("status"),
             "progress": job.get("progress", 0),
-            "error": job.get("error")
+            "error": job.get("error"),
         }
+        if job.get("status") == "done":
+            if job.get("overlap_by_point") is not None:
+                payload["overlapByPoint"] = job["overlap_by_point"]
+            if job.get("overlap_graph_png_base64") is not None:
+                payload["overlapGraphPngBase64"] = job["overlap_graph_png_base64"]
+        return payload
 
 @app.post("/api/viewshed/cancel/{job_id}")
 async def cancel_viewshed(job_id: str):
@@ -922,19 +942,48 @@ async def viewshed_result(job_id: str):
     return FileResponse(result_path, media_type="image/tiff", filename=os.path.basename(result_path))
 
 
-def _build_overlap_graph_png(num_points: int, y_value: float) -> bytes:
-    """Build overlap chart (v1: constant Y, point index as X) and return PNG bytes."""
-    if num_points < 1:
-        num_points = 1
-    if num_points > 1000:
-        num_points = 1000
-    x = list(range(1, num_points + 1))
-    y = [float(y_value)] * num_points
+def _compute_overlap_by_point(trajectory: List[Dict[str, Any]], fov_degrees: float, effective_agl_meters: float) -> List[float]:
+    """Compute theoretical overlap % per trajectory point from spacing and FOV.
+    overlap = 100 * (1 - spacing / swath_width), clamped to [0, 100].
+    """
+    n = len(trajectory)
+    if n < 2:
+        return [50.0] * max(1, n)
+    fov_rad = radians(max(1, min(fov_degrees or 75, 179.9)))
+    swath_width = 2.0 * max(0.1, effective_agl_meters) * (sin(fov_rad / 2) / cos(fov_rad / 2))
+    if swath_width <= 0:
+        return [50.0] * n
+    out = []
+    for i in range(n):
+        if i < n - 1:
+            spacing = haversine(
+                trajectory[i]["lng"], trajectory[i]["lat"],
+                trajectory[i + 1]["lng"], trajectory[i + 1]["lat"]
+            )
+        else:
+            spacing = haversine(
+                trajectory[n - 2]["lng"], trajectory[n - 2]["lat"],
+                trajectory[n - 1]["lng"], trajectory[n - 1]["lat"]
+            )
+        overlap_frac = 1.0 - (spacing / swath_width)
+        pct = 100.0 * max(0.0, min(1.0, overlap_frac))
+        out.append(round(pct, 1))
+    return out
+
+
+def _build_overlap_graph_png(overlap_by_point: List[float]) -> bytes:
+    """Build overlap chart from per-point overlap values and return PNG bytes."""
+    y = [float(v) for v in overlap_by_point]
+    if not y:
+        y = [50.0]
+    if len(y) > 1000:
+        y = y[:1000]
+    x = list(range(1, len(y) + 1))
     fig, ax = plt.subplots(figsize=(6, 3.5))
     ax.plot(x, y, "o-", color="#0ea5e9", linewidth=2, markersize=4)
     ax.set_xlabel("Point index", fontsize=10)
     ax.set_ylabel("Overlap (%)", fontsize=10)
-    ax.set_title("Viewshed overlap (%) by point (v1 dummy)")
+    ax.set_title("Viewshed overlap (%) by point")
     ax.set_ylim(0, 100)
     ax.grid(True, alpha=0.3)
     buf = io.BytesIO()
@@ -943,23 +992,6 @@ def _build_overlap_graph_png(num_points: int, y_value: float) -> bytes:
     plt.close(fig)
     buf.seek(0)
     return buf.read()
-
-
-@app.get("/api/viewshed/overlap-graph")
-async def viewshed_overlap_graph(
-    num_points: int = Query(10, ge=1, le=1000),
-    y_value: float = Query(50.0, ge=0, le=100),
-    fmt: str = Query("html", alias="format"),
-):
-    """Return overlap graph as HTML (with embedded PNG) or raw PNG."""
-    png_bytes = _build_overlap_graph_png(num_points, y_value)
-    if fmt == "png":
-        return Response(content=png_bytes, media_type="image/png")
-    b64 = base64.b64encode(png_bytes).decode("ascii")
-    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Overlap %</title>
-<style>body{{margin:0;padding:8px;background:#fff;}} img{{max-width:100%;height:auto;}}</style></head>
-<body><img src="data:image/png;base64,{b64}" alt="Overlap graph"/></body></html>"""
-    return Response(content=html, media_type="text/html")
 
 
 @app.get("/health")

@@ -1,6 +1,6 @@
 import os
 from fastapi import FastAPI, HTTPException, File, UploadFile, Request, Header, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import rasterio
@@ -22,6 +22,13 @@ from dotenv import load_dotenv
 import threading
 import uuid
 import atexit
+import base64
+import io
+
+# Use non-interactive backend for matplotlib in server context
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 # Import constants
 import constants as C
@@ -1231,6 +1238,47 @@ async def get_elevation_at_point(request: ElevationAtPointRequest):
     except Exception as e:
         logger.error(f"Error getting elevation at point: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _build_overlap_graph_png(num_points: int, y_value: float) -> bytes:
+    """Build overlap chart (v1: constant Y, point index as X) and return PNG bytes."""
+    if num_points < 1:
+        num_points = 1
+    if num_points > 1000:
+        num_points = 1000
+    x = list(range(1, num_points + 1))
+    y = [float(y_value)] * num_points
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    ax.plot(x, y, "o-", color="#0ea5e9", linewidth=2, markersize=4)
+    ax.set_xlabel("Point index", fontsize=10)
+    ax.set_ylabel("Overlap (%)", fontsize=10)
+    ax.set_title("Viewshed overlap (%) by point (v1 dummy)")
+    ax.set_ylim(0, 100)
+    ax.grid(True, alpha=0.3)
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
+
+
+@app.get("/api/viewshed/overlap-graph")
+async def viewshed_overlap_graph(
+    num_points: int = Query(10, ge=1, le=1000),
+    y_value: float = Query(50.0, ge=0, le=100),
+    fmt: str = Query("html", alias="format"),
+):
+    """Return overlap graph as HTML (with embedded PNG) or raw PNG."""
+    png_bytes = _build_overlap_graph_png(num_points, y_value)
+    if fmt == "png":
+        return Response(content=png_bytes, media_type="image/png")
+    b64 = base64.b64encode(png_bytes).decode("ascii")
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Overlap %</title>
+<style>body{{margin:0;padding:8px;background:#fff;}} img{{max-width:100%;height:auto;}}</style></head>
+<body><img src="data:image/png;base64,{b64}" alt="Overlap graph"/></body></html>"""
+    return Response(content=html, media_type="text/html")
+
 
 @app.get("/health")
 async def health_check():

@@ -1034,6 +1034,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [isViewshedModalOpen, setIsViewshedModalOpen] = useState(false);
   const [viewshedModalMode, setViewshedModalMode] = useState<'progress' | 'settings' | null>(null);
 
+  // Overlap graph float window (after viewshed done)
+  const [overlapGraphWindowOpen, setOverlapGraphWindowOpen] = useState(false);
+  const [overlapGraphHtml, setOverlapGraphHtml] = useState<string | null>(null);
+  const [overlapGraphLoading, setOverlapGraphLoading] = useState(false);
+  const [overlapGraphError, setOverlapGraphError] = useState<string | null>(null);
+  const [overlapGraphWindowPosition, setOverlapGraphWindowPosition] = useState<{ x: number; y: number } | null>(null);
+  const [isDraggingOverlapGraphWindow, setIsDraggingOverlapGraphWindow] = useState(false);
+  const overlapGraphDragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+  const overlapGraphWindowRef = useRef<HTMLDivElement | null>(null);
+
   // ============================================================================
   // UNIFIED DTM LOADER STATE
   // ============================================================================
@@ -1205,6 +1215,56 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
     }
   }, [parallelWindowPosition]);
+
+  // Load overlap graph window position from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('overlapGraphWindowPosition');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed.x === 'number' && typeof parsed.y === 'number') {
+          const clampedX = Math.max(0, Math.min(parsed.x, window.innerWidth - 360));
+          const clampedY = Math.max(0, Math.min(parsed.y, window.innerHeight - 400));
+          setOverlapGraphWindowPosition({ x: clampedX, y: clampedY });
+        }
+      }
+    } catch (e) {
+      // Ignore parse errors
+    }
+  }, []);
+
+  // Save overlap graph window position to localStorage when it changes
+  useEffect(() => {
+    if (overlapGraphWindowPosition) {
+      try {
+        localStorage.setItem('overlapGraphWindowPosition', JSON.stringify(overlapGraphWindowPosition));
+      } catch (e) {
+        // Ignore storage errors
+      }
+    }
+  }, [overlapGraphWindowPosition]);
+
+  // Fetch overlap graph HTML when float window opens
+  useEffect(() => {
+    if (!overlapGraphWindowOpen) return;
+    setOverlapGraphError(null);
+    setOverlapGraphLoading(true);
+    setOverlapGraphHtml(null);
+    fetch('/api/viewshed/overlap-graph')
+      .then((res) => {
+        if (!res.ok) throw new Error(res.statusText || 'Failed to load graph');
+        return res.text();
+      })
+      .then((html) => {
+        setOverlapGraphHtml(html);
+        setOverlapGraphError(null);
+      })
+      .catch((err) => {
+        setOverlapGraphError(err instanceof Error ? err.message : 'Failed to load graph');
+        setOverlapGraphHtml(null);
+      })
+      .finally(() => setOverlapGraphLoading(false));
+  }, [overlapGraphWindowOpen]);
 
   // Zoom to bounds when zoomToBounds prop changes
   useEffect(() => {
@@ -1502,6 +1562,63 @@ const MapPanel: React.FC<MapPanelProps> = ({
       };
     }
   }, [isDraggingParallelWindow, handleParallelWindowDragMove, handleParallelWindowDragEnd]);
+
+  // Overlap graph float: reset position
+  const resetOverlapGraphWindowPosition = useCallback(() => {
+    const defaultX = window.innerWidth - 380;
+    const defaultY = 100;
+    setOverlapGraphWindowPosition({ x: defaultX, y: defaultY });
+  }, []);
+
+  const handleOverlapGraphWindowDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const currentX = overlapGraphWindowPosition?.x ?? (window.innerWidth - 380);
+    const currentY = overlapGraphWindowPosition?.y ?? 100;
+    setIsDraggingOverlapGraphWindow(true);
+    overlapGraphDragStartRef.current = { x: clientX, y: clientY, startX: currentX, startY: currentY };
+  }, [overlapGraphWindowPosition]);
+
+  const handleOverlapGraphWindowDragMove = useCallback((e: MouseEvent | TouchEvent) => {
+    if (!isDraggingOverlapGraphWindow || !overlapGraphDragStartRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const deltaX = clientX - overlapGraphDragStartRef.current.x;
+    const deltaY = clientY - overlapGraphDragStartRef.current.y;
+    let newX = overlapGraphDragStartRef.current.startX + deltaX;
+    let newY = overlapGraphDragStartRef.current.startY + deltaY;
+    const w = overlapGraphWindowRef.current?.offsetWidth || 360;
+    const h = overlapGraphWindowRef.current?.offsetHeight || 400;
+    newX = Math.max(0, Math.min(newX, window.innerWidth - w));
+    newY = Math.max(0, Math.min(newY, window.innerHeight - h));
+    setOverlapGraphWindowPosition({ x: newX, y: newY });
+  }, [isDraggingOverlapGraphWindow]);
+
+  const handleOverlapGraphWindowDragEnd = useCallback(() => {
+    setIsDraggingOverlapGraphWindow(false);
+    overlapGraphDragStartRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (isDraggingOverlapGraphWindow) {
+      const handleMove = (e: MouseEvent | TouchEvent) => handleOverlapGraphWindowDragMove(e);
+      const handleEnd = () => handleOverlapGraphWindowDragEnd();
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleEnd);
+      window.addEventListener('touchmove', handleMove, { passive: false });
+      window.addEventListener('touchend', handleEnd);
+      return () => {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleEnd);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('touchend', handleEnd);
+      };
+    }
+  }, [isDraggingOverlapGraphWindow, handleOverlapGraphWindowDragMove, handleOverlapGraphWindowDragEnd]);
 
   const createParallelLinesBatch = useCallback(
     (lineIds: string[], distanceOverride?: number) => {
@@ -6777,6 +6894,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [viewshedJobId, viewshedStatus]);
 
+  const handleSaveOverlapGraphPng = useCallback(async () => {
+    try {
+      const response = await fetch('/api/viewshed/overlap-graph?format=png');
+      if (!response.ok) throw new Error('Failed to fetch PNG');
+      const blob = await response.blob();
+      const filename = `viewshed_overlap_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 10)}.png`;
+      await saveFileWithLocation(blob, filename, 'image/png');
+    } catch (err) {
+      console.error('Save overlap graph PNG failed:', err);
+      alert(`שגיאה בשמירת גרף: ${err instanceof Error ? err.message : 'שגיאה לא ידועה'}`);
+    }
+  }, []);
+
   const handleViewshedRouteRecalculate = useCallback(() => {
     setIsViewshedRouteModalOpen(false);
     skipViewshedReplaceConfirmRef.current = true;
@@ -6845,6 +6975,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (viewshedStatus === 'done' && isViewshedModalOpen && viewshedModalMode === 'progress') {
       setIsViewshedModalOpen(false);
       setViewshedModalMode(null);
+      setOverlapGraphWindowOpen(true);
     }
   }, [viewshedStatus, isViewshedModalOpen, viewshedModalMode]);
 
@@ -7484,6 +7615,20 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     disabled={!viewshedRaster}
                   />
 
+                  <label className="quick-modal__label">גרף חפיפה</label>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ width: '100%' }}
+                    onClick={() => {
+                      setOverlapGraphWindowOpen(true);
+                      setIsViewshedModalOpen(false);
+                      setViewshedModalMode(null);
+                    }}
+                  >
+                    גרף חפיפה (%)
+                  </button>
+
                   {isViewshedProcessing && (
                     <div className="viewshed-progress">
                       <div className="viewshed-progress-bar">
@@ -7723,6 +7868,78 @@ const MapPanel: React.FC<MapPanelProps> = ({
             {parallelBatchError && (
               <div style={{ marginTop: '10px', color: '#dc2626', fontSize: '0.875rem', padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecdd3', borderRadius: '8px', fontFamily: 'inherit' }}>
                 {parallelBatchError}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {overlapGraphWindowOpen && (
+        <div
+          ref={overlapGraphWindowRef}
+          className="overlap-graph-window"
+          style={{
+            left: overlapGraphWindowPosition?.x ?? (window.innerWidth - 380),
+            top: overlapGraphWindowPosition?.y ?? 100,
+            cursor: isDraggingOverlapGraphWindow ? 'grabbing' : 'default'
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className="overlap-graph-window__header"
+            onMouseDown={handleOverlapGraphWindowDragStart}
+            onTouchStart={handleOverlapGraphWindowDragStart}
+            style={{ cursor: isDraggingOverlapGraphWindow ? 'grabbing' : 'grab' }}
+          >
+            <span className="overlap-graph-window__title">גרף חפיפה (%)</span>
+            <div className="overlap-graph-window__header-actions">
+              <button
+                type="button"
+                className="overlap-graph-window__reset-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  resetOverlapGraphWindowPosition();
+                }}
+                title="איפוס מיקום"
+                aria-label="איפוס מיקום"
+              >
+                ↻
+              </button>
+              <button
+                type="button"
+                className="overlap-graph-window__close-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOverlapGraphWindowOpen(false);
+                }}
+                title="סגור"
+                aria-label="סגור"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <div className="overlap-graph-window__content">
+            {overlapGraphLoading && (
+              <div className="overlap-graph-window__loading">טוען גרף...</div>
+            )}
+            {overlapGraphError && (
+              <div className="overlap-graph-window__error">
+                {overlapGraphError}
+                <button type="button" className="btn btn-secondary" style={{ marginTop: '8px' }} onClick={() => setOverlapGraphWindowOpen(false)}>
+                  סגור
+                </button>
+              </div>
+            )}
+            {!overlapGraphLoading && !overlapGraphError && overlapGraphHtml && (
+              <div className="overlap-graph-window__iframe-wrap">
+                <iframe title="גרף חפיפה" srcDoc={overlapGraphHtml} className="overlap-graph-window__iframe" />
+              </div>
+            )}
+            {!overlapGraphLoading && !overlapGraphError && overlapGraphHtml && (
+              <div className="overlap-graph-window__actions">
+                <button type="button" className="btn btn-primary" onClick={handleSaveOverlapGraphPng}>
+                  שמור כ-PNG
+                </button>
               </div>
             )}
           </div>

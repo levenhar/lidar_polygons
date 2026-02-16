@@ -1173,6 +1173,25 @@ app.get('/api/viewshed/result/:jobId', async (req, res) => {
   }
 });
 
+app.get('/api/viewshed/overlap-graph', async (req, res) => {
+  try {
+    const query = new URLSearchParams(req.query).toString();
+    const url = query ? `${PYTHON_BACKEND_URL}/api/viewshed/overlap-graph?${query}` : `${PYTHON_BACKEND_URL}/api/viewshed/overlap-graph`;
+    const response = await fetch(url, { dispatcher: pythonDispatcher });
+    if (!response.ok) {
+      const errorText = await response.text();
+      return res.status(response.status).send(errorText);
+    }
+    const contentType = response.headers.get('content-type') || 'text/html';
+    res.setHeader('Content-Type', contentType);
+    const arrayBuffer = await response.arrayBuffer();
+    res.send(Buffer.from(arrayBuffer));
+  } catch (error) {
+    console.error('Error proxying viewshed overlap-graph to Python:', error);
+    res.status(500).json({ error: 'Could not fetch viewshed overlap-graph' });
+  }
+});
+
 // Get elevation at a specific point
 app.post('/api/elevation-at-point', async (req, res) => {
   try {

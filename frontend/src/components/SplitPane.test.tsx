@@ -1,4 +1,3 @@
-import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import SplitPane from './SplitPane';
 
@@ -28,7 +27,7 @@ describe('SplitPane', () => {
     );
     const divider = document.querySelector('[role="separator"]') || document.querySelector('.split-pane-divider');
     if (divider) {
-      divider.focus();
+      (divider as HTMLElement).focus();
       fireEvent.keyDown(divider, { key: 'ArrowRight' });
       expect(onRatioChange).toHaveBeenCalled();
     }

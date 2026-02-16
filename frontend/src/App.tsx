@@ -337,6 +337,8 @@ function AppContent() {
       // Update entry height when:
       // 1. First point is added and route entry height is still at default (250), OR
       // 2. First point is edited (coordinates changed)
+      // Skip when entrance height came from KML file - do not overwrite imported value
+      if (route.entranceHeightFromFile) return;
       if (isFirstPointAdded || isFirstPointEdited) {
         calculateDefaultEntryHeight(firstPoint).then((defaultHeight) => {
           if (defaultHeight !== null && !isNaN(defaultHeight)) {
@@ -436,6 +438,11 @@ function AppContent() {
 
   // Debounce timer for profile calculation to handle rapid point additions
   const profileCalculationTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  const profileCallbackRef = React.useRef<((h: number) => void) | undefined>(undefined);
+  profileCallbackRef.current = (() => {
+    const activeRoute = routes.find((r) => r.id === activeRouteId);
+    return activeRoute?.entranceHeightFromFile ? undefined : setNominalFlightHeight;
+  })();
 
   React.useEffect(() => {
     const prev = lastProfileParamsRef.current;
@@ -443,32 +450,29 @@ function AppContent() {
       || prev.flightPath !== flightPath
       || prev.dtmSource !== dtmSource
       || prev.safetySearchRadius !== safetySearchRadius
-      || prev.resolutionSearchRadius !== resolutionSearchRadius;
+      || prev.resolutionSearchRadius !== resolutionSearchRadius
+      || prev.nominalFlightHeight !== nominalFlightHeight;
 
-    // Clear any pending debounce timer
-    if (profileCalculationTimeoutRef.current) {
+    const onDefaultEntryHeightCalculated = profileCallbackRef.current;
+
+    if (baseChanged && profileCalculationTimeoutRef.current) {
       clearTimeout(profileCalculationTimeoutRef.current);
       profileCalculationTimeoutRef.current = null;
     }
 
     if (baseChanged) {
       if (flightPath.length === 0) {
-        // Clear profile immediately when flight path is empty
-        calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, setNominalFlightHeight);
+        calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, onDefaultEntryHeightCalculated);
       } else if (flightPath.length === 1) {
-        // Clear profile immediately when only one point remains
         clearProfile();
       } else if (flightPath.length >= 2 && dtmSource) {
-        // Debounce profile calculation to wait for user to finish adding points
-        // This prevents sending too many requests when points are added quickly
         profileCalculationTimeoutRef.current = setTimeout(() => {
-          calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, setNominalFlightHeight);
+          const cb = profileCallbackRef.current;
+          calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, cb);
           profileCalculationTimeoutRef.current = null;
-        }, 300); // Wait 300ms after the last change
+        }, 300);
       }
     }
-    // Note: When only nominal height changes, fullProfileResultInternal will recalculate
-    // automatically via its useMemo dependency, and the profile lock is unlocked to allow updates
 
     lastProfileParamsRef.current = {
       flightPath,
@@ -478,14 +482,22 @@ function AppContent() {
       nominalFlightHeight
     };
 
-    // Cleanup: cancel pending calculation if component unmounts or dependencies change
+    return () => {
+      // Intentionally do NOT clear timeout on deps change - clearing here cancels the pending
+      // profile calc when effect re-runs due to unrelated dep changes (e.g. calculateProfile
+      // getting new ref when nominalFlightHeight updates). Timeout uses latest closure values
+      // via profileCallbackRef.
+    };
+  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, calculateProfile, clearProfile, setNominalFlightHeight]);
+
+  React.useEffect(() => {
     return () => {
       if (profileCalculationTimeoutRef.current) {
         clearTimeout(profileCalculationTimeoutRef.current);
         profileCalculationTimeoutRef.current = null;
       }
     };
-  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, clearProfile]);
+  }, []);
 
   // NOTE: Old logic that removed climbs on segment changes has been removed.
   // Climb points are now anchored to specific point IDs and are only removed
@@ -590,12 +602,15 @@ function AppContent() {
     profileLockedRef.current = false;
     setStableProfileResult({ points: [], warnings: [] });
 
+    const activeRoute = routes.find((r) => r.id === activeRouteId);
+    const onDefaultEntryHeightCalculated = activeRoute?.entranceHeightFromFile ? undefined : setNominalFlightHeight;
+
     if (updatedPath.length === 0) {
-      calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, setNominalFlightHeight);
+      calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, onDefaultEntryHeightCalculated);
     } else if (updatedPath.length === 1) {
       clearProfile();
     } else if (dtmSource) {
-      calculateProfile(updatedPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, setNominalFlightHeight);
+      calculateProfile(updatedPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, onDefaultEntryHeightCalculated);
     }
 
     // Keep the effect's previous-value tracker in sync to avoid scheduling a duplicate debounce run.
@@ -608,11 +623,13 @@ function AppContent() {
     };
   }, [
     activeClippedId,
+    activeRouteId,
     calculateProfile,
     clearProfile,
     dtmSource,
     nominalFlightHeight,
     resolutionHeight,
+    routes,
     safetyHeight,
     resolutionSearchRadius,
     safetySearchRadius,
@@ -666,11 +683,6 @@ function AppContent() {
   // 2. Server has confirmed profile is ready (profileReady)
   // 3. Profile is not locked (locked means it's already displayed and should not change)
   React.useEffect(() => {
-    // Only update the stable profile when:
-    // - Queue is completely empty and not processing
-    // - Server has sent ready flag
-    // - Profile is not locked (or we're starting a new calculation)
-    // - Flight path has at least 2 points (empty/1 point cases are handled above)
     if (editQueue.length === 0 && !isProcessingQueue && profileReady && !profileLockedRef.current && flightPath.length >= 2) {
       setStableProfileResult(fullProfileResultInternal);
       profileLockedRef.current = true; // Lock the profile once displayed
@@ -1735,7 +1747,8 @@ function AppContent() {
         height: p.height,
         id: p.id
       })),
-      nominalFlightHeight: routeData.nominalFlightHeight
+      nominalFlightHeight: routeData.nominalFlightHeight,
+      entranceHeightFromFile: routeData.entranceHeightFromFile ?? true
     }));
     
     // Update nominalFlightHeight if it was migrated

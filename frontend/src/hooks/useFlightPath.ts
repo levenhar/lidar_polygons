@@ -73,8 +73,10 @@ export interface FlightRoute {
   lineWidth: number;
   visible: boolean;
   points: Coordinate[];
-  // Nominal flight height (AGL) associated with this route
+  // Nominal flight height (ASL) associated with this route
   nominalFlightHeight: number;
+  /** When true, entrance height came from "גובה כניסה" in KML - do not recalculate it */
+  entranceHeightFromFile?: boolean;
 }
 
 interface FlightRoutesState {
@@ -458,7 +460,7 @@ export function useFlightPath(
   const setNominalFlightHeight = useCallback(
     (height: number) => {
       const safe = Number.isFinite(height) ? Math.max(0, height) : DEFAULT_NOMINAL_FLIGHT_HEIGHT;
-      updateActiveRoute((route) => ({ ...route, nominalFlightHeight: safe }));
+      updateActiveRoute((route) => ({ ...route, nominalFlightHeight: safe, entranceHeightFromFile: false }));
     },
     [updateActiveRoute]
   );
@@ -474,7 +476,7 @@ export function useFlightPath(
           return {
             ...prevState,
             routes: prevState.routes.map((route) =>
-              route.id === routeId ? { ...route, nominalFlightHeight: safe } : route
+              route.id === routeId ? { ...route, nominalFlightHeight: safe, entranceHeightFromFile: false } : route
             )
           };
         },
@@ -959,7 +961,7 @@ export function useFlightPath(
   );
 
   const importKML = useCallback(
-    async (file: File, dtmSource?: string | null): Promise<{ routes: FlightRoute[]; climbRequests: { endDistance: number; climbAmount: number }[]; nominalFlightHeight?: number } | null> => {
+    async (file: File, _dtmSource?: string | null): Promise<{ routes: FlightRoute[]; climbRequests: { endDistance: number; climbAmount: number }[]; nominalFlightHeight?: number } | null> => {
       try {
         // Validate file size (10MB limit for KML files)
         const MAX_KML_SIZE = 10 * 1024 * 1024; // 10MB
@@ -980,139 +982,195 @@ export function useFlightPath(
         }
 
         const routes: FlightRoute[] = [];
-        const climbRequests: { endDistance: number; climbAmount: number }[] = [];
-        let nominalFlightHeight: number | undefined = undefined;
-        let absoluteAltitudeInfo: { altitude: number; coord: Coordinate } | undefined = undefined;
+        const climbRequestsByRouteImported: Record<string, { endDistance: number; climbAmount: number; _coord?: Coordinate }[]> = {};
 
-        // Handle both old format (kml > Document) and new format (Folder > Document)
-        let rootElement: Element | null = null;
-        const folder = kmlDoc.querySelector('Folder');
-        const document = kmlDoc.querySelector('Document');
-        
-        if (folder) {
-          rootElement = folder;
-        } else if (document) {
-          rootElement = document;
-        } else {
-          // Try to find any container
-          rootElement = kmlDoc.documentElement;
-        }
-
-        if (!rootElement) {
-          throw new Error('Invalid KML structure');
-        }
-
-        // Find Document elements with id="Point" and id="PolyLine" (new format)
-        // Use getElementsByTagName and filter by id attribute for better namespace handling
-        const allDocuments = rootElement.getElementsByTagName('Document');
-        let pointDocument: Element | null = null;
-        let polylineDocument: Element | null = null;
-        
-        for (let i = 0; i < allDocuments.length; i++) {
-          const doc = allDocuments[i];
-          const id = doc.getAttribute('id');
-          if (id === 'Point') {
-            pointDocument = doc;
-          } else if (id === 'PolyLine') {
-            polylineDocument = doc;
-          }
-        }
-        
-        console.log('KML import: Found Point document:', !!pointDocument, 'PolyLine document:', !!polylineDocument);
-        
-        // If new format found (at least one of the Documents), use it; otherwise fall back to old format
-        if (pointDocument || polylineDocument) {
-          // New format: Parse Points from Point Document
-          if (pointDocument) {
-            const pointPlacemarks = pointDocument.querySelectorAll('Placemark');
-            pointPlacemarks.forEach((placemark) => {
-            const point = placemark.querySelector('Point');
-            if (point) {
-              const coordinatesText = point.querySelector('coordinates')?.textContent?.trim();
-              if (coordinatesText) {
-                const parts = coordinatesText.split(',');
-                const lng = parseFloat(parts[0]);
-                const lat = parseFloat(parts[1]);
-
-                // Extract climb amount from name (e.g., "+15", "-20", "+10")
-                const name = placemark.querySelector('name')?.textContent?.trim() || '';
-                
-                // Check if this is the entry height point (גובה כניסה)
-                if (name.startsWith('גובה כניסה')) {
-                  // Extract absolute altitude (sea level) from name (e.g., "גובה כניסה - 500")
-                  // This is nominalFlightHeight + ground elevation at first turn point
-                  const heightMatch = name.match(/גובה כניסה\s*-\s*(\d+)/);
-                  if (heightMatch && heightMatch[1]) {
-                    const absoluteAltitude = parseFloat(heightMatch[1]);
-                    if (!isNaN(absoluteAltitude)) {
-                      // Store the absolute altitude and coordinate for later calculation
-                      // We'll subtract the ground elevation at first turn point to get nominalFlightHeight
-                      absoluteAltitudeInfo = {
-                        altitude: absoluteAltitude,
-                        coord: { lng, lat }
-                      };
-                    }
-                  }
-                  // Don't add this as a climb request, it's just metadata
-                  return;
-                }
-                
-                // Try to parse the name as a number (handles +15, -20, etc.)
-                const climbValue = parseFloat(name);
-                
-                if (!isNaN(climbValue) && !isNaN(lng) && !isNaN(lat)) {
-                  climbRequests.push({
-                    endDistance: 0, // Will be calculated after route is loaded
-                    climbAmount: climbValue,
-                    // Store coordinate for later distance calculation
-                    _coord: { lng, lat }
-                  } as any);
+        // Helper: extract entrance height (ASL) from "גובה כניסה - X" in a Point document
+        const extractEntranceHeightFromPointDoc = (pointDoc: Element): number | undefined => {
+          const pointPlacemarks = pointDoc.querySelectorAll('Placemark');
+          for (let i = 0; i < pointPlacemarks.length; i++) {
+            const placemark = pointPlacemarks[i];
+            const name = placemark.querySelector('name')?.textContent?.trim() || '';
+            if (name.startsWith('גובה כניסה')) {
+              const heightMatch = name.match(/גובה כניסה\s*-\s*(\d+)/);
+              if (heightMatch?.[1]) {
+                const absoluteAltitude = parseFloat(heightMatch[1]);
+              if (!isNaN(absoluteAltitude)) {
+                return Math.round(absoluteAltitude);
                 }
               }
+              break;
+            }
+          }
+          return undefined;
+        };
+
+        // Helper: parse Point document for climb requests (excluding entrance height point)
+        const parseClimbRequestsFromPointDoc = (pointDoc: Element): { endDistance: number; climbAmount: number; _coord: Coordinate }[] => {
+          const result: { endDistance: number; climbAmount: number; _coord: Coordinate }[] = [];
+          const pointPlacemarks = pointDoc.querySelectorAll('Placemark');
+          pointPlacemarks.forEach((placemark) => {
+            const point = placemark.querySelector('Point');
+            if (!point) return;
+            const coordinatesText = point.querySelector('coordinates')?.textContent?.trim();
+            if (!coordinatesText) return;
+            const parts = coordinatesText.split(',');
+            const lng = parseFloat(parts[0]);
+            const lat = parseFloat(parts[1]);
+            const name = placemark.querySelector('name')?.textContent?.trim() || '';
+            if (name.startsWith('גובה כניסה')) return; // Skip entrance height point
+            const climbValue = parseFloat(name);
+            if (!isNaN(climbValue) && !isNaN(lng) && !isNaN(lat)) {
+              result.push({ endDistance: 0, climbAmount: climbValue, _coord: { lng, lat } });
             }
           });
-          }
+          return result;
+        };
 
-          // Parse LineStrings from PolyLine Document
-          if (polylineDocument) {
-            const polylinePlacemarks = polylineDocument.querySelectorAll('Placemark');
+        // Helper: extract entrance height from Placemark ExtendedData (entranceHeight, nominalFlightHeight)
+        const extractEntranceHeightFromPlacemark = (placemark: Element): number | undefined => {
+          const dataEls = placemark.querySelectorAll('ExtendedData Data');
+          for (let i = 0; i < dataEls.length; i++) {
+            const data = dataEls[i] as Element;
+            const name = data.getAttribute('name');
+            if (name === 'entranceHeight' || name === 'nominalFlightHeight') {
+              const val = data.querySelector('value')?.textContent?.trim();
+              if (val) {
+                const n = parseFloat(val);
+                if (!isNaN(n)) return Math.round(n);
+              }
+            }
+          }
+          return undefined;
+        };
+
+        // Helper: parse PolyLine document for routes (entrance height from file: Point doc or Placemark ExtendedData)
+        const parseRoutesFromPolylineDoc = (
+          polylineDoc: Element,
+          startIndex: number,
+          entranceHeight?: number
+        ): FlightRoute[] => {
+          const result: FlightRoute[] = [];
+          const polylinePlacemarks = polylineDoc.querySelectorAll('Placemark');
           polylinePlacemarks.forEach((placemark) => {
             const lineString = placemark.querySelector('LineString');
-            if (lineString) {
-              const name = placemark.querySelector('name')?.textContent || '';
-              const coordinatesText = lineString.querySelector('coordinates')?.textContent?.trim();
-              if (coordinatesText) {
-                // Handle both space-separated and newline-separated coordinates
-                const coords = coordinatesText
-                  .split(/[\s\n]+/)
-                  .filter((c) => c.trim())
-                  .map((coordStr) => {
-                    const parts = coordStr.split(',');
-                    const lng = parseFloat(parts[0]);
-                    const lat = parseFloat(parts[1]);
-                    const height = parts.length > 2 ? parseFloat(parts[2]) : undefined;
-                    return { lng, lat, ...(height !== undefined && !isNaN(height) && { height }) };
-                  })
-                  .filter((c) => !isNaN(c.lng) && !isNaN(c.lat));
-
-                if (coords.length >= 2) {
-                  const nextIndex = state.routes.length + routes.length + 1;
-                  const route = createRoute(nextIndex);
-                  const newRoute = {
-                    ...route,
-                    name: name || route.name,
-                    points: coords
-                  };
-                  console.log('KML import: Adding route', newRoute.name, 'with', coords.length, 'points. First point:', coords[0], 'Last point:', coords[coords.length - 1]);
-                  routes.push(newRoute);
-                } else {
-                  console.warn('KML import: Skipping route with less than 2 points:', coords.length);
-                }
-              }
+            if (!lineString) return;
+            const name = placemark.querySelector('name')?.textContent || '';
+            const coordinatesText = lineString.querySelector('coordinates')?.textContent?.trim();
+            if (!coordinatesText) return;
+            const coords = coordinatesText
+              .split(/[\s\n]+/)
+              .filter((c) => c.trim())
+              .map((coordStr) => {
+                const parts = coordStr.split(',');
+                const lng = parseFloat(parts[0]);
+                const lat = parseFloat(parts[1]);
+                const height = parts.length > 2 ? parseFloat(parts[2]) : undefined;
+                return { lng, lat, ...(height !== undefined && !isNaN(height) && { height }) };
+              })
+              .filter((c) => !isNaN(c.lng) && !isNaN(c.lat));
+            if (coords.length >= 2) {
+              const placemarkHeight = extractEntranceHeightFromPlacemark(placemark);
+              const finalHeight = entranceHeight ?? placemarkHeight ?? DEFAULT_NOMINAL_FLIGHT_HEIGHT;
+              const fromFile = entranceHeight !== undefined || placemarkHeight !== undefined;
+              const route = createRoute(startIndex + result.length, finalHeight);
+              const newRoute: FlightRoute = {
+                ...route,
+                name: name || route.name,
+                points: coords,
+                nominalFlightHeight: finalHeight,
+                ...(fromFile && { entranceHeightFromFile: true })
+              };
+              result.push(newRoute);
             }
           });
+          return result;
+        };
+
+        // Find route Folders: Folders that contain Document id="PolyLine" as direct child
+        const allFolders = kmlDoc.querySelectorAll('Folder');
+        const routeFolders: Element[] = [];
+        for (let i = 0; i < allFolders.length; i++) {
+          const folder = allFolders[i];
+          const children = folder.children;
+          for (let j = 0; j < children.length; j++) {
+            const child = children[j];
+            if (child.tagName === 'Document' && child.getAttribute('id') === 'PolyLine') {
+              routeFolders.push(folder);
+              break;
+            }
           }
+        }
+
+        // New format: per-Folder parsing (each Folder = one or more routes with own entrance height)
+        if (routeFolders.length > 0) {
+          routeFolders.forEach((folder) => {
+            let pointDoc: Element | null = null;
+            let polylineDoc: Element | null = null;
+            for (let i = 0; i < folder.children.length; i++) {
+              const child = folder.children[i] as Element;
+              if (child.tagName !== 'Document') continue;
+              const id = child.getAttribute('id');
+              if (id === 'Point') pointDoc = child;
+              else if (id === 'PolyLine') polylineDoc = child;
+            }
+            if (!polylineDoc) return;
+            const entranceHeight = pointDoc ? extractEntranceHeightFromPointDoc(pointDoc) : undefined;
+            const folderClimbReqs = pointDoc ? parseClimbRequestsFromPointDoc(pointDoc) : [];
+            const folderRoutes = parseRoutesFromPolylineDoc(
+              polylineDoc,
+              state.routes.length + routes.length + 1,
+              entranceHeight
+            );
+            folderRoutes.forEach((r) => {
+              routes.push(r);
+              if (folderClimbReqs.length > 0 && folderRoutes.indexOf(r) === 0) {
+                climbRequestsByRouteImported[r.id] = folderClimbReqs;
+              }
+            });
+          });
         } else {
+          // Fallback: single Document structure (root Document with Point + PolyLine)
+          let rootElement: Element | null = null;
+          const folder = kmlDoc.querySelector('Folder');
+          const documentEl = kmlDoc.querySelector('Document');
+          if (folder) rootElement = folder;
+          else if (documentEl) rootElement = documentEl;
+          else rootElement = kmlDoc.documentElement;
+          if (!rootElement) throw new Error('Invalid KML structure');
+
+          const allDocuments = rootElement.getElementsByTagName('Document');
+          let pointDocument: Element | null = null;
+          let polylineDocument: Element | null = null;
+          for (let i = 0; i < allDocuments.length; i++) {
+            const doc = allDocuments[i];
+            const id = doc.getAttribute('id');
+            if (id === 'Point') pointDocument = doc;
+            else if (id === 'PolyLine') polylineDocument = doc;
+          }
+
+          if (pointDocument || polylineDocument) {
+            const entranceHeight = pointDocument ? extractEntranceHeightFromPointDoc(pointDocument) : undefined;
+            const climbReqs = pointDocument ? parseClimbRequestsFromPointDoc(pointDocument) : [];
+            if (polylineDocument) {
+              const fallbackRoutes = parseRoutesFromPolylineDoc(
+                polylineDocument,
+                state.routes.length + 1,
+                entranceHeight
+              );
+              fallbackRoutes.forEach((r) => {
+                routes.push(r);
+                if (climbReqs.length > 0 && fallbackRoutes[0]?.id === r.id) {
+                  climbRequestsByRouteImported[r.id] = climbReqs;
+                }
+              });
+            }
+          }
+        }
+
+        const hasNewFormat = routes.length > 0;
+        const oldFormatClimbReqs: { endDistance: number; climbAmount: number; _coord: Coordinate }[] = [];
+
+        if (!hasNewFormat) {
           // Old format: Find all Placemark elements anywhere in the document
           const placemarks = kmlDoc.querySelectorAll('Placemark');
 
@@ -1161,22 +1219,21 @@ export function useFlightPath(
                 // Extract climb value from description (just the number)
                 const climbValue = parseFloat(description.trim());
                 if (!isNaN(climbValue) && !isNaN(lng) && !isNaN(lat)) {
-                  const climbAmount = climbValue;
-                  // We'll need to calculate the distance along the route later
-                  // For now, store the coordinate and climb amount
-                  // This will be processed after routes are loaded
-                  climbRequests.push({
-                    endDistance: 0, // Will be calculated after route is loaded
-                    climbAmount,
-                    // Store coordinate for later distance calculation
+                  oldFormatClimbReqs.push({
+                    endDistance: 0,
+                    climbAmount: climbValue,
                     _coord: { lng, lat }
-                  } as any);
+                  });
                 }
               }
             }
           });
+          if (routes.length > 0 && oldFormatClimbReqs.length > 0) {
+            climbRequestsByRouteImported[routes[0].id] = oldFormatClimbReqs;
+          }
         }
 
+        const climbRequests = Object.values(climbRequestsByRouteImported).flat();
         console.log('KML import: Found', routes.length, 'routes and', climbRequests.length, 'climb points');
         
         if (routes.length === 0) {
@@ -1197,151 +1254,61 @@ export function useFlightPath(
           });
         });
 
-        // If we found absolute altitude in "גובה כניסה", use it directly as ASL
-        // Entry height (nominalFlightHeight) is now ASL, matching the exported format
-        // Legacy files (exported before this change) stored: ASL = AGL + ground elevation
-        // New files (exported after this change) store: ASL = entry height directly
-        // We handle both by using the imported value as ASL directly
-        if (absoluteAltitudeInfo && routes.length > 0) {
-          // TypeScript: absoluteAltitudeInfo is guaranteed to be defined here due to the if check
-          const { altitude: absoluteAltitude } = absoluteAltitudeInfo as { altitude: number; coord: Coordinate };
-          
-          // Entry height is now ASL, so use the imported value directly
-          // For legacy files that stored (AGL + ground), this will be incorrect, but we can't reliably
-          // detect legacy vs new without a version marker. The user should re-export with the new format.
-          console.log('KML import: Using entry height as ASL:', absoluteAltitude);
-          nominalFlightHeight = Math.round(absoluteAltitude);
-          
-          // Optional: Try to detect legacy files by checking if DTM is available and value seems too high
-          // This is a best-effort detection and may not be reliable
-          if (dtmSource) {
-            try {
-              const firstRoute = routes[0];
-              const p0 = firstRoute.points[0];
-              const p1 = firstRoute.points[1] ?? firstRoute.points[0];
-              const coordinates = [
-                [p0.lng, p0.lat],
-                [p1.lng, p1.lat]
-              ];
-              const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
-              const clippedId = clippedIdMatch ? clippedIdMatch[1] : undefined;
-              
-              const response = await fetch('/api/elevation-profile', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  coordinates,
-                  dtmPath: dtmSource,
-                  safetyRadiusMeters: 50,
-                  resolutionRadiusMeters: 50,
-                  ...(clippedId && { clippedId })
-                })
-              });
-              
-              if (response.ok) {
-                const data = await response.json();
-                let groundElevation: number | null = null;
-                
-                if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
-                  groundElevation = data.profile[0].elevation;
-                } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
-                  groundElevation = data.elevations[0];
-                } else if (data.elevation !== undefined) {
-                  groundElevation = data.elevation;
-                } else if (Array.isArray(data) && data.length > 0) {
-                  groundElevation = typeof data[0] === 'number' ? data[0] : data[0].elevation;
-                }
-                
-                // Heuristic: If the imported value is much higher than ground + typical flight height (e.g., > 1000m),
-                // it might be a legacy file. However, we can't be certain, so we'll use it as-is and log a warning.
-                if (groundElevation !== null && !isNaN(groundElevation)) {
-                  const estimatedAGL = absoluteAltitude - groundElevation;
-                  if (estimatedAGL > 1000) {
-                    console.warn('KML import: Imported entry height seems unusually high for AGL. If this is a legacy file (pre-ASL format), the value may be incorrect. Consider re-exporting with the new format.', {
-                      importedASL: absoluteAltitude,
-                      groundElevation,
-                      estimatedAGL
-                    });
-                  }
-                }
-              }
-            } catch (error) {
-              // Ignore errors in legacy detection - use imported value as-is
-              console.log('KML import: Could not check for legacy file format, using imported value as ASL');
-            }
+        // Entrance height is set per-route from "גובה כניסה" in the file - no recalculation
+        routes.forEach((r) => {
+          if (r.nominalFlightHeight !== DEFAULT_NOMINAL_FLIGHT_HEIGHT) {
+            console.log(`KML import: Route "${r.name}" entrance height from file (ASL): ${r.nominalFlightHeight}`);
           }
-        }
-        
-        // Calculate distances for climb points if we have routes
-        if (climbRequests.length > 0 && routes.length > 0) {
-          const activeRoute = routes[0]; // Use first route for climb points
-          const cumulativeDistances = computeCumulativeDistances(activeRoute.points);
+        });
 
-          // Helper function to calculate haversine distance
-          const haversineDist = (a: Coordinate, b: Coordinate): number => {
-            const R = 6371000; // Earth radius in meters
-            const dLat = ((b.lat - a.lat) * Math.PI) / 180;
-            const dLon = ((b.lng - a.lng) * Math.PI) / 180;
-            const lat1 = (a.lat * Math.PI) / 180;
-            const lat2 = (b.lat * Math.PI) / 180;
-            const h =
-              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-              Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-            const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
-            return R * c;
-          };
+        // Helper function to calculate haversine distance
+        const haversineDist = (a: Coordinate, b: Coordinate): number => {
+          const R = 6371000; // Earth radius in meters
+          const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+          const dLon = ((b.lng - a.lng) * Math.PI) / 180;
+          const lat1 = (a.lat * Math.PI) / 180;
+          const lat2 = (b.lat * Math.PI) / 180;
+          const h =
+            Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+          const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+          return R * c;
+        };
 
-          // Find nearest point on route for each climb point
-          climbRequests.forEach((climb) => {
-            const coord = (climb as any)._coord;
+        // Calculate distances for climb points per route
+        Object.entries(climbRequestsByRouteImported).forEach(([routeId, climbReqs]) => {
+          const route = routes.find((r) => r.id === routeId);
+          if (!route || climbReqs.length === 0) return;
+          const cumulativeDistances = computeCumulativeDistances(route.points);
+          climbReqs.forEach((climb) => {
+            const coord = climb._coord;
             if (!coord) return;
-
-            // Find the closest point on the route
             let minDist = Infinity;
             let closestDistance = 0;
-
-            for (let i = 0; i < activeRoute.points.length - 1; i++) {
-              const p1 = activeRoute.points[i];
-              const p2 = activeRoute.points[i + 1];
-
-              // Calculate distance from climb point to line segment using haversine
+            for (let i = 0; i < route.points.length - 1; i++) {
+              const p1 = route.points[i];
+              const p2 = route.points[i + 1];
               const segmentLength = haversineDist(p1, p2);
               if (segmentLength === 0) continue;
-
-              // Project climb point onto the segment
-              // Use simple interpolation for finding t, then calculate haversine distance
               const dx = p2.lng - p1.lng;
               const dy = p2.lat - p1.lat;
               const length2 = dx * dx + dy * dy;
-              
               if (length2 === 0) continue;
-
               const t = Math.max(0, Math.min(1, ((coord.lng - p1.lng) * dx + (coord.lat - p1.lat) * dy) / length2));
-              const projCoord: Coordinate = {
-                lng: p1.lng + t * dx,
-                lat: p1.lat + t * dy
-              };
-
+              const projCoord: Coordinate = { lng: p1.lng + t * dx, lat: p1.lat + t * dy };
               const dist = haversineDist(coord, projCoord);
-
               if (dist < minDist) {
                 minDist = dist;
-                // Calculate distance along route
                 const segmentDist = cumulativeDistances[i + 1] - cumulativeDistances[i];
                 closestDistance = cumulativeDistances[i] + t * segmentDist;
               }
             }
-
             climb.endDistance = closestDistance;
-            delete (climb as any)._coord;
+            delete climb._coord;
           });
-        }
+        });
 
-        // If we found nominal flight height, attach it to all imported routes
-        const routesWithNominal = nominalFlightHeight !== undefined
-          ? routes.map((r) => ({ ...r, nominalFlightHeight }))
-          : routes;
-        const routesWithStyleDefaults = routesWithNominal.map((route) => ({
+        const routesWithStyleDefaults = routes.map((route) => ({
           ...route,
           lineWidth: sanitizeRouteLineWidth(route.lineWidth)
         }));
@@ -1366,7 +1333,8 @@ export function useFlightPath(
                 ...existingEmpty,
                 name: firstImported.name || existingEmpty.name,
                 points: firstImported.points,
-                nominalFlightHeight: firstImported.nominalFlightHeight
+                nominalFlightHeight: firstImported.nominalFlightHeight,
+                entranceHeightFromFile: firstImported.entranceHeightFromFile
               };
 
               nextActiveRouteId = existingEmpty.id;
@@ -1379,10 +1347,18 @@ export function useFlightPath(
               nextRoutes.push(...routesWithStyleDefaults);
             }
 
-            // Attach climb requests to the first imported route (or the reused empty route)
-            if (climbRequests.length > 0 && routesWithStyleDefaults.length > 0) {
-              updatedClimbRequestsByRoute[nextActiveRouteId] = climbRequests;
+            // Map imported route ids to final route ids (when reusing empty route, first gets existing id)
+            const importedToFinalId: Record<string, string> = {};
+            if (emptyRouteIndex !== -1 && routesWithStyleDefaults.length > 0) {
+              importedToFinalId[routesWithStyleDefaults[0].id] = nextActiveRouteId;
             }
+            routesWithStyleDefaults.forEach((r) => {
+              if (!importedToFinalId[r.id]) importedToFinalId[r.id] = r.id;
+            });
+            Object.entries(climbRequestsByRouteImported).forEach(([importedId, reqs]) => {
+              const finalId = importedToFinalId[importedId] ?? importedId;
+              updatedClimbRequestsByRoute[finalId] = reqs.map(({ endDistance, climbAmount }) => ({ endDistance, climbAmount }));
+            });
 
             return {
               ...prevState,
@@ -1394,7 +1370,8 @@ export function useFlightPath(
           true
         );
 
-        return { routes: routesWithStyleDefaults, climbRequests, nominalFlightHeight };
+        const firstRouteNominal = routesWithStyleDefaults[0]?.nominalFlightHeight;
+        return { routes: routesWithStyleDefaults, climbRequests, nominalFlightHeight: firstRouteNominal };
       } catch (error) {
         console.error('Error importing KML:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';

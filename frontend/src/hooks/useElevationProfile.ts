@@ -188,9 +188,9 @@ export function useElevationProfile() {
       
       // Calculate default entrance height if nominalFlightHeight is still at default (250)
       // and we have the required parameters
-      if (Math.abs(nominalFlightHeight - 250) < 0.1 && 
-          safetyHeight !== undefined && 
-          resolutionHeight !== undefined && 
+      if (Math.abs(nominalFlightHeight - 250) < 0.1 &&
+          safetyHeight !== undefined &&
+          resolutionHeight !== undefined &&
           profile.length > 0 &&
           onDefaultEntryHeightCalculated) {
         const firstPoint = profile[0];

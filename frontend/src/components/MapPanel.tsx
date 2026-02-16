@@ -266,7 +266,9 @@ type IconName =
   | 'eye'
   | 'eye-off'
   | 'circle'
-  | 'rotate';
+  | 'rotate'
+  | 'chart'
+  | 'refresh';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
 
@@ -544,6 +546,25 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M20 14v6h-6" />
           <path {...stroke} d="M5 10a7 7 0 0 1 11.5-4.95L19 4" />
           <path {...stroke} d="M19 14a7 7 0 0 1-11.5 4.95L5 20" />
+        </svg>
+      );
+    case 'chart':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M3 18v-6" />
+          <path {...stroke} d="M9 18V12" />
+          <path {...stroke} d="M15 18V6" />
+          <path {...stroke} d="M21 18v-4" />
+          <path {...stroke} d="M3 18h18" />
+        </svg>
+      );
+    case 'refresh':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path {...stroke} d="M3 3v5h5" />
+          <path {...stroke} d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+          <path {...stroke} d="M21 21v-5h-5" />
         </svg>
       );
     default:
@@ -1040,9 +1061,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [overlapGraphLoading, setOverlapGraphLoading] = useState(false);
   const [overlapGraphError, setOverlapGraphError] = useState<string | null>(null);
   const [overlapGraphWindowPosition, setOverlapGraphWindowPosition] = useState<{ x: number; y: number } | null>(null);
+  const [overlapGraphWindowSize, setOverlapGraphWindowSize] = useState<{ width: number; height: number } | null>(null);
   const [isDraggingOverlapGraphWindow, setIsDraggingOverlapGraphWindow] = useState(false);
+  const [isResizingOverlapGraphWindow, setIsResizingOverlapGraphWindow] = useState(false);
   const overlapGraphDragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+  const overlapGraphResizeStartRef = useRef<{ x: number; y: number; startWidth: number; startHeight: number } | null>(null);
   const overlapGraphWindowRef = useRef<HTMLDivElement | null>(null);
+
+  const OVERLAP_GRAPH_MIN_WIDTH = 320;
+  const OVERLAP_GRAPH_MAX_WIDTH = 800;
+  const OVERLAP_GRAPH_MIN_HEIGHT = 320;
+  const OVERLAP_GRAPH_MAX_HEIGHT = 700;
+  const OVERLAP_GRAPH_DEFAULT_WIDTH = 380;
+  const OVERLAP_GRAPH_DEFAULT_HEIGHT = 440;
 
   // ============================================================================
   // UNIFIED DTM LOADER STATE
@@ -1216,16 +1247,27 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [parallelWindowPosition]);
 
-  // Load overlap graph window position from localStorage on mount
+  // Load overlap graph window position and size from localStorage on mount
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('overlapGraphWindowPosition');
-      if (saved) {
-        const parsed = JSON.parse(saved);
+      const savedPos = localStorage.getItem('overlapGraphWindowPosition');
+      if (savedPos) {
+        const parsed = JSON.parse(savedPos);
         if (parsed && typeof parsed.x === 'number' && typeof parsed.y === 'number') {
-          const clampedX = Math.max(0, Math.min(parsed.x, window.innerWidth - 360));
-          const clampedY = Math.max(0, Math.min(parsed.y, window.innerHeight - 400));
+          const w = 380;
+          const h = 440;
+          const clampedX = Math.max(0, Math.min(parsed.x, window.innerWidth - w));
+          const clampedY = Math.max(0, Math.min(parsed.y, window.innerHeight - h));
           setOverlapGraphWindowPosition({ x: clampedX, y: clampedY });
+        }
+      }
+      const savedSize = localStorage.getItem('overlapGraphWindowSize');
+      if (savedSize) {
+        const parsed = JSON.parse(savedSize);
+        if (parsed && typeof parsed.width === 'number' && typeof parsed.height === 'number') {
+          const w = Math.max(320, Math.min(800, parsed.width));
+          const h = Math.max(320, Math.min(700, parsed.height));
+          setOverlapGraphWindowSize({ width: w, height: h });
         }
       }
     } catch (e) {
@@ -1243,6 +1285,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
     }
   }, [overlapGraphWindowPosition]);
+
+  // Save overlap graph window size to localStorage when it changes
+  useEffect(() => {
+    if (overlapGraphWindowSize) {
+      try {
+        localStorage.setItem('overlapGraphWindowSize', JSON.stringify(overlapGraphWindowSize));
+      } catch (e) {
+        // Ignore storage errors
+      }
+    }
+  }, [overlapGraphWindowSize]);
 
   // Fetch overlap graph HTML when float window opens
   useEffect(() => {
@@ -1565,17 +1618,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Overlap graph float: reset position
   const resetOverlapGraphWindowPosition = useCallback(() => {
-    const defaultX = window.innerWidth - 380;
+    const defaultX = window.innerWidth - (overlapGraphWindowSize?.width ?? OVERLAP_GRAPH_DEFAULT_WIDTH);
     const defaultY = 100;
     setOverlapGraphWindowPosition({ x: defaultX, y: defaultY });
-  }, []);
+  }, [overlapGraphWindowSize]);
 
   const handleOverlapGraphWindowDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
     const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
     const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    const currentX = overlapGraphWindowPosition?.x ?? (window.innerWidth - 380);
+    const defaultW = overlapGraphWindowSize?.width ?? OVERLAP_GRAPH_DEFAULT_WIDTH;
+    const currentX = overlapGraphWindowPosition?.x ?? (window.innerWidth - defaultW);
     const currentY = overlapGraphWindowPosition?.y ?? 100;
     setIsDraggingOverlapGraphWindow(true);
     overlapGraphDragStartRef.current = { x: clientX, y: clientY, startX: currentX, startY: currentY };
@@ -1619,6 +1673,54 @@ const MapPanel: React.FC<MapPanelProps> = ({
       };
     }
   }, [isDraggingOverlapGraphWindow, handleOverlapGraphWindowDragMove, handleOverlapGraphWindowDragEnd]);
+
+  const handleOverlapGraphWindowResizeStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const el = overlapGraphWindowRef.current;
+    const startWidth = overlapGraphWindowSize?.width ?? OVERLAP_GRAPH_DEFAULT_WIDTH;
+    const startHeight = overlapGraphWindowSize?.height ?? OVERLAP_GRAPH_DEFAULT_HEIGHT;
+    setIsResizingOverlapGraphWindow(true);
+    overlapGraphResizeStartRef.current = { x: clientX, y: clientY, startWidth: el?.offsetWidth ?? startWidth, startHeight: el?.offsetHeight ?? startHeight };
+  }, [overlapGraphWindowSize]);
+
+  const handleOverlapGraphWindowResizeMove = useCallback((e: MouseEvent | TouchEvent) => {
+    if (!isResizingOverlapGraphWindow || !overlapGraphResizeStartRef.current) return;
+    e.preventDefault();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const deltaX = clientX - overlapGraphResizeStartRef.current.x;
+    const deltaY = clientY - overlapGraphResizeStartRef.current.y;
+    let w = overlapGraphResizeStartRef.current.startWidth + deltaX;
+    let h = overlapGraphResizeStartRef.current.startHeight + deltaY;
+    w = Math.max(OVERLAP_GRAPH_MIN_WIDTH, Math.min(OVERLAP_GRAPH_MAX_WIDTH, w));
+    h = Math.max(OVERLAP_GRAPH_MIN_HEIGHT, Math.min(OVERLAP_GRAPH_MAX_HEIGHT, h));
+    setOverlapGraphWindowSize({ width: w, height: h });
+  }, [isResizingOverlapGraphWindow]);
+
+  const handleOverlapGraphWindowResizeEnd = useCallback(() => {
+    setIsResizingOverlapGraphWindow(false);
+    overlapGraphResizeStartRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (isResizingOverlapGraphWindow) {
+      const handleMove = (e: MouseEvent | TouchEvent) => handleOverlapGraphWindowResizeMove(e);
+      const handleEnd = () => handleOverlapGraphWindowResizeEnd();
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleEnd);
+      window.addEventListener('touchmove', handleMove, { passive: false });
+      window.addEventListener('touchend', handleEnd);
+      return () => {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleEnd);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('touchend', handleEnd);
+      };
+    }
+  }, [isResizingOverlapGraphWindow, handleOverlapGraphWindowResizeMove, handleOverlapGraphWindowResizeEnd]);
 
   const createParallelLinesBatch = useCallback(
     (lineIds: string[], distanceOverride?: number) => {
@@ -6849,6 +6951,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       setIsViewshedModalOpen(true);
       return;
     }
+    // First click (no result yet): start calculation immediately; show progress modal so user can cancel
     setViewshedModalMode('progress');
     setIsViewshedModalOpen(true);
     handleGenerateViewshed();
@@ -7551,7 +7654,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             setViewshedModalMode(null);
           }}
         >
-          <div className="quick-modal__card" onClick={(e) => e.stopPropagation()}>
+          <div className="quick-modal__card viewshed-modal__card" onClick={(e) => e.stopPropagation()}>
             <div className="quick-modal__header">
               <div className="quick-modal__title">{hasViewshedResult ? 'הגדרות שדה ראייה' : 'חישוב שדה ראייה'}</div>
               <button
@@ -7569,19 +7672,52 @@ const MapPanel: React.FC<MapPanelProps> = ({
             <div className="quick-modal__body viewshed-modal__body">
               {hasViewshedResult ? (
                 <>
-                  <label className="quick-modal__label" htmlFor="viewshed-visible-toggle">
-                    תצוגה
-                  </label>
-                  <button
-                    id="viewshed-visible-toggle"
-                    type="button"
-                    className={`btn ${viewshedVisible ? 'btn-primary' : 'btn-secondary'}`}
-                    onClick={() => setViewshedVisible(!viewshedVisible)}
-                    disabled={!viewshedRaster}
-                    style={{ width: '100%' }}
-                  >
-                    {viewshedVisible ? 'הסתר' : 'הצג'}
-                  </button>
+                  <div className="viewshed-modal__icon-row" role="toolbar" aria-label="פעולות שדה ראייה">
+                    <button
+                      id="viewshed-visible-toggle"
+                      type="button"
+                      className={`btn btn-icon ${viewshedVisible ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setViewshedVisible(!viewshedVisible)}
+                      disabled={!viewshedRaster}
+                      aria-label={viewshedVisible ? 'הסתר שדה ראייה' : 'הצג שדה ראייה'}
+                      title={viewshedVisible ? 'הסתר שדה ראייה מהמפה' : 'הצג שדה ראייה על המפה'}
+                    >
+                      <Icon name={viewshedVisible ? 'eye-off' : 'eye'} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-icon"
+                      onClick={() => {
+                        setOverlapGraphWindowOpen(true);
+                        setIsViewshedModalOpen(false);
+                        setViewshedModalMode(null);
+                      }}
+                      aria-label="גרף חפיפה"
+                      title="גרף חפיפה (%) לאורך המסלול"
+                    >
+                      <Icon name="chart" />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-icon"
+                      onClick={handleDownloadViewshedTiff}
+                      disabled={!viewshedJobId || viewshedStatus !== 'done'}
+                      aria-label="הורד TIFF"
+                      title="הורד קובץ TIFF של שדה הראייה"
+                    >
+                      <Icon name="download" />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-tertiary btn-icon"
+                      onClick={handleGenerateViewshed}
+                      disabled={!dtmLoaded || flightPath.length < 2 || isViewshedProcessing}
+                      aria-label="חשב מחדש"
+                      title="חשב שדה ראייה מחדש לפי המסלול הנוכחי"
+                    >
+                      <Icon name="refresh" />
+                    </button>
+                  </div>
 
                   <label className="quick-modal__label" htmlFor="viewshed-colormap">
                     צבע
@@ -7615,20 +7751,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     disabled={!viewshedRaster}
                   />
 
-                  <label className="quick-modal__label">גרף חפיפה</label>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    style={{ width: '100%' }}
-                    onClick={() => {
-                      setOverlapGraphWindowOpen(true);
-                      setIsViewshedModalOpen(false);
-                      setViewshedModalMode(null);
-                    }}
-                  >
-                    גרף חפיפה (%)
-                  </button>
-
                   {isViewshedProcessing && (
                     <div className="viewshed-progress">
                       <div className="viewshed-progress-bar">
@@ -7655,59 +7777,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 </>
               )}
             </div>
-            <div className="quick-modal__actions">
-              {hasViewshedResult ? (
-                <>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={handleDownloadViewshedTiff}
-                    disabled={!viewshedJobId || viewshedStatus !== 'done'}
-                  >
-                    הורד TIFF
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={handleGenerateViewshed}
-                    disabled={!dtmLoaded || flightPath.length < 2 || isViewshedProcessing}
-                  >
-                    חשב מחדש
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-tertiary"
-                    onClick={() => {
-                      setIsViewshedModalOpen(false);
-                      setViewshedModalMode(null);
-                    }}
-                  >
-                    סגור
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    className="btn btn-destructive"
-                    onClick={handleCancelViewshed}
-                    disabled={!viewshedJobId || !isViewshedProcessing}
-                  >
-                    בטל חישוב
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-tertiary"
-                    onClick={() => {
-                      setIsViewshedModalOpen(false);
-                      setViewshedModalMode(null);
-                    }}
-                  >
-                    סגור
-                  </button>
-                </>
-              )}
-            </div>
+            {!hasViewshedResult && (
+              <div className="quick-modal__actions viewshed-modal__actions">
+                <button
+                  type="button"
+                  className="btn btn-destructive"
+                  onClick={handleCancelViewshed}
+                  disabled={!viewshedJobId || !isViewshedProcessing}
+                >
+                  בטל חישוב
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -7878,9 +7959,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
           ref={overlapGraphWindowRef}
           className="overlap-graph-window"
           style={{
-            left: overlapGraphWindowPosition?.x ?? (window.innerWidth - 380),
+            left: overlapGraphWindowPosition?.x ?? (window.innerWidth - (overlapGraphWindowSize?.width ?? OVERLAP_GRAPH_DEFAULT_WIDTH)),
             top: overlapGraphWindowPosition?.y ?? 100,
-            cursor: isDraggingOverlapGraphWindow ? 'grabbing' : 'default'
+            width: overlapGraphWindowSize?.width,
+            height: overlapGraphWindowSize?.height,
+            cursor: isDraggingOverlapGraphWindow ? 'grabbing' : isResizingOverlapGraphWindow ? 'nwse-resize' : 'default'
           }}
           onClick={(e) => e.stopPropagation()}
         >
@@ -7943,6 +8026,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
               </div>
             )}
           </div>
+          <div
+            className="overlap-graph-window__resize-handle"
+            onMouseDown={handleOverlapGraphWindowResizeStart}
+            onTouchStart={handleOverlapGraphWindowResizeStart}
+            title="שנה גודל"
+            aria-label="שנה גודל החלון"
+          />
         </div>
       )}
       <SuccessNotification

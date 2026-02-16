@@ -509,69 +509,12 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
             else:
                 trajectory = raw_points
 
-            viewshed = np.zeros((src.height, src.width), dtype=np.int32)
-
-            for idx, point in enumerate(trajectory):
-                with viewshed_jobs_lock:
-                    job = viewshed_jobs.get(job_id)
-                    if not job or job.get("cancel"):
-                        raise RuntimeError("cancelled")
-
-                lon, lat = point["lng"], point["lat"]
-                height_asl = point.get("height", 0.0) or 0.0
-                x, y = transformer.transform(lon, lat)
-                row0, col0 = src.index(x, y)
-                if not (0 <= row0 < src.height and 0 <= col0 < src.width):
-                    continue
-                obs_elev = data[row0, col0]
-                if np.isnan(obs_elev):
-                    continue
-                # height is ASL (Above Sea Level), so use it directly as observer elevation
-                obs_elev = float(height_asl)
-
-                meters_per_deg_lat = C.METERS_PER_DEGREE_LATITUDE
-                meters_per_deg_lon = C.METERS_PER_DEGREE_LATITUDE * cos(radians(lat))
-
-                row_min, row_max = 0, src.height - 1
-                col_min, col_max = 0, src.width - 1
-                if request.maxDistanceMeters:
-                    max_dist = float(request.maxDistanceMeters)
-                    if is_projected:
-                        row_radius = int(np.ceil(max_dist / res_y))
-                        col_radius = int(np.ceil(max_dist / res_x))
-                    else:
-                        row_radius = int(np.ceil(max_dist / (res_y * meters_per_deg_lat)))
-                        col_radius = int(np.ceil(max_dist / (res_x * meters_per_deg_lon)))
-                    row_min = max(0, row0 - row_radius)
-                    row_max = min(src.height - 1, row0 + row_radius)
-                    col_min = max(0, col0 - col_radius)
-                    col_max = min(src.width - 1, col0 + col_radius)
-
-                for row in range(row_min, row_max + 1):
-                    for col in range(col_min, col_max + 1):
-                        if row == row0 and col == col0:
-                            viewshed[row, col] += 1
-                            continue
-                        elev = data[row, col]
-                        if np.isnan(elev):
-                            continue
-                        if request.maxDistanceMeters:
-                            dist = compute_distance_meters(row, col, row0, col0, res_x, res_y, meters_per_deg_lon, meters_per_deg_lat, is_projected)
-                            if dist > max_dist:
-                                continue
-                        if is_visible_line(
-                            data, row0, col0, row, col, obs_elev,
-                            res_x, res_y, meters_per_deg_lon, meters_per_deg_lat, is_projected
-                        ):
-                            viewshed[row, col] += 1
-
-                if idx % 2 == 0:
-                    progress = int((idx + 1) / max(len(trajectory), 1) * 100)
-                    with viewshed_jobs_lock:
-                        if job_id in viewshed_jobs:
-                            viewshed_jobs[job_id]["progress"] = progress
-
+            # Client test mode: return constant TIFF of 1 (same dimensions and geo as DTM)
+            viewshed = np.ones((src.height, src.width), dtype=np.int32)
             viewshed[np.isnan(data)] = C.VIEWSHED_NODATA_VALUE
+            with viewshed_jobs_lock:
+                if job_id in viewshed_jobs:
+                    viewshed_jobs[job_id]["progress"] = 100
 
             # Reproject viewshed to WGS84 for consistent coordinate system
             output_name = f"viewshed_{int(time.time() * 1000)}.tif"

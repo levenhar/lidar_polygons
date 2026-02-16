@@ -1058,7 +1058,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   // Overlap graph float window (after viewshed done) — data comes from viewshed job status when done
   const [overlapGraphWindowOpen, setOverlapGraphWindowOpen] = useState(false);
   const [viewshedOverlapGraphPngBase64, setViewshedOverlapGraphPngBase64] = useState<string | null>(null);
-  const [viewshedOverlapByPoint, setViewshedOverlapByPoint] = useState<number[] | null>(null);
+  const [_viewshedOverlapByPoint, setViewshedOverlapByPoint] = useState<number[] | null>(null);
   const [overlapGraphHtml, setOverlapGraphHtml] = useState<string | null>(null);
   const [overlapGraphLoading, setOverlapGraphLoading] = useState(false);
   const [overlapGraphError, setOverlapGraphError] = useState<string | null>(null);

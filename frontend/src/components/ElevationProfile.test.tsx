@@ -1,4 +1,3 @@
-import React from 'react';
 import { render } from '@testing-library/react';
 import type { Coordinate, ElevationPoint } from '../App';
 import type { ClimbRequest } from '../utils/climbAnchors';
@@ -16,7 +15,6 @@ vi.mock('d3', () => ({
   })
 }));
 
-const minimalClimbPresets: ClimbPreset[] = [{ id: 'custom', name: 'Custom', climbRatio: 4, descentRatio: 8 }];
 const minimalClimbConfig: ClimbConfig = {
   climbRatio: 4,
   descentRatio: 8,
@@ -26,6 +24,8 @@ const minimalClimbConfig: ClimbConfig = {
   minClimb: 11,
   maxClimb: 50
 };
+
+const minimalClimbPresets: ClimbPreset[] = [{ id: 'custom', name: 'Custom', ...minimalClimbConfig }];
 
 const defaultProps = {
   elevationProfile: [] as ElevationPoint[],

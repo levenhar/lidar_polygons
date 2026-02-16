@@ -1,0 +1,18 @@
+---
+description: Agent must run and pass all tests when creating or changing features
+alwaysApply: true
+---
+
+# Tests Must Pass
+
+When you **create** or **change** any feature (frontend or backend):
+
+1. **Run the test suite** before considering the work done.
+   - From repo root: `npm test` (runs frontend Vitest).
+   - From frontend: `npm test` or `npx vitest run`.
+
+2. **Fix any failing tests** caused by your changes. Do not leave tests red.
+
+3. **Add or update tests** when you add or change behavior so the suite still covers the feature.
+
+If you cannot run tests in the environment (e.g. no Node), state that and remind the user to run `npm test` before pushing. The pre-push hook runs tests automatically; code that breaks tests will block the push.

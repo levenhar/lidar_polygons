@@ -164,6 +164,7 @@ export interface ProjectFileData {
       id?: string;
     }>;
     nominalFlightHeight: number;
+    entranceHeightFromFile?: boolean;
   }>;
   activeRouteId: string;
   
@@ -330,7 +331,8 @@ export function exportProject(params: {
       ...(p.height !== undefined && { height: p.height }),
       ...(p.id && { id: p.id })
     })),
-    nominalFlightHeight: route.nominalFlightHeight
+    nominalFlightHeight: route.nominalFlightHeight,
+    ...(route.entranceHeightFromFile && { entranceHeightFromFile: true })
   }));
   
   // Serialize climb requests

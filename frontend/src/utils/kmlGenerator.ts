@@ -345,7 +345,10 @@ export function generateKMLForRoute(
       <description />
       <styleUrl>#PolylineStyle0</styleUrl>
       <ExtendedData>
-        <Data name="name">
+        ${nominalFlightHeight !== undefined && nominalFlightHeight !== null ? `<Data name="entranceHeight">
+          <value>${Math.round(nominalFlightHeight)}</value>
+        </Data>
+        ` : ''}<Data name="name">
           <value>${escapeXml(route.name)}</value>
         </Data>
         <Data name="drawingmode">

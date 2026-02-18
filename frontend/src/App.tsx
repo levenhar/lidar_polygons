@@ -134,7 +134,7 @@ function App() {
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
   const [editPointIndex, setEditPointIndex] = useState<number | null>(null);
   const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);
-  const [hoverSource, setHoverSource] = useState<'map' | 'profile' | null>(null);
+  const [hoverSource, setHoverSource] = useState<'map' | 'profile' | 'overlap' | null>(null);
   const [showMetadata, setShowMetadata] = useState(true);
   const [showClimbLabels, setShowClimbLabels] = useState(true);
   const [showNextLineSuggestions, setShowNextLineSuggestions] = useState<boolean>(() => {
@@ -1100,6 +1100,49 @@ function App() {
     }
   }, [flightPath]);
 
+  const handleOverlapGraphPointHover = useCallback((point: ElevationPoint | null) => {
+    if (!point) {
+      setHoveredElevationPoint(null);
+      setHoverSource(null);
+      return;
+    }
+    if (flightPath.length >= 2) {
+      const cumulativeDistances: number[] = [0];
+      let totalDist = 0;
+      for (let i = 1; i < flightPath.length; i++) {
+        const segDist = calculateDistance(flightPath[i - 1], flightPath[i]);
+        totalDist += segDist;
+        cumulativeDistances.push(totalDist);
+      }
+      const targetDistance = point.distance;
+      let found = false;
+      for (let i = 0; i < cumulativeDistances.length - 1; i++) {
+        const segStartDist = cumulativeDistances[i];
+        const segEndDist = cumulativeDistances[i + 1];
+        if (targetDistance >= segStartDist && targetDistance <= segEndDist) {
+          const segLength = segEndDist - segStartDist;
+          const t = segLength > 0 ? (targetDistance - segStartDist) / segLength : 0;
+          const start = flightPath[i];
+          const end = flightPath[i + 1];
+          const newLat = start.lat + (end.lat - start.lat) * t;
+          const newLng = start.lng + (end.lng - start.lng) * t;
+          setHoveredElevationPoint({ ...point, latitude: newLat, longitude: newLng });
+          setHoverSource('overlap');
+          found = true;
+          break;
+        }
+      }
+      if (!found && flightPath.length > 0) {
+        const lastPoint = flightPath[flightPath.length - 1];
+        setHoveredElevationPoint({ ...point, latitude: lastPoint.lat, longitude: lastPoint.lng });
+        setHoverSource('overlap');
+      }
+    } else {
+      setHoveredElevationPoint(point);
+      setHoverSource('overlap');
+    }
+  }, [flightPath]);
+
   const handleDtmLoad = useCallback((source: string, info?: any, clippedId?: string, options?: {
     sourceType?: 'local' | 'server';
     originalFile?: File;
@@ -1773,6 +1816,7 @@ function App() {
             onEditPointIndexChange={setEditPointIndex}
             hoveredElevationPoint={hoveredElevationPoint}
             hoverSource={hoverSource}
+            onOverlapGraphPointHover={handleOverlapGraphPointHover}
             showMetadata={showMetadata}
             onShowMetadataChange={setShowMetadata}
             showNextLineSuggestions={showNextLineSuggestions}

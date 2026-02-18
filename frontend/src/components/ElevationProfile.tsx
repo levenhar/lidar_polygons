@@ -148,7 +148,7 @@ interface ElevationProfileProps {
   onEditPointRequest: (index: number) => void;
   onElevationPointHover?: (point: ElevationPoint | null) => void;
   hoveredPoint?: ElevationPoint | null;
-  hoverSource?: 'map' | 'profile' | null;
+  hoverSource?: 'map' | 'profile' | 'overlap' | null;
   climbPresets: ClimbPreset[];
   selectedClimbPresetId: string;
   climbConfig: ClimbConfig;
@@ -334,7 +334,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
   // Calculate tooltip position to keep it on screen
   useLayoutEffect(() => {
-    if (!mousePos || !tooltipRef.current || !showMetadata || !hoveredPoint || hoverSource !== 'profile') {
+    if (!mousePos || !tooltipRef.current || !showMetadata || !hoveredPoint || (hoverSource !== 'profile' && hoverSource !== 'overlap')) {
       setTooltipPosition(null);
       return;
     }
@@ -3286,7 +3286,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </div>
         );
       })()}
-      {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && !contextMenu && !climbContextMenu && (
+      {showMetadata && hoveredPoint && mousePos && (hoverSource === 'profile' || hoverSource === 'overlap') && !contextMenu && !climbContextMenu && (
         <div
           ref={tooltipRef}
           className="hover-metadata-tooltip"

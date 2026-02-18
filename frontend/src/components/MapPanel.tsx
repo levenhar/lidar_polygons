@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
+import * as d3 from 'd3';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 // @ts-ignore - proj4 types may not be perfect
@@ -666,7 +667,8 @@ interface MapPanelProps {
   editPointIndex?: number | null;
   onEditPointIndexChange?: (index: number | null) => void;
   hoveredElevationPoint?: ElevationPoint | null;
-  hoverSource?: 'map' | 'profile' | null;
+  hoverSource?: 'map' | 'profile' | 'overlap' | null;
+  onOverlapGraphPointHover?: (point: ElevationPoint | null) => void;
   showMetadata: boolean;
   onShowMetadataChange: (show: boolean) => void;
   showNextLineSuggestions: boolean;
@@ -725,6 +727,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onEditPointIndexChange,
   hoveredElevationPoint,
   hoverSource,
+  onOverlapGraphPointHover,
   showMetadata,
   onShowMetadataChange,
   showNextLineSuggestions,
@@ -1057,11 +1060,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   // Overlap graph float window (after viewshed done) — data comes from viewshed job status when done
   const [overlapGraphWindowOpen, setOverlapGraphWindowOpen] = useState(false);
-  const [viewshedOverlapGraphPngBase64, setViewshedOverlapGraphPngBase64] = useState<string | null>(null);
-  const [_viewshedOverlapByPoint, setViewshedOverlapByPoint] = useState<number[] | null>(null);
-  const [overlapGraphHtml, setOverlapGraphHtml] = useState<string | null>(null);
+  const [viewshedOverlapByPoint, setViewshedOverlapByPoint] = useState<Record<string, [number, number][]> | null>(null);
+  const [viewshedOverlapOverall, setViewshedOverlapOverall] = useState<Record<string, number> | null>(null);
+  const [viewshedPointDistances, setViewshedPointDistances] = useState<number[] | null>(null);
   const [overlapGraphLoading, setOverlapGraphLoading] = useState(false);
   const [overlapGraphError, setOverlapGraphError] = useState<string | null>(null);
+  const overlapChartRef = useRef<HTMLDivElement | null>(null);
   const [overlapGraphWindowPosition, setOverlapGraphWindowPosition] = useState<{ x: number; y: number } | null>(null);
   const [overlapGraphWindowSize, setOverlapGraphWindowSize] = useState<{ width: number; height: number } | null>(null);
   const [isDraggingOverlapGraphWindow, setIsDraggingOverlapGraphWindow] = useState(false);
@@ -1070,12 +1074,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const overlapGraphResizeStartRef = useRef<{ x: number; y: number; startWidth: number; startHeight: number } | null>(null);
   const overlapGraphWindowRef = useRef<HTMLDivElement | null>(null);
 
-  const OVERLAP_GRAPH_MIN_WIDTH = 320;
-  const OVERLAP_GRAPH_MAX_WIDTH = 800;
-  const OVERLAP_GRAPH_MIN_HEIGHT = 320;
-  const OVERLAP_GRAPH_MAX_HEIGHT = 700;
-  const OVERLAP_GRAPH_DEFAULT_WIDTH = 380;
-  const OVERLAP_GRAPH_DEFAULT_HEIGHT = 440;
+  const OVERLAP_GRAPH_MIN_WIDTH = 280;
+  const OVERLAP_GRAPH_MAX_WIDTH = 600;
+  const OVERLAP_GRAPH_MIN_HEIGHT = 260;
+  const OVERLAP_GRAPH_MAX_HEIGHT = 400;
+  const OVERLAP_GRAPH_DEFAULT_WIDTH = 340;
+  const OVERLAP_GRAPH_DEFAULT_HEIGHT = 320;
 
   // ============================================================================
   // UNIFIED DTM LOADER STATE
@@ -1267,8 +1271,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (savedSize) {
         const parsed = JSON.parse(savedSize);
         if (parsed && typeof parsed.width === 'number' && typeof parsed.height === 'number') {
-          const w = Math.max(320, Math.min(800, parsed.width));
-          const h = Math.max(320, Math.min(700, parsed.height));
+          const w = Math.max(OVERLAP_GRAPH_MIN_WIDTH, Math.min(OVERLAP_GRAPH_MAX_WIDTH, parsed.width));
+          const h = Math.max(OVERLAP_GRAPH_MIN_HEIGHT, Math.min(OVERLAP_GRAPH_MAX_HEIGHT, parsed.height));
           setOverlapGraphWindowSize({ width: w, height: h });
         }
       }
@@ -1299,21 +1303,155 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [overlapGraphWindowSize]);
 
-  // Show overlap graph from viewshed job data when float window opens (no separate API call)
+  // Set overlap graph error when window opens but no data
   useEffect(() => {
     if (!overlapGraphWindowOpen) return;
     setOverlapGraphLoading(false);
-    if (viewshedOverlapGraphPngBase64) {
-      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Overlap %</title>
-<style>body{margin:0;padding:8px;background:#fff;} img{max-width:100%;height:auto;}</style></head>
-<body><img src="data:image/png;base64,${viewshedOverlapGraphPngBase64}" alt="Overlap graph"/></body></html>`;
-      setOverlapGraphHtml(html);
+    if (viewshedOverlapByPoint && Object.keys(viewshedOverlapByPoint).length > 0) {
       setOverlapGraphError(null);
     } else {
-      setOverlapGraphHtml(null);
       setOverlapGraphError('הרץ שדה ראייה כדי לראות את גרף החפיפה');
     }
-  }, [overlapGraphWindowOpen, viewshedOverlapGraphPngBase64]);
+  }, [overlapGraphWindowOpen, viewshedOverlapByPoint]);
+
+  // Convert overlap point index to ElevationPoint for hover sync
+  const pointIndexToElevationPoint = useCallback((pointIndex: number): ElevationPoint | null => {
+    const dists = viewshedPointDistances;
+    const profile = elevationProfile;
+    if (!dists || pointIndex < 0 || pointIndex >= dists.length || !profile.length) return null;
+    const distance = dists[pointIndex] ?? pointIndex * 1.0;
+    const minD = profile[0]?.distance ?? 0;
+    const maxD = profile[profile.length - 1]?.distance ?? 0;
+    const clampedDist = Math.max(minD, Math.min(maxD, distance));
+    for (let i = 0; i < profile.length - 1; i++) {
+      const p1 = profile[i];
+      const p2 = profile[i + 1];
+      if (clampedDist >= p1.distance && clampedDist <= p2.distance) {
+        const t = p1.distance === p2.distance ? 0 : (clampedDist - p1.distance) / (p2.distance - p1.distance);
+        return {
+          distance: clampedDist,
+          latitude: p1.latitude + (p2.latitude - p1.latitude) * t,
+          longitude: p1.longitude + (p2.longitude - p1.longitude) * t,
+          elevation: p1.elevation + (p2.elevation - p1.elevation) * t,
+          ...(p1.plannedAltitude != null && p2.plannedAltitude != null && { plannedAltitude: p1.plannedAltitude + (p2.plannedAltitude - p1.plannedAltitude) * t }),
+          ...(p1.flightHeight != null && p2.flightHeight != null && { flightHeight: p1.flightHeight + (p2.flightHeight - p1.flightHeight) * t }),
+        };
+      }
+    }
+    return profile[0] ?? null;
+  }, [viewshedPointDistances, elevationProfile]);
+
+  // Convert 1-based point index to distance (m)
+  const pointIndexToDistance = useCallback((pointIndex1Based: number): number => {
+    const dists = viewshedPointDistances;
+    const idx0 = pointIndex1Based - 1;
+    if (dists && idx0 >= 0 && idx0 < dists.length) return dists[idx0];
+    return pointIndex1Based * 1.0;
+  }, [viewshedPointDistances]);
+
+  // Render overlap chart with D3 - overlap vs distance, lines only
+  useEffect(() => {
+    const container = overlapChartRef.current;
+    if (!container || !overlapGraphWindowOpen || !viewshedOverlapByPoint || Object.keys(viewshedOverlapByPoint).length === 0 || !viewshedOverlapOverall) return;
+    const labels = Object.keys(viewshedOverlapByPoint);
+    const colors = ['#0ea5e9', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
+    const margin = { top: 12, right: 65, bottom: 32, left: 42 };
+    const w = Math.max(180, (container.offsetWidth || 300) - margin.left - margin.right);
+    const h = Math.max(120, (container.offsetHeight || 200) - margin.top - margin.bottom);
+    d3.select(container).selectAll('*').remove();
+    const svg = d3.select(container).append('svg').attr('width', w + margin.left + margin.right).attr('height', h + margin.top + margin.bottom);
+    const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+    const allPoints: { dist: number; overlap: number; label: string; idx: number }[] = [];
+    labels.forEach((label) => {
+      const pts = viewshedOverlapByPoint[label] ?? [];
+      pts.forEach(([idx1Based, val]) => {
+        const dist = pointIndexToDistance(idx1Based);
+        allPoints.push({ dist, overlap: val, label, idx: idx1Based });
+      });
+    });
+    if (allPoints.length === 0) return;
+    const xExtent = d3.extent(allPoints, d => d.dist) as [number, number];
+    const yExtent: [number, number] = [0, 100];
+    const xScale = d3.scaleLinear().domain([xExtent[0], xExtent[1]]).range([0, w]);
+    const yScale = d3.scaleLinear().domain(yExtent).range([h, 0]);
+    const xAxis = d3.axisBottom(xScale).ticks(6);
+    const yAxis = d3.axisLeft(yScale).ticks(5);
+    g.append('g').attr('transform', `translate(0,${h})`).call(xAxis)
+      .append('text').attr('x', w / 2).attr('y', 28).attr('fill', '#475569').attr('font-size', 10).attr('text-anchor', 'middle').text('Distance (m)');
+    g.append('g').call(yAxis)
+      .append('text').attr('transform', 'rotate(-90)').attr('x', -h / 2).attr('y', -32).attr('fill', '#475569').attr('font-size', 10).attr('text-anchor', 'middle').text('Overlap (%)');
+    const line = d3.line<{ dist: number; overlap: number }>().x(d => xScale(d.dist)).y(d => yScale(d.overlap));
+    labels.forEach((label, i) => {
+      const pts = (viewshedOverlapByPoint[label] ?? [])
+        .map(([idx1Based, val]) => ({ dist: pointIndexToDistance(idx1Based), overlap: val }))
+        .sort((a, b) => a.dist - b.dist);
+      if (pts.length === 0) return;
+      const color = colors[i % colors.length];
+      g.append('path').datum(pts).attr('fill', 'none').attr('stroke', color).attr('stroke-width', 2).attr('d', line);
+    });
+    // Legend — small colored square with label centered inside; scrollable when many legs
+    const swatchSize = 24;
+    const rowH = swatchSize + 4;
+    const maxVisibleRows = 5;
+    const legendW = swatchSize + 8;
+    const fullLegendH = labels.length * rowH;
+    const legendH = Math.min(fullLegendH, maxVisibleRows * rowH);
+    const needsScroll = labels.length > maxVisibleRows;
+    const legend = g.append('g').attr('class', 'legend').attr('transform', `translate(${w + 10}, 0)`);
+    legend.append('rect').attr('x', -4).attr('y', -2).attr('width', legendW + (needsScroll ? 10 : 0)).attr('height', legendH + 4).attr('fill', '#fff').attr('stroke', '#e2e8f0').attr('stroke-width', 1).attr('rx', 2);
+    const fo = legend.append('foreignObject').attr('x', 0).attr('y', 0).attr('width', legendW + (needsScroll ? 10 : 0)).attr('height', legendH);
+    const body = typeof document !== 'undefined' ? document.createElementNS('http://www.w3.org/1999/xhtml', 'div') : null;
+    if (body) {
+      body.style.cssText = 'display:flex;flex-direction:column;gap:4px;overflow-y:' + (needsScroll ? 'scroll' : 'visible') + ';overflow-x:hidden;max-height:' + legendH + 'px;padding:4px;box-sizing:border-box;scrollbar-width:thin;';
+      labels.forEach((label, i) => {
+        const color = colors[i % colors.length];
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;flex-shrink:0;';
+        const swatch = document.createElement('div');
+        swatch.style.cssText = `width:${swatchSize}px;height:${swatchSize}px;background:${color};border:1px solid #94a3b8;border-radius:2px;color:#fff;font-size:9px;font-weight:600;display:flex;align-items:center;justify-content:center;`;
+        swatch.textContent = label;
+        row.appendChild(swatch);
+        body.appendChild(row);
+      });
+      fo.node()?.appendChild(body);
+    } else {
+      labels.slice(0, maxVisibleRows).forEach((label, i) => {
+        const color = colors[i % colors.length];
+        const row = legend.append('g').attr('transform', `translate(4, ${4 + i * rowH})`);
+        row.append('rect').attr('x', 0).attr('y', 0).attr('width', swatchSize).attr('height', swatchSize).attr('fill', color).attr('stroke', '#94a3b8').attr('stroke-width', 1).attr('rx', 2);
+        row.append('text').attr('x', swatchSize / 2).attr('y', swatchSize / 2).attr('font-size', 9).attr('fill', '#fff').attr('text-anchor', 'middle').attr('dominant-baseline', 'central').style('font-weight', '600').text(label);
+      });
+    }
+    const overlay = g.append('rect').attr('width', w).attr('height', h).attr('fill', 'none').attr('pointer-events', 'all');
+    overlay.on('mousemove', function (evt: MouseEvent) {
+      const [mx] = d3.pointer(evt, g.node() as SVGGElement);
+      const xVal = xScale.invert(mx);
+      let bestIdx: number | null = null;
+      let bestDist = Infinity;
+      for (const { dist, idx } of allPoints) {
+        const d = Math.abs(dist - xVal);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = idx;
+        }
+      }
+      if (bestIdx !== null && onOverlapGraphPointHover) {
+        const pt = pointIndexToElevationPoint(bestIdx - 1);
+        onOverlapGraphPointHover(pt);
+      }
+    });
+    overlay.on('mouseleave', () => {
+      if (onOverlapGraphPointHover) onOverlapGraphPointHover(null);
+    });
+    return () => { d3.select(container).selectAll('*').remove(); };
+  }, [overlapGraphWindowOpen, viewshedOverlapByPoint, viewshedOverlapOverall, viewshedPointDistances, overlapGraphWindowSize, pointIndexToDistance, pointIndexToElevationPoint, onOverlapGraphPointHover]);
+
+  // Clear overlap hover when window closes
+  useEffect(() => {
+    if (!overlapGraphWindowOpen && onOverlapGraphPointHover) {
+      onOverlapGraphPointHover(null);
+    }
+  }, [overlapGraphWindowOpen, onOverlapGraphPointHover]);
 
   // Zoom to bounds when zoomToBounds prop changes
   useEffect(() => {
@@ -5800,7 +5938,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
 
     // Add new marker if there's a hovered elevation point (from either map or profile)
-    if (hoveredElevationPoint && (hoverSource === 'map' || hoverSource === 'profile')) {
+    if (hoveredElevationPoint && (hoverSource === 'map' || hoverSource === 'profile' || hoverSource === 'overlap')) {
       const icon = L.divIcon({
         className: 'hovered-elevation-marker',
         html: '<div style="background-color: #9B59B6; width: 14px; height: 14px; border-radius: 50%; border: 2px solid black; box-shadow: 0 0 6px rgba(155,89,182,0.8);"></div>',
@@ -6812,54 +6950,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setViewshedProgress(0);
     pendingViewshedRouteSnapshotRef.current = flightPath.map((point) => ({ ...point }));
     try {
-      // Use elevationProfile if available (includes all interpolation points with elevations)
-      // Otherwise fall back to flightPath (user input points only)
-      let trajectory: Array<{ lng: number; lat: number; height: number }>;
-      
-      if (elevationProfile && elevationProfile.length > 0) {
-        // Use all points from elevation profile (includes interpolation points)
-        // Height should be ASL (Above Sea Level - מעל פני הים) for viewshed calculation
-        trajectory = elevationProfile.map((point) => {
-          // Use ASL height: plannedAltitude is already ASL
-          // If plannedAltitude is not available, use baseAltitude or calculate from flightHeight + elevation
-          let heightASL: number;
-          if (point.plannedAltitude !== undefined) {
-            // plannedAltitude is already ASL (Above Sea Level)
-            heightASL = point.plannedAltitude;
-          } else if (point.baseAltitude !== undefined) {
-            // baseAltitude is ASL
-            heightASL = point.baseAltitude;
-          } else if (point.flightHeight !== undefined) {
-            // flightHeight is AGL, so ASL = flightHeight + elevation
-            heightASL = point.flightHeight + point.elevation;
-          } else {
-            // Fallback: use nominalFlightHeight as ASL
-            heightASL = nominalFlightHeight;
-          }
-          
-          return {
-            lng: point.longitude,
-            lat: point.latitude,
-            height: Math.max(0, heightASL) // Ensure non-negative ASL
-          };
-        });
-      } else {
-        // Fallback to flightPath if elevation profile is not available
-        trajectory = flightPath.map((point) => {
-          // For flightPath points, use height as ASL
-          // If point.height is provided, assume it's ASL (Above Sea Level)
-          // Otherwise use nominalFlightHeight as ASL
-          const heightASL = point.height !== undefined 
-            ? point.height  // Assume ASL if provided
-            : nominalFlightHeight; // Fallback: use as ASL
-          
-          return {
-            lng: point.lng,
-            lat: point.lat,
-            height: Math.max(0, heightASL)
-          };
-        });
-      }
+      // Use flightPath (user waypoints only) so overlap leg pairs are based on legs between waypoints.
+      // The backend interpolates between waypoints for the viewshed raster; segment boundaries
+      // are derived from waypoints → 4 points → 1 pair, 6 points → 2 pairs, etc.
+      const trajectory = flightPath.map((point) => {
+        const heightASL =
+          point.height !== undefined ? point.height : nominalFlightHeight;
+        return {
+          lng: point.lng,
+          lat: point.lat,
+          height: Math.max(0, heightASL)
+        };
+      });
 
       const response = await fetch('/api/viewshed/start', {
         method: 'POST',
@@ -6892,8 +6994,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const startPayload = await response.json();
       const jobId = startPayload.jobId as string;
       setViewshedJobId(jobId);
-      setViewshedOverlapGraphPngBase64(null);
       setViewshedOverlapByPoint(null);
+      setViewshedOverlapOverall(null);
+      setViewshedPointDistances(null);
 
       viewshedPollRef.current = window.setInterval(async () => {
         try {
@@ -6907,8 +7010,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
           setViewshedStatus(status);
           if (status === 'done') {
             stopViewshedPolling();
-            setViewshedOverlapGraphPngBase64(statusJson.overlapGraphPngBase64 ?? null);
-            setViewshedOverlapByPoint(Array.isArray(statusJson.overlapByPoint) ? statusJson.overlapByPoint : null);
+            const obp = statusJson.overlapByPoint;
+            setViewshedOverlapByPoint(
+              obp && typeof obp === 'object' && !Array.isArray(obp) ? obp : null
+            );
+            const oo = statusJson.overlapOverall;
+            setViewshedOverlapOverall(
+              oo && typeof oo === 'object' ? oo : null
+            );
+            setViewshedPointDistances(
+              Array.isArray(statusJson.pointDistances) ? statusJson.pointDistances : null
+            );
             const resultRes = await fetch(`/api/viewshed/result/${jobId}`);
             if (!resultRes.ok) {
               const errorText = await resultRes.text();
@@ -6921,8 +7033,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
             stopViewshedPolling();
             setIsViewshedProcessing(false);
             setViewshedJobId(null);
-            setViewshedOverlapGraphPngBase64(null);
             setViewshedOverlapByPoint(null);
+            setViewshedOverlapOverall(null);
+            setViewshedPointDistances(null);
             if (status === 'error') {
               alert(`שגיאה ביצירת שדה ראייה: ${statusJson.error || 'שגיאה לא ידועה'}`);
             }
@@ -6933,8 +7046,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           setIsViewshedProcessing(false);
           setViewshedStatus('error');
           setViewshedJobId(null);
-          setViewshedOverlapGraphPngBase64(null);
           setViewshedOverlapByPoint(null);
+          setViewshedOverlapOverall(null);
+          setViewshedPointDistances(null);
         }
       }, 1500);
     } catch (error) {
@@ -6947,7 +7061,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         setIsViewshedProcessing(false);
       }
     }
-  }, [dtmSource, dtmLoaded, flightPath, elevationProfile, isViewshedProcessing, nominalFlightHeight, propClippedId, stopViewshedPolling, viewshedStatus, loadViewshedFromArrayBuffer, flightPathSignature, resolutionHeight, fovDegrees]);
+  }, [dtmSource, dtmLoaded, flightPath, isViewshedProcessing, nominalFlightHeight, propClippedId, stopViewshedPolling, viewshedStatus, loadViewshedFromArrayBuffer, flightPathSignature, resolutionHeight, fovDegrees]);
 
   const handleViewshedButtonClick = useCallback(() => {
     if (hasViewshedResult) {
@@ -7002,22 +7116,53 @@ const MapPanel: React.FC<MapPanelProps> = ({
   }, [viewshedJobId, viewshedStatus]);
 
   const handleSaveOverlapGraphPng = useCallback(async () => {
-    if (!viewshedOverlapGraphPngBase64) {
+    const svgEl = overlapChartRef.current?.querySelector('svg');
+    if (!svgEl) {
       alert('אין גרף חפיפה לשמירה. הרץ שדה ראייה קודם.');
       return;
     }
     try {
-      const binary = atob(viewshedOverlapGraphPngBase64);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes], { type: 'image/png' });
-      const filename = `viewshed_overlap_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 10)}.png`;
-      await saveFileWithLocation(blob, filename, 'image/png');
+      const svgData = new XMLSerializer().serializeToString(svgEl);
+      const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(svgBlob);
+      const img = new Image();
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            URL.revokeObjectURL(url);
+            reject(new Error('Canvas context unavailable'));
+            return;
+          }
+          ctx.drawImage(img, 0, 0);
+          URL.revokeObjectURL(url);
+          canvas.toBlob(async (blob) => {
+            if (blob) {
+              try {
+                await saveFileWithLocation(blob, `viewshed_overlap_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 10)}.png`, 'image/png');
+                resolve();
+              } catch (e) {
+                reject(e);
+              }
+            } else {
+              reject(new Error('Failed to create blob'));
+            }
+          }, 'image/png');
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          reject(new Error('Failed to load SVG'));
+        };
+        img.src = url;
+      });
     } catch (err) {
       console.error('Save overlap graph PNG failed:', err);
       alert(`שגיאה בשמירת גרף: ${err instanceof Error ? err.message : 'שגיאה לא ידועה'}`);
     }
-  }, [viewshedOverlapGraphPngBase64]);
+  }, []);
 
   const handleViewshedRouteRecalculate = useCallback(() => {
     setIsViewshedRouteModalOpen(false);
@@ -7035,8 +7180,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setViewshedStatus('idle');
     setViewshedProgress(0);
     setViewshedJobId(null);
-    setViewshedOverlapGraphPngBase64(null);
     setViewshedOverlapByPoint(null);
+    setViewshedOverlapOverall(null);
+    setViewshedPointDistances(null);
     viewshedSignatureRef.current = null;
     viewshedRouteSnapshotRef.current = null;
   }, [clearViewshedOverlay]);
@@ -7972,8 +8118,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           style={{
             left: overlapGraphWindowPosition?.x ?? (window.innerWidth - (overlapGraphWindowSize?.width ?? OVERLAP_GRAPH_DEFAULT_WIDTH)),
             top: overlapGraphWindowPosition?.y ?? 100,
-            width: overlapGraphWindowSize?.width,
-            height: overlapGraphWindowSize?.height,
+            width: overlapGraphWindowSize?.width ?? OVERLAP_GRAPH_DEFAULT_WIDTH,
+            height: overlapGraphWindowSize?.height ?? OVERLAP_GRAPH_DEFAULT_HEIGHT,
             cursor: isDraggingOverlapGraphWindow ? 'grabbing' : isResizingOverlapGraphWindow ? 'nwse-resize' : 'default'
           }}
           onClick={(e) => e.stopPropagation()}
@@ -8024,12 +8170,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 </button>
               </div>
             )}
-            {!overlapGraphLoading && !overlapGraphError && overlapGraphHtml && (
-              <div className="overlap-graph-window__iframe-wrap">
-                <iframe title="גרף חפיפה" srcDoc={overlapGraphHtml} className="overlap-graph-window__iframe" />
-              </div>
+            {!overlapGraphLoading && !overlapGraphError && viewshedOverlapByPoint && Object.keys(viewshedOverlapByPoint).length > 0 && (
+              <div className="overlap-graph-window__chart-wrap" ref={overlapChartRef} />
             )}
-            {!overlapGraphLoading && !overlapGraphError && overlapGraphHtml && (
+            {!overlapGraphLoading && !overlapGraphError && viewshedOverlapByPoint && Object.keys(viewshedOverlapByPoint).length > 0 && (
               <div className="overlap-graph-window__actions">
                 <button type="button" className="btn btn-primary" onClick={handleSaveOverlapGraphPng}>
                   שמור כ-PNG

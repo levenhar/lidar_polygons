@@ -22,14 +22,6 @@ from dotenv import load_dotenv
 import threading
 import uuid
 import atexit
-import base64
-import io
-
-# Use non-interactive backend for matplotlib in server context
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
 # Import constants
 import constants as C
 
@@ -498,16 +490,39 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
 
             raw_points = [{"lng": p.lng, "lat": p.lat, "height": p.height} for p in request.coordinates]
             trajectory = []
+            point_distances = []
+            segment_boundaries = [0]
             interval = C.DEFAULT_SAMPLING_INTERVAL_METERS
+            cumulative_dist = 0.0
             if interval and interval > 0:
                 for i in range(len(raw_points) - 1):
+                    if i > 0:
+                        segment_boundaries.append(len(trajectory))
                     segment_points = interpolate_segment_with_height(raw_points[i], raw_points[i + 1], interval)
-                    if i == 0:
-                        trajectory.extend(segment_points)
-                    else:
-                        trajectory.extend(segment_points[1:])
+                    for j, pt in enumerate(segment_points):
+                        if i > 0 and j == 0:
+                            continue
+                        trajectory.append(pt)
+                        if len(trajectory) >= 2:
+                            seg_len = haversine(
+                                trajectory[-2]["lng"], trajectory[-2]["lat"],
+                                trajectory[-1]["lng"], trajectory[-1]["lat"]
+                            )
+                            cumulative_dist += seg_len
+                        point_distances.append(cumulative_dist)
+                segment_boundaries.append(len(trajectory))
             else:
                 trajectory = raw_points
+                for i in range(len(trajectory)):
+                    if i == 0:
+                        point_distances.append(0.0)
+                    else:
+                        cumulative_dist += haversine(
+                            trajectory[i - 1]["lng"], trajectory[i - 1]["lat"],
+                            trajectory[i]["lng"], trajectory[i]["lat"]
+                        )
+                        point_distances.append(cumulative_dist)
+                segment_boundaries = list(range(len(trajectory) + 1))
 
             # Client test mode: return constant TIFF of 1 (same dimensions and geo as DTM)
             viewshed = np.ones((src.height, src.width), dtype=np.int32)
@@ -580,7 +595,7 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
             duration = time.time() - start_time
             logger.info(f"[{job_id}] Viewshed generated in {duration:.2f}s: {output_name}")
 
-            # Compute overlap-by-point and build graph for this job
+            # Compute overlap by leg pairs for this job
             fov_deg = request.fovDegrees if request.fovDegrees is not None else 75.0
             agl = request.outputHeight if request.outputHeight and request.outputHeight > 0 else None
             if agl is None and trajectory:
@@ -588,9 +603,9 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                 agl = float(np.mean(heights)) if heights else 100.0
             if agl is None or agl <= 0:
                 agl = 100.0
-            overlap_by_point = _compute_overlap_by_point(trajectory, fov_deg, agl)
-            overlap_png_bytes = _build_overlap_graph_png(overlap_by_point)
-            overlap_graph_png_base64 = base64.b64encode(overlap_png_bytes).decode("ascii")
+            overlap_by_point, overlap_overall = _compute_overlap_by_leg_pairs(
+                trajectory, segment_boundaries, fov_deg, agl
+            )
 
             with viewshed_jobs_lock:
                 if job_id in viewshed_jobs:
@@ -598,7 +613,8 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                     viewshed_jobs[job_id]["progress"] = 100
                     viewshed_jobs[job_id]["result_path"] = output_path
                     viewshed_jobs[job_id]["overlap_by_point"] = overlap_by_point
-                    viewshed_jobs[job_id]["overlap_graph_png_base64"] = overlap_graph_png_base64
+                    viewshed_jobs[job_id]["overlap_overall"] = overlap_overall
+                    viewshed_jobs[job_id]["point_distances"] = point_distances
     except RuntimeError as e:
         if str(e) == "cancelled":
             logger.info(f"[{job_id}] Viewshed cancelled")
@@ -1203,56 +1219,42 @@ async def get_elevation_at_point(request: ElevationAtPointRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _compute_overlap_by_point(trajectory: List[Dict[str, Any]], fov_degrees: float, effective_agl_meters: float) -> List[float]:
-    """Compute theoretical overlap % per trajectory point from spacing and FOV.
-    overlap = 100 * (1 - spacing / swath_width), clamped to [0, 100].
+def _compute_overlap_by_leg_pairs(
+    trajectory: List[Dict[str, Any]],
+    segment_boundaries: List[int],
+    fov_degrees: float,
+    effective_agl_meters: float,
+) -> tuple:
+    """Compute overlap by pairs of parallel legs. In a lawn-mower pattern, leg 1 & 3 are parallel,
+    leg 2 & 4 are parallel, etc. So pair i = legs (2*i+1, 2*i+3) in 1-based.
+    - 4 points (3 legs) → 1 pair: (leg 1, leg 3)
+    - 6 points (5 legs) → 2 pairs: (leg 1, leg 3), (leg 2, leg 4)
+    overlap_by_point: {"1-3": [[1, overlap], ..., [n, overlap]], ...}
+    overlap_overall: {"1-3": 50, ...}
+    MVP: return constant values.
     """
-    n = len(trajectory)
-    if n < 2:
-        return [50.0] * max(1, n)
-    fov_rad = radians(max(1, min(fov_degrees or 75, 179.9)))
-    swath_width = 2.0 * max(0.1, effective_agl_meters) * (sin(fov_rad / 2) / cos(fov_rad / 2))
-    if swath_width <= 0:
-        return [50.0] * n
-    out = []
-    for i in range(n):
-        if i < n - 1:
-            spacing = haversine(
-                trajectory[i]["lng"], trajectory[i]["lat"],
-                trajectory[i + 1]["lng"], trajectory[i + 1]["lat"]
-            )
-        else:
-            spacing = haversine(
-                trajectory[n - 2]["lng"], trajectory[n - 2]["lat"],
-                trajectory[n - 1]["lng"], trajectory[n - 1]["lat"]
-            )
-        overlap_frac = 1.0 - (spacing / swath_width)
-        pct = 100.0 * max(0.0, min(1.0, overlap_frac))
-        out.append(round(pct, 1))
-    return out
-
-
-def _build_overlap_graph_png(overlap_by_point: List[float]) -> bytes:
-    """Build overlap chart from per-point overlap values and return PNG bytes."""
-    y = [float(v) for v in overlap_by_point]
-    if not y:
-        y = [50.0]
-    if len(y) > 1000:
-        y = y[:1000]
-    x = list(range(1, len(y) + 1))
-    fig, ax = plt.subplots(figsize=(6, 3.5))
-    ax.plot(x, y, "o-", color="#0ea5e9", linewidth=2, markersize=4)
-    ax.set_xlabel("Point index", fontsize=10)
-    ax.set_ylabel("Overlap (%)", fontsize=10)
-    ax.set_title("Viewshed overlap (%) by point")
-    ax.set_ylim(0, 100)
-    ax.grid(True, alpha=0.3)
-    buf = io.BytesIO()
-    fig.tight_layout()
-    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return buf.read()
+    overlap_by_point: Dict[str, List[List[float]]] = {}
+    overlap_overall: Dict[str, float] = {}
+    n_segments = len(segment_boundaries) - 1
+    if n_segments < 2:
+        return overlap_by_point, overlap_overall
+    const_val = 50.0
+    n_pairs = (n_segments - 1) // 2
+    for pair_i in range(n_pairs):
+        leg_a = 2 * pair_i
+        leg_b = 2 * pair_i + 2
+        label = f"{leg_a + 1}-{leg_b + 1}"
+        points = []
+        for seg_idx in (leg_a, leg_b):
+            start_idx = segment_boundaries[seg_idx]
+            end_idx = segment_boundaries[seg_idx + 1]
+            for idx in range(start_idx, end_idx):
+                points.append([idx + 1, const_val])
+        points.sort(key=lambda p: p[0])
+        if points:
+            overlap_by_point[label] = points
+            overlap_overall[label] = const_val
+    return overlap_by_point, overlap_overall
 
 
 @app.get("/health")

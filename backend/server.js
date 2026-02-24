@@ -1255,6 +1255,21 @@ app.post('/api/elevation-profile', async (req, res) => {
       });
     }
 
+    // Validate each point has elevation, minElevation, maxElevation (numbers)
+    const invalidIndex = result.profile.findIndex(
+      (p) =>
+        typeof p.elevation !== 'number' ||
+        typeof p.minElevation !== 'number' ||
+        typeof p.maxElevation !== 'number'
+    );
+    if (invalidIndex !== -1) {
+      console.warn('Profile point missing elevation, minElevation, or maxElevation:', { index: invalidIndex, point: result.profile[invalidIndex] });
+      return res.status(500).json({
+        error: 'Profile calculation did not return complete data',
+        details: 'Profile point missing elevation, minElevation, or maxElevation'
+      });
+    }
+
     // Add completion flag to signal that profile calculation is finished
     // Only set ready: true when we have confirmed complete data
     res.json({

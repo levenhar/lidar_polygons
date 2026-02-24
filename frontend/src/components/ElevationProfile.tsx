@@ -157,6 +157,7 @@ interface ElevationProfileProps {
   climbWarnings: string[];
   showMetadata: boolean;
   activeRouteName?: string;
+  profileError?: string | null;
 }
 
 const ElevationProfile: React.FC<ElevationProfileProps> = ({
@@ -183,7 +184,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   setClimbRequests,
   climbWarnings,
   showMetadata,
-  activeRouteName
+  activeRouteName,
+  profileError
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -2956,6 +2958,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           <div className="loading">
             <div className="loading-spinner"></div>
             <div className="loading-text">מחשב פרופיל גובה...</div>
+          </div>
+        ) : elevationProfile.length === 0 && profileError ? (
+          <div className="no-data profile-error" role="alert">
+            <div className="profile-error__title">שגיאה ביצירת פרופיל הגובה</div>
+            <div className="profile-error__details">{profileError}</div>
           </div>
         ) : elevationProfile.length === 0 ? (
           <div className="no-data">

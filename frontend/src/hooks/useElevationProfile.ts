@@ -8,7 +8,8 @@ export function useElevationProfile() {
   const [elevationProfile, setElevationProfile] = useState<ElevationPoint[]>([]);
   const [loading, setLoading] = useState(false);
   const [profileReady, setProfileReady] = useState(false);
-  
+  const [profileError, setProfileError] = useState<string | null>(null);
+
   // Track the latest request to cancel previous ones
   const cancelTokenSourceRef = useRef<CancelTokenSource | null>(null);
   const requestIdRef = useRef(0);
@@ -51,6 +52,7 @@ export function useElevationProfile() {
     
     setLoading(true);
     setProfileReady(false); // Reset ready flag when starting new calculation
+    setProfileError(null); // Clear previous error when starting new calculation
     try {
       // Convert coordinates to [lng, lat] format for API
       const coordinates = flightPath.map(p => [p.lng, p.lat]);
@@ -106,6 +108,7 @@ export function useElevationProfile() {
       // Check if server sent ready flag - only process if ready
       if (!response.data.ready) {
         console.warn('Server did not send ready flag, waiting...');
+        setProfileError('Server did not confirm profile data');
         setLoading(false);
         setProfileReady(false);
         return;
@@ -118,6 +121,8 @@ export function useElevationProfile() {
           isArray: !!(response.data.profile && Array.isArray(response.data.profile)),
           length: response.data.profile ? response.data.profile.length : 0
         });
+        const msg = (response.data as { details?: string; error?: string }).details ?? (response.data as { error?: string }).error ?? 'Server did not return complete profile data';
+        setProfileError(msg);
         setLoading(false);
         setProfileReady(false);
         return;
@@ -174,6 +179,21 @@ export function useElevationProfile() {
         };
       });
 
+      // Validate every point has elevation, minElevation, maxElevation (numbers)
+      const invalidPointIndex = profile.findIndex(
+        (p) =>
+          typeof p.elevation !== 'number' ||
+          typeof p.minElevation !== 'number' ||
+          typeof p.maxElevation !== 'number'
+      );
+      if (invalidPointIndex !== -1) {
+        const msg = 'Profile data incomplete: missing elevation, min or max for some points';
+        setProfileError(msg);
+        setLoading(false);
+        setProfileReady(false);
+        return;
+      }
+
       // Log min/max statistics
       const pointsWithMinMax = profile.filter(p => p.minElevation !== undefined && p.maxElevation !== undefined);
       console.log(`Elevation profile loaded: ${profile.length} points, ${pointsWithMinMax.length} with min/max values`);
@@ -185,7 +205,7 @@ export function useElevationProfile() {
           elevation: p.elevation.toFixed(1)
         })));
       }
-      
+
       // Calculate default entrance height if nominalFlightHeight is still at default (250)
       // and we have the required parameters
       if (Math.abs(nominalFlightHeight - 250) < 0.1 &&
@@ -230,6 +250,7 @@ export function useElevationProfile() {
 
       // Set profile data and ready flag together to ensure atomic update
       // This ensures the component only displays after all data is processed
+      setProfileError(null);
       setElevationProfile(profile);
       setProfileReady(true);
       setLoading(false);
@@ -238,87 +259,21 @@ export function useElevationProfile() {
       if (cancelTokenSourceRef.current === cancelTokenSource) {
         cancelTokenSourceRef.current = null;
       }
-      
+
       // Ignore cancellation errors
       if (axios.isCancel(error)) {
         console.log('Profile calculation cancelled:', error.message);
         return;
       }
-      const errDetails = (error as { response?: { data?: { details?: string } } })?.response?.data?.details;
-      console.error('Error calculating elevation profile:', error, errDetails ? `Backend: ${errDetails}` : '');
-      // Fallback to mock data if API fails
-      const calculateDistance = (coord1: Coordinate, coord2: Coordinate): number => {
-        const R = 6371000; // Earth radius in meters
-        const dLat = (coord2.lat - coord1.lat) * Math.PI / 180;
-        const dLon = (coord2.lng - coord1.lng) * Math.PI / 180;
-        const a = 
-          Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-          Math.cos(coord1.lat * Math.PI / 180) * Math.cos(coord2.lat * Math.PI / 180) *
-          Math.sin(dLon / 2) * Math.sin(dLon / 2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c;
-      };
-
-      let cumulativeDistance = 0;
-      const distances = [0];
-      const segmentDistances: number[] = [0];
-      for (let i = 1; i < flightPath.length; i++) {
-        const segmentDist = calculateDistance(flightPath[i - 1], flightPath[i]);
-        cumulativeDistance += segmentDist;
-        distances.push(cumulativeDistance);
-        segmentDistances.push(segmentDist);
-      }
-
-      // Helper function to interpolate flight height for any point along the path
-      const interpolateFlightHeight = (distance: number): number => {
-        // Find which segment this point belongs to
-        if (distance <= 0) {
-          return flightPath[0].height ?? nominalFlightHeight;
-        }
-        
-        if (distance >= distances[distances.length - 1]) {
-          return flightPath[flightPath.length - 1].height ?? nominalFlightHeight;
-        }
-        
-        // Find the segment containing this distance
-        for (let i = 0; i < distances.length - 1; i++) {
-          if (distance >= distances[i] && distance <= distances[i + 1]) {
-            const startHeight = flightPath[i].height ?? nominalFlightHeight;
-            const endHeight = flightPath[i + 1].height ?? nominalFlightHeight;
-            
-            // If heights are the same, no interpolation needed
-            if (startHeight === endHeight) {
-              return startHeight;
-            }
-            
-            // Linear interpolation
-            const segmentStartDist = distances[i];
-            const segmentLength = distances[i + 1] - segmentStartDist;
-            const distanceInSegment = distance - segmentStartDist;
-            const t = segmentLength > 0 ? distanceInSegment / segmentLength : 0;
-            return startHeight + (endHeight - startHeight) * t;
-          }
-        }
-        
-        // Fallback to nominal height
-        return nominalFlightHeight;
-      };
-
-      const mockProfile: ElevationPoint[] = flightPath.map((coord, index) => {
-        const distance = distances[index] || 0;
-        // Mock elevation with some variation
-        const elevation = 100 + Math.sin(index * 0.1) * 50 + Math.random() * 20;
-        return {
-          distance,
-          elevation,
-          longitude: coord.lng,
-          latitude: coord.lat,
-          flightHeight: interpolateFlightHeight(distance)
-        };
-      });
-      // Set profile data and ready flag together to ensure atomic update
-      setElevationProfile(mockProfile);
-      setProfileReady(true);
+      const err = error as { response?: { data?: { details?: string; error?: string } } };
+      const message =
+        err?.response?.data?.details ??
+        err?.response?.data?.error ??
+        'Could not calculate elevation profile';
+      console.error('Error calculating elevation profile:', error, message);
+      setProfileError(message);
+      setElevationProfile([]);
+      setProfileReady(false);
       setLoading(false);
     }
   }, []);
@@ -425,15 +380,22 @@ export function useElevationProfile() {
     setElevationProfile([]);
     setProfileReady(false);
     setLoading(false);
+    setProfileError(null);
+  }, []);
+
+  const clearProfileError = useCallback(() => {
+    setProfileError(null);
   }, []);
 
   return {
     elevationProfile,
     loading,
     profileReady,
+    profileError,
     calculateProfile,
     refreshFlightHeights,
-    clearProfile
+    clearProfile,
+    clearProfileError
   };
 }
 

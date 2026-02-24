@@ -424,7 +424,7 @@ function AppContent() {
     pendingAction: null
   });
 
-  const { elevationProfile, loading, profileReady, calculateProfile, clearProfile } = useElevationProfile();
+  const { elevationProfile, loading, profileReady, profileError, calculateProfile, clearProfile, clearProfileError } = useElevationProfile();
 
 
   // Track last inputs so we can avoid expensive recalculation when only nominal height changes
@@ -2247,9 +2247,35 @@ function AppContent() {
             climbWarnings={fullProfileResult.warnings}
             showMetadata={showMetadata}
             activeRouteName={routes.find(r => r.id === activeRouteId)?.name}
+            profileError={profileError}
           />
         </SplitPane>
       </div>
+      {profileError !== null && (
+        <div className="quick-modal__backdrop" role="dialog" aria-modal="true" aria-labelledby="profile-error-title" onClick={clearProfileError}>
+          <div className="quick-modal__card" onClick={(e) => e.stopPropagation()}>
+            <div className="quick-modal__header">
+              <div className="quick-modal__title" id="profile-error-title">שגיאה ביצירת פרופיל הגובה</div>
+              <button
+                type="button"
+                className="quick-modal__close"
+                onClick={clearProfileError}
+                aria-label="סגור"
+              >
+                ×
+              </button>
+            </div>
+            <div className="quick-modal__body">
+              <p className="quick-modal__error">לא ניתן ליצור את פרופיל הגובה. פרטים בהמשך.</p>
+            </div>
+            <div className="quick-modal__actions">
+              <button type="button" className="btn btn-primary" onClick={clearProfileError}>
+                סגור
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <ExportSettingsModal
         isOpen={showExportModal}
         routes={routes}

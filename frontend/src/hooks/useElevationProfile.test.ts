@@ -22,6 +22,7 @@ describe('useElevationProfile', () => {
     expect(result.current.elevationProfile).toEqual([]);
     expect(result.current.profileReady).toBe(false);
     expect(result.current.loading).toBe(false);
+    expect(result.current.profileError).toBe(null);
   });
 
   it('calculateProfile with short path clears profile and does not request', async () => {
@@ -41,8 +42,8 @@ describe('useElevationProfile', () => {
 
   it('calculateProfile with valid path calls API and updates profile', async () => {
     const mockProfile = [
-      { distance: 0, elevation: 100, longitude: 34.5, latitude: 31.2 },
-      { distance: 100, elevation: 105, longitude: 34.6, latitude: 31.2 }
+      { distance: 0, elevation: 100, longitude: 34.5, latitude: 31.2, minElevation: 98, maxElevation: 102 },
+      { distance: 100, elevation: 105, longitude: 34.6, latitude: 31.2, minElevation: 103, maxElevation: 107 }
     ];
     vi.mocked(axios.post).mockResolvedValueOnce({ data: { ready: true, profile: mockProfile } });
 
@@ -67,6 +68,46 @@ describe('useElevationProfile', () => {
     expect(result.current.elevationProfile.length).toBe(2);
     expect(result.current.profileReady).toBe(true);
     expect(result.current.loading).toBe(false);
+    expect(result.current.profileError).toBe(null);
+  });
+
+  it('calculateProfile on API error sets profileError and does not set profile', async () => {
+    const serverMessage = 'Profile calculation did not return complete data';
+    vi.mocked(axios.post).mockRejectedValueOnce({
+      response: { data: { details: serverMessage, error: 'Bad request' } }
+    });
+    const { result } = renderHook(() => useElevationProfile());
+    await act(async () => {
+      await result.current.calculateProfile(
+        [{ lng: 34.5, lat: 31.2 }, { lng: 34.6, lat: 31.2 }],
+        '/some/dtm',
+        250,
+        50
+      );
+    });
+    expect(result.current.elevationProfile).toEqual([]);
+    expect(result.current.profileReady).toBe(false);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.profileError).toBe(serverMessage);
+  });
+
+  it('clearProfile clears profileError', async () => {
+    vi.mocked(axios.post).mockRejectedValueOnce({
+      response: { data: { details: 'Server error' } }
+    });
+    const { result } = renderHook(() => useElevationProfile());
+    await act(async () => {
+      await result.current.calculateProfile(
+        [{ lng: 34.5, lat: 31.2 }, { lng: 34.6, lat: 31.2 }],
+        '/dtm',
+        250,
+        50
+      );
+    });
+    expect(result.current.profileError).toBe('Server error');
+    act(() => result.current.clearProfile());
+    expect(result.current.profileError).toBe(null);
+    expect(result.current.elevationProfile).toEqual([]);
   });
 
   it('clearProfile clears state', async () => {
@@ -74,8 +115,8 @@ describe('useElevationProfile', () => {
       data: {
         ready: true,
         profile: [
-          { distance: 0, elevation: 100, longitude: 34.5, latitude: 31.2 },
-          { distance: 50, elevation: 102, longitude: 34.55, latitude: 31.2 }
+          { distance: 0, elevation: 100, longitude: 34.5, latitude: 31.2, minElevation: 98, maxElevation: 102 },
+          { distance: 50, elevation: 102, longitude: 34.55, latitude: 31.2, minElevation: 100, maxElevation: 104 }
         ]
       }
     });

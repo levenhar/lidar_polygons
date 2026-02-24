@@ -59,4 +59,13 @@ describe('ElevationProfile', () => {
     render(<ElevationProfile {...defaultProps} />);
     expect(document.body.textContent).toBeTruthy();
   });
+
+  it('shows profile error message when profileError is set and no profile', () => {
+    const errorMessage = 'Profile point missing elevation, minElevation, or maxElevation';
+    const { getByText } = render(
+      <ElevationProfile {...defaultProps} profileError={errorMessage} />
+    );
+    expect(getByText('שגיאה ביצירת פרופיל הגובה')).toBeInTheDocument();
+    expect(getByText(errorMessage)).toBeInTheDocument();
+  });
 });

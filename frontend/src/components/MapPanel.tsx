@@ -210,6 +210,62 @@ const hexToRgb = (hex: string) => {
   };
 };
 
+const rgbToHex = (r: number, g: number, b: number) =>
+  '#' + [r, g, b].map((x) => Math.round(Math.max(0, Math.min(255, x))).toString(16).padStart(2, '0')).join('');
+
+/** Default class colors when colormap is not used (fallback) */
+const VIEWSHED_CLASS_COLORS_DEFAULT: Record<1 | 2 | 3 | 4, string> = {
+  1: '#440154',
+  2: '#31688e',
+  3: '#35b779',
+  4: '#fde725'
+};
+
+/** Sample colormap at normalized position (0–1), return RGB */
+const getColorAtNormalized = (colormap: string, normalized: number) => {
+  const stops = VIEWSHED_COLORMAPS[colormap]?.stops ?? VIEWSHED_COLORMAPS.jet.stops;
+  const n = Math.min(1, Math.max(0, normalized));
+  let lower = stops[0];
+  let upper = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++) {
+    if (n >= stops[i].pos && n <= stops[i + 1].pos) {
+      lower = stops[i];
+      upper = stops[i + 1];
+      break;
+    }
+  }
+  const t = (n - lower.pos) / (upper.pos - lower.pos || 1);
+  const c1 = hexToRgb(lower.color);
+  const c2 = hexToRgb(upper.color);
+  return {
+    r: lerp(c1.r, c2.r, t),
+    g: lerp(c1.g, c2.g, t),
+    b: lerp(c1.b, c2.b, t)
+  };
+};
+
+/** Four hex colors for viewshed classes 1, 2, 3, 4+ sampled from the given colormap */
+const getViewshedClassColorsFromColormap = (colormap: string): [string, string, string, string] => {
+  const positions = [0.15, 0.4, 0.65, 0.9];
+  return positions.map((pos) => {
+    const { r, g, b } = getColorAtNormalized(colormap, pos);
+    return rgbToHex(r, g, b);
+  }) as [string, string, string, string];
+};
+
+const getViewshedClassColor = (
+  value: number,
+  noDataValue: number | null,
+  classColors: [string, string, string, string]
+): { r: number; g: number; b: number } | null => {
+  if (noDataValue !== null && noDataValue !== undefined && value === noDataValue) return null;
+  if (!Number.isFinite(value) || value < 1) return null;
+  const classIndex = value >= 4 ? 3 : Math.floor(value) - 1; // 1->0, 2->1, 3->2, 4+->3
+  const hex = classColors[classIndex] ?? VIEWSHED_CLASS_COLORS_DEFAULT[(classIndex + 1) as 1 | 2 | 3 | 4];
+  const { r, g, b } = hexToRgb(hex);
+  return { r, g, b };
+};
+
 const getColorForValue = (value: number, min: number, max: number, colormap: string) => {
   const stops = VIEWSHED_COLORMAPS[colormap]?.stops ?? VIEWSHED_COLORMAPS.jet.stops;
   const range = max - min || 1;
@@ -1061,7 +1117,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   // Overlap graph float window (after viewshed done) — data comes from viewshed job status when done
   const [overlapGraphWindowOpen, setOverlapGraphWindowOpen] = useState(false);
   const [viewshedOverlapByPoint, setViewshedOverlapByPoint] = useState<Record<string, [number, number][]> | null>(null);
-  const [viewshedPointDistances, setViewshedPointDistances] = useState<number[] | null>(null);
+  /** Per-pair distances: same keys as overlap (e.g. "1-3", "2-4"), value = list of distances for that pair */
+  const [viewshedPointDistances, setViewshedPointDistances] = useState<Record<string, number[]> | null>(null);
   const [overlapGraphLoading, setOverlapGraphLoading] = useState(false);
   const [overlapGraphError, setOverlapGraphError] = useState<string | null>(null);
   const overlapChartRef = useRef<HTMLDivElement | null>(null);
@@ -1313,12 +1370,30 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [overlapGraphWindowOpen, viewshedOverlapByPoint]);
 
+  // Lookup: 1-based point index -> distance (m), built from per-pair data
+  const pointIndexToDistanceMap = useMemo(() => {
+    const byPair = viewshedPointDistances;
+    const overlap = viewshedOverlapByPoint;
+    if (!byPair || typeof byPair !== 'object' || !overlap || typeof overlap !== 'object') return null;
+    const map = new Map<number, number>();
+    Object.keys(overlap).forEach((label) => {
+      const pts = overlap[label] ?? [];
+      const dists = byPair[label];
+      if (!Array.isArray(dists) || dists.length !== pts.length) return;
+      pts.forEach(([idx1Based], i) => {
+        if (typeof dists[i] === 'number') map.set(idx1Based, dists[i]);
+      });
+    });
+    return map;
+  }, [viewshedPointDistances, viewshedOverlapByPoint]);
+
   // Convert overlap point index to ElevationPoint for hover sync
   const pointIndexToElevationPoint = useCallback((pointIndex: number): ElevationPoint | null => {
-    const dists = viewshedPointDistances;
+    const map = pointIndexToDistanceMap;
     const profile = elevationProfile;
-    if (!dists || pointIndex < 0 || pointIndex >= dists.length || !profile.length) return null;
-    const distance = dists[pointIndex] ?? pointIndex * 1.0;
+    if (!map || pointIndex < 0 || !profile.length) return null;
+    const distance = map.get(pointIndex + 1);
+    if (distance === undefined) return null;
     const minD = profile[0]?.distance ?? 0;
     const maxD = profile[profile.length - 1]?.distance ?? 0;
     const clampedDist = Math.max(minD, Math.min(maxD, distance));
@@ -1338,20 +1413,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
     }
     return profile[0] ?? null;
-  }, [viewshedPointDistances, elevationProfile]);
+  }, [pointIndexToDistanceMap, elevationProfile]);
 
   // Convert 1-based point index to distance (m)
   const pointIndexToDistance = useCallback((pointIndex1Based: number): number => {
-    const dists = viewshedPointDistances;
-    const idx0 = pointIndex1Based - 1;
-    if (dists && idx0 >= 0 && idx0 < dists.length) return dists[idx0];
+    const map = pointIndexToDistanceMap;
+    if (map) {
+      const d = map.get(pointIndex1Based);
+      if (d !== undefined) return d;
+    }
     return pointIndex1Based * 1.0;
-  }, [viewshedPointDistances]);
+  }, [pointIndexToDistanceMap]);
 
-  // Render overlap chart with D3 - overlap vs distance, lines only
+  // Render overlap chart with D3 - overlap vs distance, lines only (uses per-pair distances)
   useEffect(() => {
     const container = overlapChartRef.current;
-    if (!container || !overlapGraphWindowOpen || !viewshedOverlapByPoint || Object.keys(viewshedOverlapByPoint).length === 0) return;
+    if (!container || !overlapGraphWindowOpen || !viewshedOverlapByPoint || Object.keys(viewshedOverlapByPoint).length === 0 || !viewshedPointDistances || typeof viewshedPointDistances !== 'object') return;
     const labels = Object.keys(viewshedOverlapByPoint);
     const colors = ['#0ea5e9', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
     const margin = { top: 12, right: 65, bottom: 32, left: 42 };
@@ -1363,8 +1440,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const allPoints: { dist: number; overlap: number; label: string; idx: number }[] = [];
     labels.forEach((label) => {
       const pts = viewshedOverlapByPoint[label] ?? [];
-      pts.forEach(([idx1Based, val]) => {
-        const dist = pointIndexToDistance(idx1Based);
+      const dists = viewshedPointDistances[label];
+      if (!Array.isArray(dists) || dists.length !== pts.length) return;
+      pts.forEach(([idx1Based, val], i) => {
+        const dist = dists[i];
+        if (typeof dist !== 'number') return;
         allPoints.push({ dist, overlap: val, label, idx: idx1Based });
       });
     });
@@ -1381,18 +1461,22 @@ const MapPanel: React.FC<MapPanelProps> = ({
       .append('text').attr('transform', 'rotate(-90)').attr('x', -h / 2).attr('y', -32).attr('fill', '#475569').attr('font-size', 10).attr('text-anchor', 'middle').text('Overlap (%)');
     const line = d3.line<{ dist: number; overlap: number }>().x(d => xScale(d.dist)).y(d => yScale(d.overlap));
     labels.forEach((label, i) => {
-      const pts = (viewshedOverlapByPoint[label] ?? [])
-        .map(([idx1Based, val]) => ({ dist: pointIndexToDistance(idx1Based), overlap: val }))
+      const pts = viewshedOverlapByPoint[label] ?? [];
+      const dists = viewshedPointDistances[label];
+      if (!Array.isArray(dists) || dists.length !== pts.length) return;
+      const pathPts = pts
+        .map(([, val], j) => ({ dist: dists[j], overlap: val }))
+        .filter((d): d is { dist: number; overlap: number } => typeof d.dist === 'number')
         .sort((a, b) => a.dist - b.dist);
-      if (pts.length === 0) return;
+      if (pathPts.length === 0) return;
       const color = colors[i % colors.length];
-      g.append('path').datum(pts).attr('fill', 'none').attr('stroke', color).attr('stroke-width', 2).attr('d', line);
+      g.append('path').datum(pathPts).attr('fill', 'none').attr('stroke', color).attr('stroke-width', 2).attr('d', line);
     });
     // Legend — small colored square with label centered inside; scrollable when many legs
     const swatchSize = 24;
     const rowH = swatchSize + 4;
     const maxVisibleRows = 5;
-    const legendW = swatchSize + 8;
+    const legendW = 56;
     const fullLegendH = labels.length * rowH;
     const legendH = Math.min(fullLegendH, maxVisibleRows * rowH);
     const needsScroll = labels.length > maxVisibleRows;
@@ -1443,7 +1527,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (onOverlapGraphPointHover) onOverlapGraphPointHover(null);
     });
     return () => { d3.select(container).selectAll('*').remove(); };
-  }, [overlapGraphWindowOpen, viewshedOverlapByPoint, viewshedPointDistances, overlapGraphWindowSize, pointIndexToDistance, pointIndexToElevationPoint, onOverlapGraphPointHover]);
+  }, [overlapGraphWindowOpen, viewshedOverlapByPoint, viewshedPointDistances, overlapGraphWindowSize, pointIndexToElevationPoint, onOverlapGraphPointHover]);
 
   // Clear overlap hover when window closes
   useEffect(() => {
@@ -3018,12 +3102,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
       })
       .join('|');
   }, [flightPath, nominalFlightHeight]);
-  const viewshedGradient = useMemo(() => {
-    const stops = VIEWSHED_COLORMAPS[viewshedColormap]?.stops ?? VIEWSHED_COLORMAPS.jet.stops;
-    const gradientStops = stops.map((stop) => `${stop.color} ${stop.pos * 100}%`).join(', ');
-    return `linear-gradient(to bottom, ${gradientStops})`;
-  }, [viewshedColormap]);
   const hasViewshedResult = Boolean(viewshedRaster) || viewshedStatus === 'done';
+  /** Class-wise colors 1, 2, 3, 4+ derived from the selected viewshed colormap */
+  const viewshedClassColors = useMemo(
+    () => getViewshedClassColorsFromColormap(viewshedColormap),
+    [viewshedColormap]
+  );
   const hoveredUtm = useMemo(() => {
     if (!hoveredElevationPoint) return null;
     return latLngToUTM(hoveredElevationPoint.latitude, hoveredElevationPoint.longitude);
@@ -6786,24 +6870,20 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const imageData = ctx.createImageData(width, height);
     const alpha = 220;
     for (let i = 0; i < data.length; i++) {
-      let value = Number(data[i]);
-      if (noDataValue !== null && noDataValue !== undefined && value === noDataValue) {
-        const idx = i * 4;
+      const value = Number(data[i]);
+      const rgb = getViewshedClassColor(value, noDataValue, viewshedClassColors);
+      const idx = i * 4;
+      if (rgb === null) {
         imageData.data[idx] = 0;
         imageData.data[idx + 1] = 0;
         imageData.data[idx + 2] = 0;
         imageData.data[idx + 3] = 0;
-        continue;
+      } else {
+        imageData.data[idx] = rgb.r;
+        imageData.data[idx + 1] = rgb.g;
+        imageData.data[idx + 2] = rgb.b;
+        imageData.data[idx + 3] = alpha;
       }
-      if (!Number.isFinite(value)) {
-        value = min;
-      }
-      const { r, g, b } = getColorForValue(value, min, max, viewshedColormap);
-      const idx = i * 4;
-      imageData.data[idx] = r;
-      imageData.data[idx + 1] = g;
-      imageData.data[idx + 2] = b;
-      imageData.data[idx + 3] = alpha;
     }
 
     ctx.putImageData(imageData, 0, 0);
@@ -6819,7 +6899,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     viewshedImageOverlayRef.current = L.imageOverlay(imageUrl, imageBounds, {
       opacity: viewshedOpacity
     }).addTo(map.current);
-  }, [clearViewshedOverlay, viewshedRaster, viewshedVisible, viewshedColormap, viewshedOpacity]);
+  }, [clearViewshedOverlay, viewshedRaster, viewshedVisible, viewshedOpacity, viewshedClassColors]);
 
   const loadViewshedFromArrayBuffer = useCallback(async (arrayBuffer: ArrayBuffer, signature?: string) => {
     const tiff = await fromArrayBuffer(arrayBuffer);
@@ -6999,12 +7079,24 @@ const MapPanel: React.FC<MapPanelProps> = ({
           if (status === 'done') {
             stopViewshedPolling();
             const obp = statusJson.overlapByPoint;
-            setViewshedOverlapByPoint(
-              obp && typeof obp === 'object' && !Array.isArray(obp) ? obp : null
-            );
-            setViewshedPointDistances(
-              Array.isArray(statusJson.pointDistances) ? statusJson.pointDistances : null
-            );
+            const overlapData = obp && typeof obp === 'object' && !Array.isArray(obp) ? obp : null;
+            setViewshedOverlapByPoint(overlapData);
+            // Prefer pointDistancesByPair (dict); fallback: build from flat pointDistances array
+            let distByPair: Record<string, number[]> | null = null;
+            if (statusJson.pointDistancesByPair && typeof statusJson.pointDistancesByPair === 'object' && !Array.isArray(statusJson.pointDistancesByPair)) {
+              distByPair = statusJson.pointDistancesByPair as Record<string, number[]>;
+            } else if (Array.isArray(statusJson.pointDistances) && overlapData) {
+              const flat = statusJson.pointDistances as number[];
+              distByPair = {};
+              Object.keys(overlapData).forEach((label) => {
+                const pts = overlapData[label] ?? [];
+                distByPair![label] = pts.map(([idx1Based]) => {
+                  const d = flat[idx1Based - 1];
+                  return typeof d === 'number' ? d : (idx1Based - 1) * 1.0;
+                });
+              });
+            }
+            setViewshedPointDistances(distByPair);
             const resultRes = await fetch(`/api/viewshed/result/${jobId}`);
             if (!resultRes.ok) {
               const errorText = await resultRes.text();
@@ -8782,12 +8874,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
         {viewshedRaster && viewshedVisible && (
           <div className="viewshed-legend">
             <div className="viewshed-legend-title">שדה ראייה</div>
-            <div className="viewshed-legend-label viewshed-legend-label-top">
-              {Number.isFinite(viewshedRaster.min) ? Math.round(viewshedRaster.min) : '—'}
-            </div>
-            <div className="viewshed-legend-bar" style={{ background: viewshedGradient }} />
-            <div className="viewshed-legend-label viewshed-legend-label-bottom">
-              {Number.isFinite(viewshedRaster.max) ? Math.round(viewshedRaster.max) : '—'}
+            <div className="viewshed-legend-classes">
+              {([1, 2, 3, 4] as const).map((cls) => (
+                <div key={cls} className="viewshed-legend-class">
+                  <span
+                    className="viewshed-legend-swatch"
+                    style={{ backgroundColor: viewshedClassColors[cls - 1] }}
+                  />
+                  <span className="viewshed-legend-class-label">{cls === 4 ? '4+' : String(cls)}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}

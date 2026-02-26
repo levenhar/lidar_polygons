@@ -606,6 +606,13 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
             overlap_by_point = _compute_overlap_by_leg_pairs(
                 trajectory, segment_boundaries, fov_deg, agl
             )
+            # Per-pair distances: same keys as overlap_by_point, value = list of distances for that pair (same order)
+            point_distances_by_pair = {}
+            for label, pairs_list in overlap_by_point.items():
+                point_distances_by_pair[label] = [
+                    point_distances[idx_1based - 1]
+                    for idx_1based, _ in pairs_list
+                ]
 
             with viewshed_jobs_lock:
                 if job_id in viewshed_jobs:
@@ -613,7 +620,7 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                     viewshed_jobs[job_id]["progress"] = 100
                     viewshed_jobs[job_id]["result_path"] = output_path
                     viewshed_jobs[job_id]["overlap_by_point"] = overlap_by_point
-                    viewshed_jobs[job_id]["point_distances"] = point_distances
+                    viewshed_jobs[job_id]["point_distances_by_pair"] = point_distances_by_pair
     except RuntimeError as e:
         if str(e) == "cancelled":
             logger.info(f"[{job_id}] Viewshed cancelled")
@@ -936,8 +943,8 @@ async def viewshed_status(job_id: str):
         if job.get("status") == "done":
             if job.get("overlap_by_point") is not None:
                 payload["overlapByPoint"] = job["overlap_by_point"]
-            if job.get("point_distances") is not None:
-                payload["pointDistances"] = job["point_distances"]
+            if job.get("point_distances_by_pair") is not None:
+                payload["pointDistancesByPair"] = job["point_distances_by_pair"]
         return payload
 
 @app.post("/api/viewshed/cancel/{job_id}")

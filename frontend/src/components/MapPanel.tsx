@@ -1061,7 +1061,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
   // Overlap graph float window (after viewshed done) — data comes from viewshed job status when done
   const [overlapGraphWindowOpen, setOverlapGraphWindowOpen] = useState(false);
   const [viewshedOverlapByPoint, setViewshedOverlapByPoint] = useState<Record<string, [number, number][]> | null>(null);
-  const [viewshedOverlapOverall, setViewshedOverlapOverall] = useState<Record<string, number> | null>(null);
   const [viewshedPointDistances, setViewshedPointDistances] = useState<number[] | null>(null);
   const [overlapGraphLoading, setOverlapGraphLoading] = useState(false);
   const [overlapGraphError, setOverlapGraphError] = useState<string | null>(null);
@@ -1352,7 +1351,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   // Render overlap chart with D3 - overlap vs distance, lines only
   useEffect(() => {
     const container = overlapChartRef.current;
-    if (!container || !overlapGraphWindowOpen || !viewshedOverlapByPoint || Object.keys(viewshedOverlapByPoint).length === 0 || !viewshedOverlapOverall) return;
+    if (!container || !overlapGraphWindowOpen || !viewshedOverlapByPoint || Object.keys(viewshedOverlapByPoint).length === 0) return;
     const labels = Object.keys(viewshedOverlapByPoint);
     const colors = ['#0ea5e9', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
     const margin = { top: 12, right: 65, bottom: 32, left: 42 };
@@ -1444,7 +1443,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (onOverlapGraphPointHover) onOverlapGraphPointHover(null);
     });
     return () => { d3.select(container).selectAll('*').remove(); };
-  }, [overlapGraphWindowOpen, viewshedOverlapByPoint, viewshedOverlapOverall, viewshedPointDistances, overlapGraphWindowSize, pointIndexToDistance, pointIndexToElevationPoint, onOverlapGraphPointHover]);
+  }, [overlapGraphWindowOpen, viewshedOverlapByPoint, viewshedPointDistances, overlapGraphWindowSize, pointIndexToDistance, pointIndexToElevationPoint, onOverlapGraphPointHover]);
 
   // Clear overlap hover when window closes
   useEffect(() => {
@@ -6985,7 +6984,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const jobId = startPayload.jobId as string;
       setViewshedJobId(jobId);
       setViewshedOverlapByPoint(null);
-      setViewshedOverlapOverall(null);
       setViewshedPointDistances(null);
 
       viewshedPollRef.current = window.setInterval(async () => {
@@ -7004,10 +7002,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
             setViewshedOverlapByPoint(
               obp && typeof obp === 'object' && !Array.isArray(obp) ? obp : null
             );
-            const oo = statusJson.overlapOverall;
-            setViewshedOverlapOverall(
-              oo && typeof oo === 'object' ? oo : null
-            );
             setViewshedPointDistances(
               Array.isArray(statusJson.pointDistances) ? statusJson.pointDistances : null
             );
@@ -7024,7 +7018,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
             setIsViewshedProcessing(false);
             setViewshedJobId(null);
             setViewshedOverlapByPoint(null);
-            setViewshedOverlapOverall(null);
             setViewshedPointDistances(null);
             if (status === 'error') {
               alert(`שגיאה ביצירת שדה ראייה: ${statusJson.error || 'שגיאה לא ידועה'}`);
@@ -7037,7 +7030,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
           setViewshedStatus('error');
           setViewshedJobId(null);
           setViewshedOverlapByPoint(null);
-          setViewshedOverlapOverall(null);
           setViewshedPointDistances(null);
         }
       }, 1500);
@@ -7171,7 +7163,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setViewshedProgress(0);
     setViewshedJobId(null);
     setViewshedOverlapByPoint(null);
-    setViewshedOverlapOverall(null);
     setViewshedPointDistances(null);
     viewshedSignatureRef.current = null;
     viewshedRouteSnapshotRef.current = null;

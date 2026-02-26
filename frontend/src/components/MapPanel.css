@@ -1186,7 +1186,7 @@
   font-family: inherit;
 }
 
-/* Overlap graph float window */
+/* Overlap graph float window - always on top when open so hover events are reliable */
 .overlap-graph-window {
   position: fixed;
   display: flex;
@@ -1195,7 +1195,7 @@
   color: #0f172a;
   border-radius: 12px;
   font-size: 0.875rem;
-  z-index: 1200;
+  z-index: 10000;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
   border: 1px solid #e5e7eb;
   pointer-events: auto;
@@ -1448,25 +1448,30 @@
   color: #0f172a;
 }
 
-.viewshed-legend-bar {
-  width: 12px;
-  height: 100px;
-  border-radius: 999px;
-  border: 1px solid #e2e8f0;
+.viewshed-legend-classes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.viewshed-legend-label {
+.viewshed-legend-class {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.viewshed-legend-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  flex-shrink: 0;
+}
+
+.viewshed-legend-class-label {
   font-size: 0.7rem;
   font-weight: 600;
   color: #475569;
-}
-
-.viewshed-legend-label-top {
-  margin-bottom: 4px;
-}
-
-.viewshed-legend-label-bottom {
-  margin-top: 4px;
 }
 
 .viewshed-progress {

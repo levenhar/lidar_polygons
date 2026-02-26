@@ -603,7 +603,7 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                 agl = float(np.mean(heights)) if heights else 100.0
             if agl is None or agl <= 0:
                 agl = 100.0
-            overlap_by_point, overlap_overall = _compute_overlap_by_leg_pairs(
+            overlap_by_point = _compute_overlap_by_leg_pairs(
                 trajectory, segment_boundaries, fov_deg, agl
             )
 
@@ -613,7 +613,6 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                     viewshed_jobs[job_id]["progress"] = 100
                     viewshed_jobs[job_id]["result_path"] = output_path
                     viewshed_jobs[job_id]["overlap_by_point"] = overlap_by_point
-                    viewshed_jobs[job_id]["overlap_overall"] = overlap_overall
                     viewshed_jobs[job_id]["point_distances"] = point_distances
     except RuntimeError as e:
         if str(e) == "cancelled":
@@ -1224,20 +1223,18 @@ def _compute_overlap_by_leg_pairs(
     segment_boundaries: List[int],
     fov_degrees: float,
     effective_agl_meters: float,
-) -> tuple:
+) -> Dict[str, List[List[float]]]:
     """Compute overlap by pairs of parallel legs. In a lawn-mower pattern, leg 1 & 3 are parallel,
     leg 2 & 4 are parallel, etc. So pair i = legs (2*i+1, 2*i+3) in 1-based.
     - 4 points (3 legs) → 1 pair: (leg 1, leg 3)
     - 6 points (5 legs) → 2 pairs: (leg 1, leg 3), (leg 2, leg 4)
-    overlap_by_point: {"1-3": [[1, overlap], ..., [n, overlap]], ...}
-    overlap_overall: {"1-3": 50, ...}
+    Returns: {"1-3": [[1, overlap], ..., [n, overlap]], ...}
     MVP: return constant values.
     """
     overlap_by_point: Dict[str, List[List[float]]] = {}
-    overlap_overall: Dict[str, float] = {}
     n_segments = len(segment_boundaries) - 1
     if n_segments < 2:
-        return overlap_by_point, overlap_overall
+        return overlap_by_point
     const_val = 50.0
     n_pairs = (n_segments - 1) // 2
     for pair_i in range(n_pairs):
@@ -1253,8 +1250,7 @@ def _compute_overlap_by_leg_pairs(
         points.sort(key=lambda p: p[0])
         if points:
             overlap_by_point[label] = points
-            overlap_overall[label] = const_val
-    return overlap_by_point, overlap_overall
+    return overlap_by_point
 
 
 @app.get("/health")

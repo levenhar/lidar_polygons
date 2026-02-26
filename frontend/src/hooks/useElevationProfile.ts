@@ -98,7 +98,7 @@ export function useElevationProfile() {
       }, {
         cancelToken: cancelTokenSource.token
       });
-      
+
       // Check if this request is still the latest one
       if (currentRequestId !== requestIdRef.current) {
         console.log('Ignoring response from outdated request');

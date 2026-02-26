@@ -449,7 +449,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // If no existing transform, keep the saved one (don't reset to null)
     svg.selectAll('*').remove(); // Clear previous render
 
-    const margin = { top: 20, right: 80, bottom: 110, left: 30 };
+    const margin = { top: 20, right: 80, bottom: 110, left: 80 }; // left fits y-axis ticks + labels (PNG export)
     const legendWidth = 0; // Move legend under the plot
     const width = containerRef.current.clientWidth - margin.left - margin.right - legendWidth;
     const height = 400 - margin.top - margin.bottom;
@@ -475,7 +475,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // Create scales
     const baseXScale = d3.scaleLinear()
       .domain(d3.extent(elevationProfile, d => d.distance) as [number, number])
-      .range([width, 0]);
+      .range([0, width]);
 
     const chartArea: d3.Selection<SVGGElement, unknown, null, undefined> = g.append('g')
       .attr('clip-path', `url(#${clipPathIdRef.current})`);
@@ -560,7 +560,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .tickSize(-height)
       .tickFormat(() => '');
 
-    const yAxisGrid = d3.axisRight(currentYScale)
+    const yAxisGrid = d3.axisLeft(currentYScale)
       .ticks(10)
       .tickSize(-width)
       .tickFormat(() => '');
@@ -580,7 +580,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('stroke-width', 1)
       .attr('stroke-dasharray', '2,4')
       .attr('opacity', 0.6)
-      .attr('transform', `translate(${width},0)`)
+      .attr('transform', 'translate(0,0)')
       .lower() // Ensure grid is behind other elements
       .call(yAxisGrid);
 
@@ -948,12 +948,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .ticks(10)
       .tickFormat(d => `${d} מ'`);
 
-    const yAxis = d3.axisRight(currentYScale)
+    const yAxis = d3.axisLeft(currentYScale)
       .ticks(10)
       .tickFormat(d => `${d} מ'`)
-      .tickPadding(40);
+      .tickPadding(52);
 
     const xAxisGroup = g.append('g')
+      .attr('class', 'x-axis')
       .attr('transform', `translate(0,${height})`)
       .call(xAxis);
 
@@ -962,13 +963,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif');
 
     const yAxisGroup = g.append('g')
-      .attr('transform', `translate(${width},0)`)
+      .attr('class', 'y-axis')
+      .attr('transform', 'translate(0,0)')
       .call(yAxis);
 
     yAxisGroup.selectAll('text')
       .style('font-size', '12px')
       .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
-      .attr('dx', '-0.5em');
+      .attr('dx', '0.5em');
 
     // Axis labels (outside axis groups to avoid being cleared on zoom redraw)
     g.append('text')
@@ -1010,21 +1012,18 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
 
       // Draw rectangles for each merged zone
-      // Note: x-scale is reversed (range [width, 0]), so smaller distances map to larger x values
       chartArea.selectAll<SVGRectElement, { start: number; end: number }>('.vertex-proximity-zone')
         .data(mergedZones)
         .enter()
         .append('rect')
         .attr('class', 'vertex-proximity-zone')
         .attr('x', d => {
-          // Use the smaller x value (which corresponds to the larger distance, i.e., end)
           const xStart = currentXScale(d.start);
           const xEnd = currentXScale(d.end);
           return Math.min(xStart, xEnd);
         })
         .attr('y', 0)
         .attr('width', d => {
-          // Calculate absolute width since scale is reversed
           const xStart = currentXScale(d.start);
           const xEnd = currentXScale(d.end);
           return Math.abs(xStart - xEnd);
@@ -1312,7 +1311,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       yAxisGroup.selectAll('text')
         .style('font-size', '12px')
         .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
-        .attr('dx', '-0.5em');
+        .attr('dx', '0.5em');
 
       // Update all paths and elements
       const updatedGroundAreaGenerator = d3.area<ElevationPoint>()
@@ -1468,13 +1467,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         chartArea.selectAll<SVGRectElement, { start: number; end: number }>('.vertex-proximity-zone')
           .data(mergedZones)
           .attr('x', d => {
-            // Use the smaller x value (which corresponds to the larger distance, i.e., end)
             const xStart = currentXScale(d.start);
             const xEnd = currentXScale(d.end);
             return Math.min(xStart, xEnd);
           })
           .attr('width', d => {
-            // Calculate absolute width since scale is reversed
             const xStart = currentXScale(d.start);
             const xEnd = currentXScale(d.end);
             return Math.abs(xStart - xEnd);
@@ -2444,8 +2441,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // Force a reflow to ensure the container resizes
     containerRef.current.offsetHeight;
     
-    // Calculate expected dimensions
-    const margin = { top: 20, right: 80, bottom: 110, left: 30 };
+    // Calculate expected dimensions (left margin fits y-axis ticks + labels for PNG export)
+    const margin = { top: 20, right: 80, bottom: 110, left: 80 };
     const legendWidth = 0;
     const expectedChartWidth = exportWidth - margin.left - margin.right - legendWidth;
     const expectedSvgWidth = expectedChartWidth + margin.left + margin.right + legendWidth;
@@ -2575,7 +2572,54 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           svgCircle.setAttribute('opacity', '0');
         });
 
+        // PNG only: x-axis tick labels RTL
+        const xAxisTexts = svgRef.current!.querySelectorAll('.x-axis text');
+        const originalXAxisDirection: string[] = [];
+        const originalXAxisTextAnchor: string[] = [];
+        xAxisTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          originalXAxisDirection[index] = svgText.style.direction ?? '';
+          originalXAxisTextAnchor[index] = svgText.style.textAnchor ?? '';
+          svgText.style.direction = 'rtl';
+          svgText.style.textAnchor = 'start';
+        });
+
+        // PNG only: bring y-axis tick labels closer to the axis (reduce effective tickPadding)
+        const yAxisTexts = svgRef.current!.querySelectorAll('.y-axis text');
+        const originalYAxisX: string[] = [];
+        const originalYAxisDx: string[] = [];
+        const pngYAxisLabelOffset = 12; // distance from axis in PNG (on-screen uses tickPadding 52)
+        yAxisTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          originalYAxisX[index] = svgText.getAttribute('x') ?? '';
+          originalYAxisDx[index] = svgText.getAttribute('dx') ?? '';
+          svgText.setAttribute('x', String(-pngYAxisLabelOffset));
+          svgText.setAttribute('dx', '0');
+        });
+
         const svgData = new XMLSerializer().serializeToString(svgRef.current!);
+
+        // Restore y-axis label spacing for web display
+        yAxisTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          if (originalYAxisX[index] !== '') {
+            svgText.setAttribute('x', originalYAxisX[index]);
+          } else {
+            svgText.removeAttribute('x');
+          }
+          if (originalYAxisDx[index] !== '') {
+            svgText.setAttribute('dx', originalYAxisDx[index]);
+          } else {
+            svgText.removeAttribute('dx');
+          }
+        });
+
+        // Restore x-axis direction for web display
+        xAxisTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          svgText.style.direction = originalXAxisDirection[index];
+          svgText.style.textAnchor = originalXAxisTextAnchor[index];
+        });
 
         // Restore original text-anchor for web display
         legendTexts.forEach((text, index) => {

@@ -5035,9 +5035,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
       let lastValidPosition: [number, number] = [point.lat, point.lng];
       let isDraggingWithLeftClick = false;
       let dragStartLatLng: L.LatLng | null = null;
+      let dragStartClientX = 0;
+      let dragStartClientY = 0;
       let hasStartedDragging = false; // Track if we've actually started dragging
       let isAltPressed = false; // Track ALT key state during drag
       let altConstraintToastShown = false; // Track if we've shown the toast for non-endpoint ALT
+
+      // Pixels of movement below which we treat as a click (do not change point location)
+      const CLICK_VS_DRAG_THRESHOLD_PX = 6;
 
       // Handle marker click for selection
       el.addEventListener('click', (e) => {
@@ -5108,8 +5113,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
         isAltPressed = e.altKey; // Capture initial ALT state
         altConstraintToastShown = false; // Reset toast flag
 
-        // Store drag start position
+        // Store drag start position (map and screen) for threshold check
         dragStartLatLng = marker.getLatLng();
+        dragStartClientX = e.clientX;
+        dragStartClientY = e.clientY;
 
         // Store original positions of all selected points for group drag
         // Only enable group drag if MULTIPLE points are selected (not just one)
@@ -5377,6 +5384,56 @@ const MapPanel: React.FC<MapPanelProps> = ({
           const curEl = curMarker?.getElement() as HTMLElement | null;
           if (curEl) { curEl.style.cursor = ''; curEl.classList.remove('is-dragging'); }
           if (curMarker) curMarker.setZIndexOffset(0);
+          return;
+        }
+
+        // Treat as click (do not edit location) if no drag or movement below threshold
+        const moveDistancePx = Math.hypot(e.clientX - dragStartClientX, e.clientY - dragStartClientY);
+        const isClickOnly = !hasStartedDragging || moveDistancePx < CLICK_VS_DRAG_THRESHOLD_PX;
+
+        if (isClickOnly) {
+          // Re-enable map if we had disabled it when drag started
+          if (hasStartedDragging && map.current) {
+            map.current.dragging.enable();
+            map.current.touchZoom.enable();
+            map.current.doubleClickZoom.enable();
+            map.current.scrollWheelZoom.enable();
+            map.current.boxZoom.enable();
+            map.current.keyboard.enable();
+          }
+          // Revert all affected markers to original positions (selection only, no move)
+          if (isGroupDraggingRef.current && selectedPointIndices.size > 0) {
+            selectedPointIndices.forEach((idx) => {
+              const originalPos = dragStartPositionsRef.current.get(idx);
+              if (originalPos && idx < markersRef.current.length) {
+                const m = markersRef.current[idx];
+                if (m) m.setLatLng([originalPos.lat, originalPos.lng]);
+              }
+            });
+          } else {
+            const originalPos = dragStartPositionsRef.current.get(index);
+            if (originalPos) {
+              const dropMarker = markersRef.current[index];
+              if (dropMarker) dropMarker.setLatLng([originalPos.lat, originalPos.lng]);
+              lastValidPosition = [originalPos.lat, originalPos.lng];
+            }
+          }
+          isDraggingWithLeftClick = false;
+          isMarkerDragActiveRef.current = false;
+          hasStartedDragging = false;
+          isAltPressed = false;
+          altConstraintToastShown = false;
+          const cleanupMarker = markersRef.current[index];
+          const cleanupEl = cleanupMarker?.getElement() as HTMLElement | null;
+          if (cleanupEl) {
+            cleanupEl.style.cursor = 'pointer';
+            cleanupEl.classList.remove('is-dragging');
+          }
+          if (cleanupMarker) cleanupMarker.setZIndexOffset(0);
+          isGroupDraggingRef.current = false;
+          dragStartPositionsRef.current.clear();
+          justFinishedDraggingRef.current = true;
+          setTimeout(() => { justFinishedDraggingRef.current = false; }, 100);
           return;
         }
 

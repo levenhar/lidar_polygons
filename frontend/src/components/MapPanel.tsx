@@ -2457,7 +2457,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, []);
 
-  // Fetch available TIF files that overlap with the selected AOI
+  // Fetch available TIF files for clipping: only those that fully contain the AOI (wanted polygon/bbox)
   const fetchAvailableTifs = useCallback(async (aoi: { type: string; crs: string; bbox?: number[]; coordinates?: [number, number][] }) => {
     setDtmOptionsLoading(true);
     setDtmOptionsError(null);
@@ -2469,7 +2469,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
         },
         body: JSON.stringify({
           aoi: aoi,
-          bufferMeters: 0.0
+          bufferMeters: 0.0,
+          containment: true
         })
       });
       if (!response.ok) {

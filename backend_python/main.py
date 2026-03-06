@@ -210,6 +210,7 @@ class ClipRequest(BaseModel):
 class AvailableTifsRequest(BaseModel):
     aoi: AOI
     bufferMeters: Optional[float] = 0.0
+    containment: Optional[bool] = False  # If True, only return DTMs that fully contain the AOI
 
 class ElevationAtPointRequest(BaseModel):
     longitude: float
@@ -1328,8 +1329,8 @@ async def get_dtm_options():
 
 @app.post("/api/dtm/available")
 async def get_available_tifs(request: AvailableTifsRequest):
-    """Return TIF files that overlap with the given AOI"""
-    logger.info(f"POST /api/dtm/available called with AOI type: {request.aoi.type}")
+    """Return TIF files that overlap with the given AOI, or (if containment=True) only those that fully contain the AOI."""
+    logger.info(f"POST /api/dtm/available called with AOI type: {request.aoi.type}, containment={getattr(request, 'containment', False)}")
     
     try:
         # Get cached footprints
@@ -1409,6 +1410,26 @@ async def get_available_tifs(request: AvailableTifsRequest):
                     aoi_max_y < tif_min_y or
                     aoi_min_y > tif_max_y
                 )
+                # When containment requested: TIF bbox must contain the whole AOI (bbox or all polygon vertices)
+                if getattr(request, "containment", False):
+                    if request.aoi.type == "bbox" or not (request.aoi.type == "polygon" and request.aoi.coordinates):
+                        # Bbox AOI: TIF must contain AOI bbox
+                        contains = (
+                            tif_min_x <= aoi_min_x and tif_max_x >= aoi_max_x and
+                            tif_min_y <= aoi_min_y and tif_max_y >= aoi_max_y
+                        )
+                    else:
+                        # Polygon AOI: transform every vertex to TIF CRS and check inside TIF bbox
+                        contains = True
+                        for lon, lat in request.aoi.coordinates:
+                            tx, ty = transformer.transform(lon, lat)
+                            if not (tif_min_x <= tx <= tif_max_x and tif_min_y <= ty <= tif_max_y):
+                                contains = False
+                                break
+                    if not contains:
+                        continue
+                elif not intersects:
+                    continue
                 
                 if intersects:
                     # Calculate overlap area (for sorting by best match)
@@ -1449,7 +1470,7 @@ async def get_available_tifs(request: AvailableTifsRequest):
                 "modifiedAt": f.get("modifiedAt")
             })
         
-        logger.info(f"Found {len(result_files)} overlapping TIF files for AOI")
+        logger.info(f"Found {len(result_files)} TIF files for AOI (containment={getattr(request, 'containment', False)})")
         return {"files": result_files}
         
     except HTTPException:

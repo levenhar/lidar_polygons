@@ -50,22 +50,146 @@ describe('geometry', () => {
   });
 
   describe('generateUTurnPoints', () => {
+    const canonicalPrev: Coordinate = { lng: 0, lat: 0 };
+    const canonicalStart: Coordinate = { lng: 0.0001, lat: 0 };
+
     it('returns empty array for numPoints <= 0', () => {
-      const prev: Coordinate = { lng: 0, lat: 0 };
-      const start: Coordinate = { lng: 0.0001, lat: 0 };
-      expect(generateUTurnPoints(prev, start, 50, 80, 0)).toEqual([]);
+      expect(generateUTurnPoints(canonicalPrev, canonicalStart, 50, 80, 0)).toEqual([]);
     });
     it('returns empty array for invalid radius', () => {
-      const prev: Coordinate = { lng: 0, lat: 0 };
-      const start: Coordinate = { lng: 0.0001, lat: 0 };
-      expect(generateUTurnPoints(prev, start, 0, 80, 5)).toEqual([]);
+      expect(generateUTurnPoints(canonicalPrev, canonicalStart, 0, 80, 5)).toEqual([]);
     });
     it('returns numPoints points for valid inputs', () => {
-      const prev: Coordinate = { lng: 0, lat: 0 };
-      const start: Coordinate = { lng: 0.0001, lat: 0 };
-      const points = generateUTurnPoints(prev, start, 50, 80, 10, 'R');
+      const points = generateUTurnPoints(canonicalPrev, canonicalStart, 50, 80, 10, 'R');
       expect(points.length).toBe(10);
       expect(points.every(p => typeof p.lng === 'number' && typeof p.lat === 'number')).toBe(true);
+    });
+
+    it('places last point on perpendicular to last leg at given chord distance (R)', () => {
+      const inboundBearing = calculateBearing(canonicalPrev, canonicalStart);
+      const rightPerpBearing = inboundBearing + Math.PI / 2;
+      const chordLength = Math.min(80, 50 * 2);
+      const expectedEnd = calculateDestination(canonicalStart, rightPerpBearing, chordLength);
+      const points = generateUTurnPoints(canonicalPrev, canonicalStart, 50, 80, 10, 'R');
+      expect(points.length).toBe(10);
+      expect(points[9].lng).toBeCloseTo(expectedEnd.lng, 10);
+      expect(points[9].lat).toBeCloseTo(expectedEnd.lat, 10);
+    });
+
+    it('places last point on perpendicular to last leg at given chord distance (L)', () => {
+      const inboundBearing = calculateBearing(canonicalPrev, canonicalStart);
+      const leftPerpBearing = inboundBearing - Math.PI / 2;
+      const chordLength = Math.min(80, 50 * 2);
+      const expectedEnd = calculateDestination(canonicalStart, leftPerpBearing, chordLength);
+      const points = generateUTurnPoints(canonicalPrev, canonicalStart, 50, 80, 10, 'L');
+      expect(points.length).toBe(10);
+      expect(points[9].lng).toBeCloseTo(expectedEnd.lng, 10);
+      expect(points[9].lat).toBeCloseTo(expectedEnd.lat, 10);
+    });
+
+    it('is deterministic: same inputs produce same output', () => {
+      const a = generateUTurnPoints(canonicalPrev, canonicalStart, 50, 80, 10, 'R');
+      const b = generateUTurnPoints(canonicalPrev, canonicalStart, 50, 80, 10, 'R');
+      expect(a).toEqual(b);
+      expect(a.length).toBe(10);
+    });
+
+    it('returns frozen U-turn path for canonical R inputs (regression: do not change)', () => {
+      const points = generateUTurnPoints(canonicalPrev, canonicalStart, 50, 80, 10, 'R');
+      const coords = points.map(p => [p.lng, p.lat]);
+      expect(coords).toMatchInlineSnapshot(`
+        [
+          [
+            0.00028017992828662,
+            0.00008091147276214861,
+          ],
+          [
+            0.00047765047484476587,
+            0.00007680583954872218,
+          ],
+          [
+            0.0006543116714520281,
+            -0.000011524758747047586,
+          ],
+          [
+            0.0007760785059694416,
+            -0.0001670378160561885,
+          ],
+          [
+            0.0008194572847491647,
+            -0.000359728642339132,
+          ],
+          [
+            0.0007760785059979921,
+            -0.0005524194686287091,
+          ],
+          [
+            0.000654311671494329,
+            -0.0007079325259542673,
+          ],
+          [
+            0.000477650474880896,
+            -0.0007962631242680785,
+          ],
+          [
+            0.00028017992830402027,
+            -0.0008003687574935758,
+          ],
+          [
+            0.00009999999999936183,
+            -0.0007194572847358352,
+          ],
+        ]
+      `);
+    });
+
+    it('returns frozen U-turn path for canonical L inputs (regression: do not change)', () => {
+      const points = generateUTurnPoints(canonicalPrev, canonicalStart, 50, 80, 10, 'L');
+      const coords = points.map(p => [p.lng, p.lat]);
+      expect(coords).toMatchInlineSnapshot(`
+        [
+          [
+            0.0002801799282866199,
+            -0.00008091147276214861,
+          ],
+          [
+            0.00047765047484476587,
+            -0.00007680583954872212,
+          ],
+          [
+            0.000654311671452028,
+            0.000011524758747047635,
+          ],
+          [
+            0.0007760785059694414,
+            0.00016703781605618864,
+          ],
+          [
+            0.0008194572847491643,
+            0.00035972864233913205,
+          ],
+          [
+            0.0007760785059979921,
+            0.0005524194686287091,
+          ],
+          [
+            0.0006543116714943288,
+            0.0007079325259542673,
+          ],
+          [
+            0.0004776504748808955,
+            0.0007962631242680785,
+          ],
+          [
+            0.0002801799283040202,
+            0.0008003687574935758,
+          ],
+          [
+            0.00009999999999936179,
+            0.0007194572847358353,
+          ],
+        ]
+      `);
     });
   });
 });

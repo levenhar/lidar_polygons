@@ -266,29 +266,6 @@ const getViewshedClassColor = (
   return { r, g, b };
 };
 
-const getColorForValue = (value: number, min: number, max: number, colormap: string) => {
-  const stops = VIEWSHED_COLORMAPS[colormap]?.stops ?? VIEWSHED_COLORMAPS.jet.stops;
-  const range = max - min || 1;
-  const normalized = Math.min(1, Math.max(0, (value - min) / range));
-  let lower = stops[0];
-  let upper = stops[stops.length - 1];
-  for (let i = 0; i < stops.length - 1; i++) {
-    if (normalized >= stops[i].pos && normalized <= stops[i + 1].pos) {
-      lower = stops[i];
-      upper = stops[i + 1];
-      break;
-    }
-  }
-  const t = (normalized - lower.pos) / (upper.pos - lower.pos || 1);
-  const c1 = hexToRgb(lower.color);
-  const c2 = hexToRgb(upper.color);
-  return {
-    r: Math.round(lerp(c1.r, c2.r, t)),
-    g: Math.round(lerp(c1.g, c2.g, t)),
-    b: Math.round(lerp(c1.b, c2.b, t))
-  };
-};
-
 type IconName =
   | 'upload'
   | 'download'
@@ -1415,16 +1392,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return profile[0] ?? null;
   }, [pointIndexToDistanceMap, elevationProfile]);
 
-  // Convert 1-based point index to distance (m)
-  const pointIndexToDistance = useCallback((pointIndex1Based: number): number => {
-    const map = pointIndexToDistanceMap;
-    if (map) {
-      const d = map.get(pointIndex1Based);
-      if (d !== undefined) return d;
-    }
-    return pointIndex1Based * 1.0;
-  }, [pointIndexToDistanceMap]);
-
   // Render overlap chart with D3 - overlap vs distance, lines only (uses per-pair distances)
   useEffect(() => {
     const container = overlapChartRef.current;
@@ -2183,8 +2150,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
         break;
       case 'radius':
-        if (isNaN || numValue === 0 || numValue < -1000 || numValue > 1000) {
-          setDialogError('רדיוס חייב להיות בין -1000 ל-1000 מטרים (לא אפס)');
+        if (isNaN || numValue < 0.1 || numValue > 10000) {
+          setDialogError('רדיוס חייב להיות בין 0.1 ל-10000 מטרים');
         } else {
           setDialogError(null);
         }
@@ -6860,7 +6827,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
 
-    const { width, height, data, bounds, min, max, noDataValue } = viewshedRaster;
+    const { width, height, data, bounds, noDataValue } = viewshedRaster;
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
@@ -7090,7 +7057,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               distByPair = {};
               Object.keys(overlapData).forEach((label) => {
                 const pts = overlapData[label] ?? [];
-                distByPair![label] = pts.map(([idx1Based]) => {
+                distByPair![label] = pts.map(([idx1Based]: [number]) => {
                   const d = flat[idx1Based - 1];
                   return typeof d === 'number' ? d : (idx1Based - 1) * 1.0;
                 });
@@ -7354,13 +7321,24 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
 
+    let defaultDistance = averageNextLineSpacingRef.current ?? 50;
+    try {
+      const lastSegmentIndex = flightPath.length - 2;
+      if (lastSegmentIndex >= 0) {
+        defaultDistance = computeDefaultOffsetForSegmentIndex(lastSegmentIndex);
+      }
+    } catch {
+      // keep defaultDistance fallback
+    }
+
     setDialog({
       type: 'uTurn',
       title: 'הוסף פרסה'
     });
     setDialogValues({
-      radius: '50',
-      distance: '100'
+      radius: '150',
+      distance: String(defaultDistance),
+      uturnSide: 'right'
     });
     setDialogError(null);
   };
@@ -7501,16 +7479,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (dialog.type === 'uTurn') {
       const radius = parseFloat(dialogValues.radius || '');
       const distance = parseFloat(dialogValues.distance || '');
-      if (isNaN(radius) || radius === 0) {
-        setDialogError('רדיוס חייב להיות שונה מאפס.');
+      if (isNaN(radius) || radius <= 0) {
+        setDialogError('רדיוס חייב להיות > 0.');
         return;
       }
       if (isNaN(distance) || distance <= 0) {
         setDialogError('מרחק חייב להיות > 0.');
         return;
       }
-      const side: UTurnSide = radius > 0 ? 'R' : 'L';
-      const radiusMeters = Math.abs(radius);
+      const side: UTurnSide = dialogValues.uturnSide === 'left' ? 'L' : 'R';
+      const radiusMeters = radius;
       const prev = flightPath[flightPath.length - 2];
       const start = flightPath[flightPath.length - 1];
       const numUTurnPoints = 10;
@@ -7802,29 +7780,46 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (dialog.type === 'uTurn') {
       return (
         <>
-          <label className="quick-modal__label" htmlFor="radius-input">
-            רדיוס (מ')
-            <Tooltip tooltip="חיובי = ימינה, שלילי = שמאלה">
-              <span className="quick-modal__info" aria-label="מידע כיוון רדיוס">i</span>
-            </Tooltip>
-          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <label className="quick-modal__label" style={{ margin: 0, minWidth: '120px' }}>כיוון</label>
+            <div className="quick-modal__segmented">
+              <button
+                type="button"
+                className={`quick-modal__pill ${(dialogValues.uturnSide ?? 'right') === 'right' ? 'active' : ''}`}
+                onClick={() => setDialogValues((prev) => ({ ...prev, uturnSide: 'right' }))}
+              >
+                ימין
+              </button>
+              <button
+                type="button"
+                className={`quick-modal__pill ${dialogValues.uturnSide === 'left' ? 'active' : ''}`}
+                onClick={() => setDialogValues((prev) => ({ ...prev, uturnSide: 'left' }))}
+              >
+                שמאל
+              </button>
+            </div>
+          </div>
+          <label className="quick-modal__label" htmlFor="radius-input">רדיוס (מ')</label>
           <input
             id="radius-input"
             type="number"
-            min="-1000"
-            max="1000"
+            min="0.1"
+            max="10000"
             step="0.1"
             required
             inputMode="decimal"
             aria-required="true"
             value={dialogValues.radius ?? ''}
             onChange={(e) => {
-              setDialogValues((prev) => ({ ...prev, radius: e.target.value }));
-              validateDialogInput('radius', e.target.value);
+              const val = e.target.value;
+              if (val === '' || parseFloat(val) >= 0) {
+                setDialogValues((prev) => ({ ...prev, radius: val }));
+                validateDialogInput('radius', val);
+              }
             }}
             className={`quick-modal__input ${dialogError ? 'error' : ''}`}
           />
-          <label className="quick-modal__label" htmlFor="distance-ut-input">מרווח (מ')</label>
+          <label className="quick-modal__label" htmlFor="distance-ut-input">מרחק ללג הבא (מ')</label>
           <input
             id="distance-ut-input"
             type="number"
@@ -7836,8 +7831,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
             aria-required="true"
             value={dialogValues.distance ?? ''}
             onChange={(e) => {
-              setDialogValues((prev) => ({ ...prev, distance: e.target.value }));
-              validateDialogInput('distance-ut', e.target.value);
+              const val = e.target.value;
+              if (val === '' || parseFloat(val) >= 0) {
+                setDialogValues((prev) => ({ ...prev, distance: val }));
+                validateDialogInput('distance-ut', val);
+              }
             }}
             className={`quick-modal__input ${dialogError ? 'error' : ''}`}
           />

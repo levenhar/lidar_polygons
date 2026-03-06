@@ -828,7 +828,7 @@ async def get_elevation_profile(
                 
             duration = time.time() - start_time
             logger.info(f"Elevation profile calculated in {duration:.3f}s, sampled {len(profile)} points")
-            return {"profile": profile}
+            return {"ready": True, "profile": profile}
             
     except Exception as e:
         logger.error(f"Error calculating elevation profile: {e}", exc_info=True)

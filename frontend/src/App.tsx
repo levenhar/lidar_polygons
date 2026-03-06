@@ -444,8 +444,13 @@ function App() {
     pendingAction: null
   });
 
-  const { elevationProfile, loading, profileReady, profileError, calculateProfile, clearProfile, clearProfileError } = useElevationProfile();
+  const { elevationProfile, loading, profileReady, profileError, calculateProfile, clearProfile } = useElevationProfile();
 
+  // When the profile error pop-up is closed, keep showing the error in the profile panel (don't clear it).
+  const [profileErrorModalDismissed, setProfileErrorModalDismissed] = useState(false);
+  React.useEffect(() => {
+    if (profileError) setProfileErrorModalDismissed(false);
+  }, [profileError]);
 
   // Track last inputs so we can avoid expensive recalculation when only nominal height changes
   const lastProfileParamsRef = React.useRef<{
@@ -1886,15 +1891,15 @@ function App() {
           />
         </SplitPane>
       </div>
-      {profileError !== null && (
-        <div className="quick-modal__backdrop" role="dialog" aria-modal="true" aria-labelledby="profile-error-title" onClick={clearProfileError}>
+      {profileError !== null && !profileErrorModalDismissed && (
+        <div className="quick-modal__backdrop" role="dialog" aria-modal="true" aria-labelledby="profile-error-title" onClick={() => setProfileErrorModalDismissed(true)}>
           <div className="quick-modal__card" onClick={(e) => e.stopPropagation()}>
             <div className="quick-modal__header">
               <div className="quick-modal__title" id="profile-error-title">שגיאה ביצירת פרופיל הגובה</div>
               <button
                 type="button"
                 className="quick-modal__close"
-                onClick={clearProfileError}
+                onClick={() => setProfileErrorModalDismissed(true)}
                 aria-label="סגור"
               >
                 ×
@@ -1904,7 +1909,7 @@ function App() {
               <p className="quick-modal__error">לא ניתן ליצור את פרופיל הגובה. פרטים בהמשך.</p>
             </div>
             <div className="quick-modal__actions">
-              <button type="button" className="btn btn-primary" onClick={clearProfileError}>
+              <button type="button" className="btn btn-primary" onClick={() => setProfileErrorModalDismissed(true)}>
                 סגור
               </button>
             </div>

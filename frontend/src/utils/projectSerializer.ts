@@ -318,22 +318,30 @@ export function exportProject(params: {
     }
   }
   
-  // Serialize routes
-  const serializedRoutes = routes.map(route => ({
-    id: route.id,
-    name: route.name,
-    color: route.color || DEFAULT_ROUTE_COLOR,
-    lineWidth: Number.isFinite(route.lineWidth) ? route.lineWidth : DEFAULT_ROUTE_LINE_WIDTH,
-    visible: route.visible,
-    points: route.points.map(p => ({
-      lng: p.lng,
-      lat: p.lat,
-      ...(p.height !== undefined && { height: p.height }),
-      ...(p.id && { id: p.id })
-    })),
-    nominalFlightHeight: route.nominalFlightHeight,
-    ...(route.entranceHeightFromFile && { entranceHeightFromFile: true })
-  }));
+  // Default entrance height when not set (must match useFlightPath DEFAULT_NOMINAL_FLIGHT_HEIGHT)
+  const DEFAULT_NOMINAL_FLIGHT_HEIGHT = 250;
+
+  // Serialize routes (always save entrance height per route for nehorai file)
+  const serializedRoutes = routes.map(route => {
+    const entranceHeight = Number.isFinite(route.nominalFlightHeight)
+      ? route.nominalFlightHeight
+      : (Number.isFinite(general?.nominalFlightHeight) ? general.nominalFlightHeight : DEFAULT_NOMINAL_FLIGHT_HEIGHT);
+    return {
+      id: route.id,
+      name: route.name,
+      color: route.color || DEFAULT_ROUTE_COLOR,
+      lineWidth: Number.isFinite(route.lineWidth) ? route.lineWidth : DEFAULT_ROUTE_LINE_WIDTH,
+      visible: route.visible,
+      points: route.points.map(p => ({
+        lng: p.lng,
+        lat: p.lat,
+        ...(p.height !== undefined && { height: p.height }),
+        ...(p.id && { id: p.id })
+      })),
+      nominalFlightHeight: entranceHeight,
+      ...(route.entranceHeightFromFile && { entranceHeightFromFile: true })
+    };
+  });
   
   // Serialize climb requests
   const serializedClimbRequests: Record<string, Array<{
@@ -502,12 +510,19 @@ function migrateProject(data: any): any {
     migrated.kmlImports = [];
   }
 
-  // Ensure route style fields exist for older project files
+  // Ensure route style fields and per-route entrance height exist for older project files
+  const defaultEntranceHeight = 250;
+  const generalHeight = Number.isFinite(migrated.general?.nominalFlightHeight)
+    ? migrated.general.nominalFlightHeight
+    : defaultEntranceHeight;
   if (Array.isArray(migrated.routes)) {
     migrated.routes = migrated.routes.map((route: any) => ({
       ...route,
       color: typeof route?.color === 'string' && route.color.trim() ? route.color : '#ff4d4f',
-      lineWidth: Number.isFinite(route?.lineWidth) ? route.lineWidth : 3
+      lineWidth: Number.isFinite(route?.lineWidth) ? route.lineWidth : 3,
+      nominalFlightHeight: Number.isFinite(route?.nominalFlightHeight)
+        ? route.nominalFlightHeight
+        : generalHeight
     }));
   }
   

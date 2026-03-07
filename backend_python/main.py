@@ -944,8 +944,8 @@ async def viewshed_status(job_id: str):
         if job.get("status") == "done":
             if job.get("overlap_by_point") is not None:
                 payload["overlapByPoint"] = job["overlap_by_point"]
-            if job.get("point_distances_by_pair") is not None:
-                payload["pointDistancesByPair"] = job["point_distances_by_pair"]
+            if job.get("point_distances") is not None:
+                payload["pointDistances"] = job["point_distances"]
         return payload
 
 @app.post("/api/viewshed/cancel/{job_id}")

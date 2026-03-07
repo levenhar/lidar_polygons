@@ -1430,7 +1430,8 @@ export function useFlightPath(
               lineWidth: sanitizeRouteLineWidth(firstImported.lineWidth),
               visible: firstImported.visible !== undefined ? firstImported.visible : existingEmpty.visible,
               points: firstImported.points,
-              nominalFlightHeight: firstImported.nominalFlightHeight
+              nominalFlightHeight: firstImported.nominalFlightHeight,
+              entranceHeightFromFile: firstImported.entranceHeightFromFile ?? true
             };
             nextActiveRouteId = firstImported.id;
 

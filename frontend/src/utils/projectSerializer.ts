@@ -510,7 +510,8 @@ function migrateProject(data: any): any {
     migrated.kmlImports = [];
   }
 
-  // Ensure route style fields and per-route entrance height exist for older project files
+  // Ensure route style fields and per-route entrance height exist for older project files.
+  // When loading from project file, entrance height is always taken from the file (no recalculation).
   const defaultEntranceHeight = 250;
   const generalHeight = Number.isFinite(migrated.general?.nominalFlightHeight)
     ? migrated.general.nominalFlightHeight
@@ -522,7 +523,8 @@ function migrateProject(data: any): any {
       lineWidth: Number.isFinite(route?.lineWidth) ? route.lineWidth : 3,
       nominalFlightHeight: Number.isFinite(route?.nominalFlightHeight)
         ? route.nominalFlightHeight
-        : generalHeight
+        : generalHeight,
+      entranceHeightFromFile: true
     }));
   }
   

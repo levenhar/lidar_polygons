@@ -11,7 +11,7 @@ import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import CoordinateTooltip from './CoordinateTooltip';
 import SuccessNotification from './SuccessNotification';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, calculateAverageNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, generateUTurnPointsBetweenAhead, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, calculateAverageNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
 import { ClimbConfig } from '../utils/climb';
@@ -276,6 +276,7 @@ type IconName =
   | 'compass'
   | 'crosshair'
   | 'uturn'
+  | 'uturn-between'
   | 'undo'
   | 'redo'
   | 'fit'
@@ -389,6 +390,14 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
         <svg {...common}>
           <path {...stroke} d="M16 7V6a4 4 0 0 0-8 0v10" />
           <path {...stroke} d="M8 16l-3-3m3 3l3-3" />
+        </svg>
+      );
+    case 'uturn-between':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M6 4v4" />
+          <path {...stroke} d="M18 20v-4" />
+          <path {...stroke} d="M6 8c0 4 3 7 6 8 3-1 6-4 6-8" />
         </svg>
       );
     case 'undo':
@@ -1181,6 +1190,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
     segmentIdByIndex.forEach((id, idx) => m.set(id, idx));
     return m;
   }, [segmentIdByIndex]);
+
+  /** When exactly two consecutive points are selected, yields { startIndex }; otherwise null. */
+  const consecutiveUTurnSelection = useMemo(() => {
+    if (selectedPointIndices.size !== 2 || flightPath.length < 2) return null;
+    const [a, b] = Array.from(selectedPointIndices).sort((x, y) => x - y);
+    if (b - a !== 1) return null;
+    return { startIndex: a };
+  }, [selectedPointIndices, flightPath.length]);
 
   // Average spacing is calculated in the useEffect that renders suggestions
   // and stored in averageNextLineSpacingRef to use the same AGL calculations
@@ -3247,7 +3264,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           center: [31.50, 35.02], // israel defulat
           zoom: 7,
           crs: leafletCrs,
-          zoomControl: false // disable default zoom control
+          zoomControl: false, // disable default zoom control
+          dragging: true // allow panning by dragging with cursor
           // crs: L.CRS.EPSG4326
         });
         // Add zoom control at bottom-left (use 'bottomright' because RTL flips it)
@@ -6122,7 +6140,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     } else if (isRotateMode) {
       map.current.getContainer().style.cursor = 'grab';
     } else if (!isDrawing && currentEditingIndex === null) {
-      map.current.getContainer().style.cursor = '';
+      map.current.getContainer().style.cursor = 'grab'; // indicate map can be panned by dragging
     }
   }, [isParallelLineMode, isRotateMode, isDrawing, editingPointIndex, externalEditPointIndex]);
 
@@ -7378,17 +7396,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setDialogError(null);
   };
 
-  const handleAddUTurn = () => {
+  const U_TURN_REGULAR_MIN_RADIUS_M = 5;
+
+  const handleOpenUTurn = () => {
     if (!dtmLoaded) {
       alert('טען DTM תחילה.');
       return;
     }
-
     if (flightPath.length < 2) {
       alert('הוסף לפחות שתי נקודות תחילה.');
       return;
     }
-
     let defaultDistance = averageNextLineSpacingRef.current ?? 50;
     try {
       const lastSegmentIndex = flightPath.length - 2;
@@ -7398,15 +7416,21 @@ const MapPanel: React.FC<MapPanelProps> = ({
     } catch {
       // keep defaultDistance fallback
     }
-
+    const initialBetweenStart =
+      consecutiveUTurnSelection != null ? String(consecutiveUTurnSelection.startIndex) : '';
+    const initialBetweenEnd =
+      consecutiveUTurnSelection != null ? String(consecutiveUTurnSelection.startIndex + 1) : '';
     setDialog({
       type: 'uTurn',
-      title: 'הוסף פרסה'
+      title: 'הגדרות פרסה'
     });
     setDialogValues({
+      uTurnMode: 'regular',
       radius: '150',
       distance: String(defaultDistance),
-      uturnSide: 'right'
+      uturnSide: 'right',
+      startPointIndex: initialBetweenStart,
+      endPointIndex: initialBetweenEnd
     });
     setDialogError(null);
   };
@@ -7545,43 +7569,106 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
 
     if (dialog.type === 'uTurn') {
+      const mode = dialogValues.uTurnMode || 'regular';
       const radius = parseFloat(dialogValues.radius || '');
-      const distance = parseFloat(dialogValues.distance || '');
-      if (isNaN(radius) || radius <= 0) {
-        setDialogError('רדיוס חייב להיות > 0.');
+
+      if (mode === 'regular') {
+        const distance = parseFloat(dialogValues.distance || '');
+        if (isNaN(radius) || radius < U_TURN_REGULAR_MIN_RADIUS_M) {
+          setDialogError(`רדיוס מינימלי: ${U_TURN_REGULAR_MIN_RADIUS_M} מ'.`);
+          return;
+        }
+        if (isNaN(distance) || distance <= 0) {
+          setDialogError('מרחק חייב להיות > 0.');
+          return;
+        }
+        const side: UTurnSide = dialogValues.uturnSide === 'left' ? 'L' : 'R';
+        const radiusMeters = radius;
+        const prev = flightPath[flightPath.length - 2];
+        const start = flightPath[flightPath.length - 1];
+        const numUTurnPoints = 10;
+        const maxStartEndDistance = radiusMeters * 2;
+        const clampedDistance = Math.min(distance, maxStartEndDistance);
+        if (distance > maxStartEndDistance) {
+          setDialogError(`מרחק מוגבל ל-${maxStartEndDistance}מ'.`);
+          return;
+        }
+        const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
+        if (pts.length !== numUTurnPoints) {
+          setDialogError('לא ניתן לבנות פרסה.');
+          return;
+        }
+        const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
+        if (outOfBounds) {
+          setDialogError('פרסה מחוץ ל-DTM.');
+          return;
+        }
+        const startHeight = start.height;
+        const uTurnPoints: Coordinate[] =
+          startHeight !== undefined
+            ? pts.map(p => ({ ...p, height: startHeight }))
+            : pts;
+        onAddPoints(uTurnPoints);
+        resetDialog();
         return;
       }
-      if (isNaN(distance) || distance <= 0) {
-        setDialogError('מרחק חייב להיות > 0.');
-        return;
+
+      if (mode === 'between') {
+        const startPointIndex = parseInt(dialogValues.startPointIndex ?? '-1', 10);
+        const endPointIndex = parseInt(dialogValues.endPointIndex ?? '-1', 10);
+        if (startPointIndex < 0 || endPointIndex < 0) {
+          setDialogError('בחר נקודת התחלה ונקודת סיום.');
+          return;
+        }
+        if (startPointIndex === endPointIndex) {
+          setDialogError('נקודת ההתחלה ונקודת הסיום חייבות להיות שונות.');
+          return;
+        }
+        if (endPointIndex !== startPointIndex + 1) {
+          setDialogError('הנקודות חייבות להיות רצופות (למשל נקודה 5 ונקודה 6).');
+          return;
+        }
+        if (isNaN(radius) || radius <= 0) {
+          setDialogError('רדיוס חייב להיות > 0.');
+          return;
+        }
+        const startPoint = flightPath[startPointIndex];
+        const endPoint = flightPath[endPointIndex];
+        if (!startPoint || !endPoint) {
+          setDialogError('נקודות לא נמצאו.');
+          return;
+        }
+        const chordLength = calculateDistance(startPoint, endPoint);
+        const minRadius = chordLength / 2;
+        if (radius < minRadius) {
+          setDialogError(`רדיוס מינימלי: חצי המרחק בין הנקודות (${Math.round(minRadius)} מ').`);
+          return;
+        }
+        if (chordLength > radius * 2) {
+          setDialogError(`מרחק בין הנקודות (${Math.round(chordLength)} מ') גדול מכפול רדיוס.`);
+          return;
+        }
+        const numUTurnPoints = 10;
+        const prev = startPointIndex > 0 ? flightPath[startPointIndex - 1] : null;
+        const pts = generateUTurnPointsBetweenAhead(startPoint, endPoint, radius, numUTurnPoints, prev);
+        if (pts.length === 0) {
+          setDialogError('לא ניתן לבנות פרסה (רדיוס קטן מדי ביחס למרחק).');
+          return;
+        }
+        const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
+        if (outOfBounds) {
+          setDialogError('פרסה מחוץ ל-DTM.');
+          return;
+        }
+        const startHeight = startPoint.height;
+        const uTurnPoints: Coordinate[] =
+          startHeight !== undefined
+            ? pts.map(p => ({ ...p, height: startHeight }))
+            : pts;
+        onInsertPoints(startPointIndex + 1, uTurnPoints);
+        setSelectedPointIndices(new Set());
+        resetDialog();
       }
-      const side: UTurnSide = dialogValues.uturnSide === 'left' ? 'L' : 'R';
-      const radiusMeters = radius;
-      const prev = flightPath[flightPath.length - 2];
-      const start = flightPath[flightPath.length - 1];
-      const numUTurnPoints = 10;
-      const maxStartEndDistance = radiusMeters * 2;
-      const clampedDistance = Math.min(distance, maxStartEndDistance);
-      if (distance > maxStartEndDistance) {
-        setDialogError(`מרחק מוגבל ל-${maxStartEndDistance}מ'.`);
-      }
-      const pts = generateUTurnPoints(prev, start, radiusMeters, clampedDistance, numUTurnPoints, side);
-      if (pts.length !== numUTurnPoints) {
-        setDialogError('לא ניתן לבנות פרסה.');
-        return;
-      }
-      const outOfBounds = pts.find(p => !isPointWithinBounds(p.lng, p.lat));
-      if (outOfBounds) {
-        setDialogError('פרסה מחוץ ל-DTM.');
-        return;
-      }
-      const startHeight = start.height;
-      const uTurnPoints: Coordinate[] =
-        startHeight !== undefined
-          ? pts.map(p => ({ ...p, height: startHeight }))
-          : pts;
-      onAddPoints(uTurnPoints);
-      resetDialog();
     }
   };
 
@@ -7846,67 +7933,211 @@ const MapPanel: React.FC<MapPanelProps> = ({
       );
     }
     if (dialog.type === 'uTurn') {
+      const uTurnMode = dialogValues.uTurnMode || 'regular';
+      const startPointIndex = parseInt(dialogValues.startPointIndex ?? '-1', 10);
+      const endPointIndex = parseInt(dialogValues.endPointIndex ?? '-1', 10);
+      const betweenValid =
+        startPointIndex >= 0 &&
+        endPointIndex === startPointIndex + 1 &&
+        startPointIndex + 1 < flightPath.length;
+      const chordLength =
+        betweenValid && flightPath[startPointIndex] && flightPath[endPointIndex]
+          ? calculateDistance(flightPath[startPointIndex], flightPath[endPointIndex])
+          : 0;
+      const betweenMinRadius = chordLength / 2;
+      const betweenDirectionDeg =
+        betweenValid && flightPath[startPointIndex] && flightPath[endPointIndex]
+          ? Math.round(
+              (calculateBearing(flightPath[startPointIndex], flightPath[endPointIndex]) * 180) / Math.PI
+            )
+          : null;
+
       return (
         <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <label className="quick-modal__label" style={{ margin: 0, minWidth: '120px' }}>כיוון</label>
-            <div className="quick-modal__segmented">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+            <label className="quick-modal__label" style={{ margin: 0, minWidth: '90px' }}>
+              מצב פרסה
+            </label>
+            <div className="quick-modal__segmented" style={{ flex: 1 }}>
               <button
                 type="button"
-                className={`quick-modal__pill ${(dialogValues.uturnSide ?? 'right') === 'right' ? 'active' : ''}`}
-                onClick={() => setDialogValues((prev) => ({ ...prev, uturnSide: 'right' }))}
+                className={`quick-modal__pill ${uTurnMode === 'regular' ? 'active' : ''}`}
+                onClick={() =>
+                  setDialogValues((prev) => ({
+                    ...prev,
+                    uTurnMode: 'regular',
+                    radius: prev.radius || '150'
+                  }))
+                }
               >
-                ימין
+                פרסה רגילה
               </button>
               <button
                 type="button"
-                className={`quick-modal__pill ${dialogValues.uturnSide === 'left' ? 'active' : ''}`}
-                onClick={() => setDialogValues((prev) => ({ ...prev, uturnSide: 'left' }))}
+                className={`quick-modal__pill ${uTurnMode === 'between' ? 'active' : ''}`}
+                onClick={() =>
+                  setDialogValues((prev) => ({
+                    ...prev,
+                    uTurnMode: 'between',
+                    radius: prev.radius || '150'
+                  }))
+                }
               >
-                שמאל
+                בין נקודות
               </button>
             </div>
           </div>
-          <label className="quick-modal__label" htmlFor="radius-input">רדיוס (מ')</label>
-          <input
-            id="radius-input"
-            type="number"
-            min="0.1"
-            max="10000"
-            step="0.1"
-            required
-            inputMode="decimal"
-            aria-required="true"
-            value={dialogValues.radius ?? ''}
-            onChange={(e) => {
-              const val = e.target.value;
-              if (val === '' || parseFloat(val) >= 0) {
-                setDialogValues((prev) => ({ ...prev, radius: val }));
-                validateDialogInput('radius', val);
-              }
-            }}
-            className={`quick-modal__input ${dialogError ? 'error' : ''}`}
-          />
-          <label className="quick-modal__label" htmlFor="distance-ut-input">מרחק ללג הבא (מ')</label>
-          <input
-            id="distance-ut-input"
-            type="number"
-            min="0.1"
-            max="10000"
-            step="0.1"
-            required
-            inputMode="decimal"
-            aria-required="true"
-            value={dialogValues.distance ?? ''}
-            onChange={(e) => {
-              const val = e.target.value;
-              if (val === '' || parseFloat(val) >= 0) {
-                setDialogValues((prev) => ({ ...prev, distance: val }));
-                validateDialogInput('distance-ut', val);
-              }
-            }}
-            className={`quick-modal__input ${dialogError ? 'error' : ''}`}
-          />
+
+          {uTurnMode === 'regular' && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <label className="quick-modal__label" style={{ margin: 0, minWidth: '120px' }}>
+                  כיוון
+                </label>
+                <div className="quick-modal__segmented">
+                  <button
+                    type="button"
+                    className={`quick-modal__pill ${(dialogValues.uturnSide ?? 'right') === 'right' ? 'active' : ''}`}
+                    onClick={() => setDialogValues((prev) => ({ ...prev, uturnSide: 'right' }))}
+                  >
+                    ימין
+                  </button>
+                  <button
+                    type="button"
+                    className={`quick-modal__pill ${dialogValues.uturnSide === 'left' ? 'active' : ''}`}
+                    onClick={() => setDialogValues((prev) => ({ ...prev, uturnSide: 'left' }))}
+                  >
+                    שמאל
+                  </button>
+                </div>
+              </div>
+              <label className="quick-modal__label" htmlFor="distance-ut-input">
+                מרחק ללג הבא (מ')
+              </label>
+              <input
+                id="distance-ut-input"
+                type="number"
+                min="0.1"
+                max="10000"
+                step="0.1"
+                required
+                inputMode="decimal"
+                aria-required="true"
+                value={dialogValues.distance ?? ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '' || parseFloat(val) >= 0) {
+                    setDialogValues((prev) => ({ ...prev, distance: val }));
+                    validateDialogInput('distance-ut', val);
+                  }
+                }}
+                className={`quick-modal__input ${dialogError ? 'error' : ''}`}
+              />
+              <label className="quick-modal__label" htmlFor="radius-input">
+                רדיוס (מ') — מינימום {U_TURN_REGULAR_MIN_RADIUS_M}
+              </label>
+              <input
+                id="radius-input"
+                type="number"
+                min={U_TURN_REGULAR_MIN_RADIUS_M}
+                max="10000"
+                step="0.1"
+                required
+                inputMode="decimal"
+                aria-required="true"
+                value={dialogValues.radius ?? ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '' || parseFloat(val) >= 0) {
+                    setDialogValues((prev) => ({ ...prev, radius: val }));
+                    validateDialogInput('radius', val);
+                  }
+                }}
+                className={`quick-modal__input ${dialogError ? 'error' : ''}`}
+              />
+            </>
+          )}
+
+          {uTurnMode === 'between' && (
+            <>
+              <label className="quick-modal__label" htmlFor="uturn-start-point">
+                נקודת התחלה
+              </label>
+              <select
+                id="uturn-start-point"
+                value={dialogValues.startPointIndex ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const nextEnd = v === '' ? '' : String(parseInt(v, 10) + 1);
+                  setDialogValues((prev) => ({
+                    ...prev,
+                    startPointIndex: v,
+                    endPointIndex: nextEnd
+                  }));
+                }}
+                className={`quick-modal__input ${dialogError ? 'error' : ''}`}
+              >
+                <option value="">— בחר —</option>
+                {flightPath.slice(0, Math.max(0, flightPath.length - 1)).map((_, i) => (
+                  <option key={i} value={i}>
+                    נקודה {i + 1}
+                  </option>
+                ))}
+              </select>
+              <label className="quick-modal__label" htmlFor="uturn-end-point">
+                נקודת סיום
+              </label>
+              <select
+                id="uturn-end-point"
+                value={dialogValues.endPointIndex ?? ''}
+                onChange={(e) =>
+                  setDialogValues((prev) => ({ ...prev, endPointIndex: e.target.value }))
+                }
+                className={`quick-modal__input ${dialogError ? 'error' : ''}`}
+              >
+                <option value="">— בחר קודם נקודת התחלה —</option>
+                {startPointIndex >= 0 && startPointIndex + 1 < flightPath.length && (
+                  <option value={startPointIndex + 1}>נקודה {startPointIndex + 2}</option>
+                )}
+              </select>
+              {betweenValid && (
+                <>
+                  <div className="quick-modal__readonly-row">
+                    <span className="quick-modal__label">כיוון (מחושב)</span>
+                    <span className="quick-modal__value" aria-readonly>
+                      {betweenDirectionDeg != null ? `${betweenDirectionDeg}°` : '—'}
+                    </span>
+                  </div>
+                  <div className="quick-modal__readonly-row">
+                    <span className="quick-modal__label">מרחק (מ') (מחושב)</span>
+                    <span className="quick-modal__value" aria-readonly>
+                      {Math.round(chordLength)}
+                    </span>
+                  </div>
+                </>
+              )}
+              <label className="quick-modal__label" htmlFor="radius-between-input">
+                רדיוס (מ') — מינימום {betweenValid ? Math.round(betweenMinRadius) : '…'} (לפי הנקודות)
+              </label>
+              <input
+                id="radius-between-input"
+                type="number"
+                min={betweenValid ? betweenMinRadius : 0.1}
+                step="0.1"
+                required
+                inputMode="decimal"
+                aria-required="true"
+                value={dialogValues.radius ?? ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '' || parseFloat(val) >= 0) {
+                    setDialogValues((prev) => ({ ...prev, radius: val }));
+                  }
+                }}
+                className={`quick-modal__input ${dialogError ? 'error' : ''}`}
+              />
+            </>
+          )}
         </>
       );
     }
@@ -8495,12 +8726,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">נקודה לפי קואורדינטות</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip="הוסף פרסה עם רדיוס ומרחק">
+              <Tooltip tooltip="פרסה: בסוף המסלול או בין שתי נקודות רצופות">
                 <button
-                  onClick={handleAddUTurn}
+                  onClick={handleOpenUTurn}
                   className="btn btn-secondary btn-icon"
                   disabled={!dtmLoaded || flightPath.length < 2}
-                  aria-label="הוסף פרסה"
+                  aria-label="פרסה"
                   type="button"
                 >
                   <Icon name="uturn" />

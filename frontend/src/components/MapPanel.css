@@ -70,6 +70,19 @@
   font-weight: 600;
 }
 
+.quick-modal__readonly-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.quick-modal__readonly-row .quick-modal__value {
+  font-weight: 500;
+  color: #0f172a;
+}
+
 .quick-modal__input {
   width: 100%;
   padding: 10px 12px;

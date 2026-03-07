@@ -9467,7 +9467,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           }}
         >
           <div className="tooltip-section">
-            <span className="tooltip-label">גובה קרקע:</span> {cursorElevation.elevation !== null ? `${cursorElevation.elevation.toFixed(1)} מ'` : '—'}
+            <span className="tooltip-label">גובה מפני הים:</span> {cursorElevation.elevation !== null ? `${cursorElevation.elevation.toFixed(1)} מ'` : '—'}
           </div>
         </div>
       )}

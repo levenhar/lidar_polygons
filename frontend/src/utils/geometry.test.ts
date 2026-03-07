@@ -1,4 +1,4 @@
-import { calculateDistance, calculateBearing, calculateDestination, generateUTurnPoints } from './geometry';
+import { calculateDistance, calculateBearing, calculateDestination, generateUTurnPoints, generateUTurnPointsBetween } from './geometry';
 import { Coordinate } from '../App';
 
 describe('geometry', () => {
@@ -190,6 +190,35 @@ describe('geometry', () => {
           ],
         ]
       `);
+    });
+  });
+
+  describe('generateUTurnPointsBetween', () => {
+    const start: Coordinate = { lng: 0, lat: 0 };
+    const end: Coordinate = { lng: 0.0001, lat: 0 };
+
+    it('returns empty array for numPoints <= 0', () => {
+      expect(generateUTurnPointsBetween(start, end, 50, 0)).toEqual([]);
+    });
+    it('returns empty array for invalid radius', () => {
+      expect(generateUTurnPointsBetween(start, end, 0, 10)).toEqual([]);
+    });
+    it('returns empty array when chord > 2*radius', () => {
+      const farEnd: Coordinate = { lng: 0.001, lat: 0 };
+      expect(generateUTurnPointsBetween(start, farEnd, 10, 10)).toEqual([]);
+    });
+    it('returns empty array for same start and end', () => {
+      expect(generateUTurnPointsBetween(start, start, 50, 10)).toEqual([]);
+    });
+    it('returns numPoints interior points for valid inputs', () => {
+      const points = generateUTurnPointsBetween(start, end, 50, 10, 'R');
+      expect(points.length).toBe(10);
+      expect(points.every(p => typeof p.lng === 'number' && typeof p.lat === 'number')).toBe(true);
+    });
+    it('is deterministic: same inputs produce same output', () => {
+      const a = generateUTurnPointsBetween(start, end, 50, 10, 'R');
+      const b = generateUTurnPointsBetween(start, end, 50, 10, 'R');
+      expect(a).toEqual(b);
     });
   });
 });

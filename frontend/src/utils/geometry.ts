@@ -147,6 +147,96 @@ export function generateUTurnPoints(
 }
 
 /**
+ * Generate U-turn arc points between two consecutive points (start and end).
+ * The arc has the given radius and goes from start to end along the long arc of the circle.
+ * Returns only the interior points (excluding start and end) for insertion between the two.
+ * - start: first point of the segment
+ * - end: second point of the segment
+ * - radiusMeters: turn radius (must be at least half the chord length)
+ * - numPoints: number of interior points to generate (default 10)
+ * - side: which side of the segment the arc bulges ('R' = right of direction start→end, 'L' = left)
+ * @returns Interior points along the arc, or empty if chord > 2*radius or invalid inputs
+ */
+export function generateUTurnPointsBetween(
+  start: Coordinate,
+  end: Coordinate,
+  radiusMeters: number,
+  numPoints: number = 10,
+  side: UTurnSide = 'R'
+): Coordinate[] {
+  if (numPoints <= 0) return [];
+  if (!(radiusMeters > 0)) return [];
+
+  const chordLength = calculateDistance(start, end);
+  if (chordLength <= 0) return [];
+  if (chordLength > radiusMeters * 2) return []; // No circle through both points with this radius
+
+  const halfChord = chordLength / 2;
+  const height = Math.sqrt(Math.max(0, radiusMeters * radiusMeters - halfChord * halfChord));
+
+  const bearingAB = calculateBearing(start, end);
+  const midPoint = calculateDestination(start, bearingAB, halfChord);
+
+  const rightPerpBearing = bearingAB + Math.PI / 2;
+  const leftPerpBearing = bearingAB - Math.PI / 2;
+  const center = side === 'R'
+    ? calculateDestination(midPoint, rightPerpBearing, height)
+    : calculateDestination(midPoint, leftPerpBearing, height);
+
+  const startAngle = calculateBearing(center, start);
+  const endAngle = calculateBearing(center, end);
+
+  let delta = normalizeAngle(endAngle - startAngle);
+  if (Math.abs(delta) <= Math.PI) {
+    delta = delta > 0 ? delta - Math.PI * 2 : delta + Math.PI * 2;
+  }
+
+  const pts: Coordinate[] = [];
+  for (let i = 1; i <= numPoints; i++) {
+    const t = i / (numPoints + 1);
+    const angle = startAngle + delta * t;
+    pts.push(calculateDestination(center, angle, radiusMeters));
+  }
+  return pts;
+}
+
+/**
+ * Generate U-turn points between start and end that "continue ahead" from the route:
+ * picks the arc side (L or R) so the exit direction from the arc is closest to the
+ * inbound direction. If prev is provided, inbound = bearing(prev, start); otherwise
+ * inbound = bearing(start, end).
+ */
+export function generateUTurnPointsBetweenAhead(
+  start: Coordinate,
+  end: Coordinate,
+  radiusMeters: number,
+  numPoints: number = 10,
+  prev?: Coordinate | null
+): Coordinate[] {
+  const inboundBearing =
+    prev != null ? calculateBearing(prev, start) : calculateBearing(start, end);
+  const ptsL = generateUTurnPointsBetween(start, end, radiusMeters, numPoints, 'L');
+  const ptsR = generateUTurnPointsBetween(start, end, radiusMeters, numPoints, 'R');
+  if (ptsL.length === 0 && ptsR.length === 0) return [];
+  if (ptsL.length === 0) return ptsR;
+  if (ptsR.length === 0) return ptsL;
+  const lastL = ptsL[ptsL.length - 1];
+  const lastR = ptsR[ptsR.length - 1];
+  const bearingOutL = calculateBearing(lastL, end);
+  const bearingOutR = calculateBearing(lastR, end);
+  function norm(a: number): number {
+    let x = a % (2 * Math.PI);
+    if (x <= -Math.PI) x += 2 * Math.PI;
+    if (x > Math.PI) x -= 2 * Math.PI;
+    return x;
+  }
+  const diffL = Math.abs(norm(bearingOutL - inboundBearing));
+  const diffR = Math.abs(norm(bearingOutR - inboundBearing));
+  // Pick the arc in the "other" direction (opposite side from "continue ahead")
+  return diffL <= diffR ? ptsR : ptsL;
+}
+
+/**
  * Calculate parallel line to a given line segment
  * @param start Starting point of the line segment
  * @param end Ending point of the line segment

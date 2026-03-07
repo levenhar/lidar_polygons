@@ -1552,34 +1552,54 @@
   background: linear-gradient(135deg, transparent 50%, #94a3b8 50%, #94a3b8 55%, transparent 55%);
 }
 
-/* Legend overlay for height limitation PNG export */
+/* Title overlay for height limitation PNG export - top center, separate from legend */
+.height-limitation-export-title {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #0f172a;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* Legend overlay for height limitation PNG export - top-left so it doesn't cover path/points */
 .height-limitation-export-legend {
   position: absolute;
-  bottom: 12px;
-  right: 12px;
+  top: 12px;
+  left: 12px;
   z-index: 1000;
   background: rgba(255, 255, 255, 0.95);
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 10px 14px;
-  font-size: 0.85rem;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 0.72rem;
   color: #0f172a;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
   pointer-events: none;
 }
 
 .height-limitation-export-legend__title {
-  font-weight: 700;
-  margin-bottom: 6px;
-  padding-bottom: 4px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  padding-bottom: 2px;
   border-bottom: 1px solid #e5e7eb;
+  font-size: 0.75rem;
 }
 
 .height-limitation-export-legend__row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 4px;
+  gap: 5px;
+  margin-bottom: 2px;
 }
 
 .height-limitation-export-legend__row:last-child {
@@ -1588,8 +1608,8 @@
 
 .height-limitation-export-legend__dot {
   display: inline-block;
-  width: 12px;
-  height: 12px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
 }

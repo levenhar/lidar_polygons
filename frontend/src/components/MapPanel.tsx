@@ -2208,27 +2208,49 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const handleHeightLimitationExport = useCallback(async () => {
     const { points, outputLegend, safetyLegend } = heightLimitationData;
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/9b85fa3a-0326-44ec-9988-4f66144050f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2992b'},body:JSON.stringify({sessionId:'e2992b',location:'MapPanel.tsx:exportEntry',message:'export started',data:{pointsLength:points.length,flightPathLength:flightPath.length,hasContainer:!!mapContainer.current,hasMap:!!map.current},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
     if (points.length === 0 || !mapContainer.current || !map.current) {
       alert('אין נתוני גובה לייצוא. טען מסלול ופרופיל גובה.');
       return;
     }
+    const activeRoute = routes.find((r) => r.id === activeRouteId) || routes[0];
+    const routeName = activeRoute?.name ?? '';
+    const escapedRouteName = routeName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const mainTitle = routeName ? ` חריגות גבהים - ${escapedRouteName}` : 'תצוגת חריגות גבהים';
     const legend = heightLimitationMode === 'output' ? outputLegend : safetyLegend;
-    const title = heightLimitationMode === 'output' ? 'גובה תוצר' : 'גובה בטיחות';
+    const subtitle = heightLimitationMode === 'output' ? 'גובה תוצר' : 'גובה בטיחות';
 
+    const titleEl = document.createElement('div');
+    titleEl.className = 'height-limitation-export-title';
+    titleEl.setAttribute('data-export-legend', 'true');
+    titleEl.textContent = mainTitle;
     const legendEl = document.createElement('div');
     legendEl.className = 'height-limitation-export-legend';
     legendEl.setAttribute('data-export-legend', 'true');
     legendEl.innerHTML = `
-      <div class="height-limitation-export-legend__title">${title}</div>
+      <div class="height-limitation-export-legend__title">${subtitle}</div>
       ${legend ? `
         <div class="height-limitation-export-legend__row"><span class="height-limitation-export-legend__dot" style="background:${HEIGHT_LIMITATION_COLORS.green}"></span>${legend.green}</div>
         <div class="height-limitation-export-legend__row"><span class="height-limitation-export-legend__dot" style="background:${HEIGHT_LIMITATION_COLORS.yellow}"></span>${legend.yellow}</div>
         <div class="height-limitation-export-legend__row"><span class="height-limitation-export-legend__dot" style="background:${HEIGHT_LIMITATION_COLORS.red}"></span>${legend.red}</div>
       ` : ''}
     `;
+
+    const prevCenter = map.current.getCenter();
+    const prevZoom = map.current.getZoom();
+    const routeBounds =
+      flightPath.length > 1
+        ? L.latLngBounds(flightPath.map((p) => [p.lat, p.lng] as L.LatLngExpression))
+        : flightPath.length === 1
+          ? L.latLngBounds(
+              [flightPath[0].lat - 0.002, flightPath[0].lng - 0.002],
+              [flightPath[0].lat + 0.002, flightPath[0].lng + 0.002]
+            )
+          : null;
+    if (routeBounds) {
+      map.current.fitBounds(routeBounds, { padding: [40, 40], animate: false });
+      await new Promise((r) => setTimeout(r, 450));
+    }
+    mapContainer.current.appendChild(titleEl);
     mapContainer.current.appendChild(legendEl);
 
     try {
@@ -2241,6 +2263,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
         ignoreElements: (el: Element) => {
           if (el.classList?.contains('map-instruction-banner') || el.classList?.contains('routes-panel')) return true;
           if (el.closest?.('.map-instruction-banner') || el.closest?.('.routes-panel')) return true;
+          if (el.classList?.contains('basemap-toggle') || el.classList?.contains('display-settings-container')) return true;
+          if (el.closest?.('.basemap-toggle') || el.closest?.('.display-settings-container')) return true;
           if (el.classList?.contains('leaflet-control-zoom') || el.classList?.contains('leaflet-control-attribution') || el.classList?.contains('leaflet-control-scale')) return true;
           if (el.closest?.('.leaflet-control-zoom') || el.closest?.('.leaflet-control-attribution') || el.closest?.('.leaflet-control-scale')) return true;
           if (/\bleaflet-control\b/.test(el.className?.toString() || '')) return true;
@@ -2248,31 +2272,37 @@ const MapPanel: React.FC<MapPanelProps> = ({
           return false;
         }
       });
-      legendEl.remove();
 
-      const ctx = canvas.getContext('2d');
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/9b85fa3a-0326-44ec-9988-4f66144050f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2992b'},body:JSON.stringify({sessionId:'e2992b',location:'MapPanel.tsx:exportPNG',message:'post-html2canvas',data:{pointsLength:points.length,flightPathLength:flightPath.length,hasCtx:!!ctx,hasMap:!!map.current,canvasW:canvas.width,canvasH:canvas.height,scale},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-      // #endregion
+      // Use the map container's size so latLngToContainerPoint coordinates match the canvas exactly
+      const container = map.current?.getContainer?.() ?? mapContainer.current;
+      const cw = container ? Math.round(container.offsetWidth * scale) : canvas.width;
+      const ch = container ? Math.round(container.offsetHeight * scale) : canvas.height;
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = cw;
+      outCanvas.height = ch;
+      const outCtx = outCanvas.getContext('2d');
+      if (!outCtx) {
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), 'image/png', 1));
+        if (blob) {
+          const defaultFilename = `height_limitation_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`;
+          await saveFileWithLocation(blob, defaultFilename, 'image/png');
+        }
+        return;
+      }
+      outCtx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, cw, ch);
+
+      const ctx = outCtx;
       if (ctx && map.current) {
         const toCanvas = (lat: number, lng: number) => {
           const p = map.current!.latLngToContainerPoint(L.latLng(lat, lng));
           return { x: p.x * scale, y: p.y * scale };
         };
-        // #region agent log
-        if (points.length > 0) {
-          const first = points[0];
-          const c0 = toCanvas(first.lat, first.lng);
-          fetch('http://127.0.0.1:7242/ingest/9b85fa3a-0326-44ec-9988-4f66144050f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2992b'},body:JSON.stringify({sessionId:'e2992b',location:'MapPanel.tsx:toCanvas',message:'first point canvas coords',data:{lat:first.lat,lng:first.lng,canvasX:c0.x,canvasY:c0.y,outputColor:first.outputColor,safetyColor:first.safetyColor,mode:heightLimitationMode},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-        }
-        // #endregion
 
         // 1. Thick colored path (green / yellow / red segments) along profile points
         const lineWidth = 14 * scale;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.lineWidth = lineWidth;
-        let segmentsDrawn = 0;
         for (let i = 0; i < points.length - 1; i++) {
           const pt = points[i];
           const next = points[i + 1];
@@ -2284,13 +2314,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           ctx.lineTo(b.x, b.y);
           ctx.strokeStyle = color;
           ctx.stroke();
-          segmentsDrawn++;
         }
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/9b85fa3a-0326-44ec-9988-4f66144050f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2992b'},body:JSON.stringify({sessionId:'e2992b',location:'MapPanel.tsx:pathDrawn',message:'segments drawn',data:{segmentsDrawn,canvasW:canvas.width,canvasH:canvas.height},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-        // #endregion
 
-        // 2. Small colored dots on each profile point (on top of the path)
+        // 2. Small colored dots on each profile point (on top of the path) — fill only, no outline
         const dotRadius = 5 * scale;
         points.forEach((pt) => {
           const color = heightLimitationMode === 'output' ? (pt.outputColor ?? '#94a3b8') : (pt.safetyColor ?? '#94a3b8');
@@ -2299,9 +2325,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
           ctx.arc(x, y, dotRadius, 0, Math.PI * 2);
           ctx.fillStyle = color;
           ctx.fill();
-          ctx.strokeStyle = '#1e293b';
-          ctx.lineWidth = Math.max(1, Math.round(scale));
-          ctx.stroke();
         });
 
         // 3. Numbered waypoint markers (white fill, red outline) at flight path points
@@ -2324,7 +2347,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
 
       const blob = await new Promise<Blob | null>((resolve) => {
-        canvas.toBlob((b) => resolve(b), 'image/png', 1);
+        outCanvas.toBlob((b) => resolve(b), 'image/png', 1);
       });
       if (!blob) {
         alert('שגיאה ביצירת התמונה');
@@ -2333,13 +2356,16 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const defaultFilename = `height_limitation_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`;
       await saveFileWithLocation(blob, defaultFilename, 'image/png');
     } catch (e) {
-      legendEl.remove();
       if ((e as Error)?.message !== 'User cancelled file save') {
         console.error('Height limitation export failed:', e);
         alert('שגיאה בייצוא התמונה');
       }
+    } finally {
+      titleEl.remove();
+      legendEl.remove();
+      map.current?.setView(prevCenter, prevZoom, { animate: false });
     }
-  }, [heightLimitationData, heightLimitationMode, flightPath]);
+  }, [heightLimitationData, heightLimitationMode, flightPath, routes, activeRouteId]);
 
   const createParallelLinesBatch = useCallback(
     (lineIds: string[], distanceOverride?: number) => {

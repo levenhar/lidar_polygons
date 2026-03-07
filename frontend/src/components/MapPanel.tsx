@@ -16,6 +16,7 @@ import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
 import { ClimbConfig } from '../utils/climb';
 import { saveFileWithLocation } from '../utils/fileSave';
+import html2canvas from 'html2canvas';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 import { aoiContains, AOIGeometry } from '../utils/aoiContainment';
@@ -303,7 +304,8 @@ type IconName =
   | 'circle'
   | 'rotate'
   | 'chart'
-  | 'refresh';
+  | 'refresh'
+  | 'altitude';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
 
@@ -610,6 +612,14 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M21 21v-5h-5" />
         </svg>
       );
+    case 'altitude':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M12 3v18" />
+          <path {...stroke} d="M6 9l6-6 6 6" />
+          <path {...stroke} d="M6 15l6 6 6-6" />
+        </svg>
+      );
     default:
       return (
         <svg {...common}>
@@ -701,6 +711,7 @@ interface MapPanelProps {
   initialDisplaySettings?: { palette: 'gray' | 'jet'; inverted: boolean; opacity: number };
   nominalFlightHeight: number;
   safetyRadius: number;
+  safetyHeight: number;
   overlapPercentage: number;
   fovDegrees: number;
   resolutionHeight: number;
@@ -757,6 +768,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   initialDisplaySettings,
   nominalFlightHeight,
   safetyRadius,
+  safetyHeight,
   overlapPercentage,
   fovDegrees,
   resolutionHeight,
@@ -1123,6 +1135,24 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const OVERLAP_GRAPH_DEFAULT_WIDTH = 340;
   const OVERLAP_GRAPH_DEFAULT_HEIGHT = 320;
 
+  // Height limitation visualization (output/safety altitude compliance)
+  const HEIGHT_LIMITATION_COLORS = { green: '#2ecc71', yellow: '#f39c12', red: '#e74c3c' } as const;
+  const HEIGHT_LIMITATION_THRESHOLD_M = 10;
+  const [heightLimitationWindowOpen, setHeightLimitationWindowOpen] = useState(false);
+  const [heightLimitationMode, setHeightLimitationMode] = useState<'output' | 'safety'>('output');
+  const [heightLimitationWindowPosition, setHeightLimitationWindowPosition] = useState<{ x: number; y: number } | null>(null);
+  const [heightLimitationWindowSize, setHeightLimitationWindowSize] = useState<{ width: number; height: number } | null>(null);
+  const [isDraggingHeightLimitationWindow, setIsDraggingHeightLimitationWindow] = useState(false);
+  const [isResizingHeightLimitationWindow, setIsResizingHeightLimitationWindow] = useState(false);
+  const heightLimitationDragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+  const heightLimitationResizeStartRef = useRef<{ x: number; y: number; startWidth: number; startHeight: number } | null>(null);
+  const heightLimitationWindowRef = useRef<HTMLDivElement | null>(null);
+  const heightLimitationMarkersRef = useRef<L.CircleMarker[]>([]);
+  const HEIGHT_LIMITATION_DEFAULT_WIDTH = 300;
+  const HEIGHT_LIMITATION_DEFAULT_HEIGHT = 360;
+  const HEIGHT_LIMITATION_MIN_WIDTH = 260;
+  const HEIGHT_LIMITATION_MIN_HEIGHT = 300;
+
   // ============================================================================
   // UNIFIED DTM LOADER STATE
   // ============================================================================
@@ -1408,6 +1438,157 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
     return profile[0] ?? null;
   }, [pointIndexToDistanceMap, elevationProfile]);
+
+  // Height limitation: per-point status and colors (output = max allowed, safety = min required)
+  type HeightLimitStatus = 'green' | 'yellow' | 'red';
+  const heightLimitationData = useMemo(() => {
+    const profile = elevationProfile;
+    const outMode = heightLimitationMode === 'output';
+    const safeMode = heightLimitationMode === 'safety';
+    if (!profile.length) {
+      return {
+        points: [] as Array<{
+          index: number;
+          lat: number;
+          lng: number;
+          flightAltitude: number;
+          outputAltitude: number;
+          safetyAltitude: number;
+          outputStatus?: HeightLimitStatus;
+          safetyStatus?: HeightLimitStatus;
+          outputColor?: string;
+          safetyColor?: string;
+        }>,
+        stats: { total: 0, green: 0, yellow: 0, red: 0 },
+        outputLegend: null as { green: string; yellow: string; red: string } | null,
+        safetyLegend: null as { green: string; yellow: string; red: string } | null
+      };
+    }
+    const points: Array<{
+      index: number;
+      lat: number;
+      lng: number;
+      flightAltitude: number;
+      outputAltitude: number;
+      safetyAltitude: number;
+      outputStatus?: HeightLimitStatus;
+      safetyStatus?: HeightLimitStatus;
+      outputColor?: string;
+      safetyColor?: string;
+    }> = [];
+    let green = 0, yellow = 0, red = 0;
+    for (let i = 0; i < profile.length; i++) {
+      const p = profile[i];
+      const flightAltitude = p.plannedAltitude;
+      if (flightAltitude === undefined || !Number.isFinite(flightAltitude)) continue;
+      const minElev = p.minElevation !== undefined ? p.minElevation : p.elevation;
+      const maxElev = p.maxElevation !== undefined ? p.maxElevation : p.elevation;
+      const outputAltitude = minElev + resolutionHeight;
+      const safetyAltitude = maxElev + safetyHeight;
+      let outputStatus: HeightLimitStatus | undefined;
+      let safetyStatus: HeightLimitStatus | undefined;
+      if (outMode) {
+        if (flightAltitude < outputAltitude - HEIGHT_LIMITATION_THRESHOLD_M) outputStatus = 'green';
+        else if (flightAltitude < outputAltitude) outputStatus = 'yellow';
+        else outputStatus = 'red';
+      }
+      if (safeMode) {
+        if (flightAltitude > safetyAltitude + HEIGHT_LIMITATION_THRESHOLD_M) safetyStatus = 'green';
+        else if (flightAltitude > safetyAltitude) safetyStatus = 'yellow';
+        else safetyStatus = 'red';
+      }
+      const outputColor = outputStatus ? HEIGHT_LIMITATION_COLORS[outputStatus] : undefined;
+      const safetyColor = safetyStatus ? HEIGHT_LIMITATION_COLORS[safetyStatus] : undefined;
+      points.push({
+        index: i,
+        lat: p.latitude,
+        lng: p.longitude,
+        flightAltitude,
+        outputAltitude,
+        safetyAltitude,
+        outputStatus,
+        safetyStatus,
+        outputColor,
+        safetyColor
+      });
+      // For stats: count worst status per point when both modes (spec: aggregate by color)
+      const outC = outputStatus ? HEIGHT_LIMITATION_COLORS[outputStatus] : null;
+      const safeC = safetyStatus ? HEIGHT_LIMITATION_COLORS[safetyStatus] : null;
+      const isRed = outC === HEIGHT_LIMITATION_COLORS.red || safeC === HEIGHT_LIMITATION_COLORS.red;
+      const isYellow = outC === HEIGHT_LIMITATION_COLORS.yellow || safeC === HEIGHT_LIMITATION_COLORS.yellow;
+      if (isRed) red++;
+      else if (isYellow) yellow++;
+      else green++;
+    }
+    // Legend: absolute heights above ground (AGL) in meters
+    const out10 = resolutionHeight - HEIGHT_LIMITATION_THRESHOLD_M;
+    const safe10 = safetyHeight + HEIGHT_LIMITATION_THRESHOLD_M;
+    const outputLegend: { green: string; yellow: string; red: string } | null = heightLimitationMode === 'output' ? {
+      green: `< ${Math.round(out10)} מ' מהקרקע`,
+      yellow: `${Math.round(out10)} – ${Math.round(resolutionHeight)} מ' מהקרקע`,
+      red: `≥ ${Math.round(resolutionHeight)} מ' מהקרקע`
+    } : null;
+    const safetyLegend: { green: string; yellow: string; red: string } | null = heightLimitationMode === 'safety' ? {
+      green: `> ${Math.round(safe10)} מ' מהקרקע`,
+      yellow: `${Math.round(safetyHeight)} – ${Math.round(safe10)} מ' מהקרקע`,
+      red: `≤ ${Math.round(safetyHeight)} מ' מהקרקע`
+    } : null;
+    return { points, stats: { total: points.length, green, yellow, red }, outputLegend, safetyLegend };
+  }, [elevationProfile, heightLimitationMode, safetyHeight, resolutionHeight]);
+
+  // Sync height limitation circle markers to the map
+  useEffect(() => {
+    const m = map.current;
+    if (!m) return;
+    heightLimitationMarkersRef.current.forEach(marker => m.removeLayer(marker));
+    heightLimitationMarkersRef.current = [];
+    if (!heightLimitationWindowOpen || heightLimitationData.points.length === 0) return;
+    const { points } = heightLimitationData;
+    const outMode = heightLimitationMode === 'output';
+    const safeMode = heightLimitationMode === 'safety';
+    points.forEach((pt) => {
+      if (safeMode) {
+        const circle = L.circleMarker([pt.lat, pt.lng], {
+          radius: 10,
+          color: pt.safetyColor ?? '#94a3b8',
+          fillColor: pt.safetyColor ?? '#94a3b8',
+          fillOpacity: 0.9,
+          weight: 2,
+          opacity: 1
+        });
+        (circle as any).__heightLimitPoint = pt;
+        circle.bindTooltip(() => {
+          const x = (circle as any).__heightLimitPoint as typeof pt;
+          return `נקודה ${x.index + 1} | גובה טיסה: ${x.flightAltitude.toFixed(1)}מ' | בטיחות: ${x.safetyAltitude.toFixed(1)}מ' | ${x.safetyStatus === 'green' ? 'תקין' : x.safetyStatus === 'yellow' ? 'אזהרה' : 'קריטי'}`;
+        }, { direction: 'top', offset: [0, -8] });
+        circle.addTo(m);
+        heightLimitationMarkersRef.current.push(circle);
+      }
+      if (outMode) {
+        const circle = L.circleMarker([pt.lat, pt.lng], {
+          radius: 10,
+          color: pt.outputColor ?? '#94a3b8',
+          fillColor: pt.outputColor ?? '#94a3b8',
+          fillOpacity: 0.95,
+          weight: 2,
+          opacity: 1
+        });
+        (circle as any).__heightLimitPoint = pt;
+        circle.bindTooltip(() => {
+          const x = (circle as any).__heightLimitPoint as typeof pt;
+          return `נקודה ${x.index + 1} | גובה טיסה: ${x.flightAltitude.toFixed(1)}מ' | תוצר: ${x.outputAltitude.toFixed(1)}מ' | ${x.outputStatus === 'green' ? 'תקין' : x.outputStatus === 'yellow' ? 'אזהרה' : 'קריטי'}`;
+        }, { direction: 'top', offset: [0, -8] });
+        circle.addTo(m);
+        heightLimitationMarkersRef.current.push(circle);
+      }
+    });
+    return () => {
+      heightLimitationMarkersRef.current.forEach(marker => {
+        if (m && m.hasLayer(marker)) m.removeLayer(marker);
+      });
+      heightLimitationMarkersRef.current = [];
+    };
+  }, [heightLimitationWindowOpen, heightLimitationData.points, heightLimitationMode]);
 
   // Render overlap chart with D3 - overlap vs distance, lines only (uses per-pair distances)
   useEffect(() => {
@@ -1922,6 +2103,243 @@ const MapPanel: React.FC<MapPanelProps> = ({
       };
     }
   }, [isResizingOverlapGraphWindow, handleOverlapGraphWindowResizeMove, handleOverlapGraphWindowResizeEnd]);
+
+  // Height limitation window: drag and resize
+  const resetHeightLimitationWindowPosition = useCallback(() => {
+    const defaultX = 20;
+    const defaultY = 100;
+    setHeightLimitationWindowPosition({ x: defaultX, y: defaultY });
+  }, []);
+
+  const handleHeightLimitationWindowDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const currentX = heightLimitationWindowPosition?.x ?? 20;
+    const currentY = heightLimitationWindowPosition?.y ?? 100;
+    setIsDraggingHeightLimitationWindow(true);
+    heightLimitationDragStartRef.current = { x: clientX, y: clientY, startX: currentX, startY: currentY };
+  }, [heightLimitationWindowPosition]);
+
+  const handleHeightLimitationWindowDragMove = useCallback((e: MouseEvent | TouchEvent) => {
+    if (!isDraggingHeightLimitationWindow || !heightLimitationDragStartRef.current) return;
+    e.preventDefault();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const deltaX = clientX - heightLimitationDragStartRef.current.x;
+    const deltaY = clientY - heightLimitationDragStartRef.current.y;
+    let newX = heightLimitationDragStartRef.current.startX + deltaX;
+    let newY = heightLimitationDragStartRef.current.startY + deltaY;
+    const w = heightLimitationWindowRef.current?.offsetWidth ?? HEIGHT_LIMITATION_DEFAULT_WIDTH;
+    const h = heightLimitationWindowRef.current?.offsetHeight ?? HEIGHT_LIMITATION_DEFAULT_HEIGHT;
+    newX = Math.max(0, Math.min(newX, window.innerWidth - w));
+    newY = Math.max(0, Math.min(newY, window.innerHeight - h));
+    setHeightLimitationWindowPosition({ x: newX, y: newY });
+  }, [isDraggingHeightLimitationWindow]);
+
+  const handleHeightLimitationWindowDragEnd = useCallback(() => {
+    setIsDraggingHeightLimitationWindow(false);
+    heightLimitationDragStartRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (isDraggingHeightLimitationWindow) {
+      const handleMove = (e: MouseEvent | TouchEvent) => handleHeightLimitationWindowDragMove(e);
+      const handleEnd = () => handleHeightLimitationWindowDragEnd();
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleEnd);
+      window.addEventListener('touchmove', handleMove, { passive: false });
+      window.addEventListener('touchend', handleEnd);
+      return () => {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleEnd);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('touchend', handleEnd);
+      };
+    }
+  }, [isDraggingHeightLimitationWindow, handleHeightLimitationWindowDragMove, handleHeightLimitationWindowDragEnd]);
+
+  const handleHeightLimitationWindowResizeStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = heightLimitationWindowRef.current;
+    const startWidth = heightLimitationWindowSize?.width ?? HEIGHT_LIMITATION_DEFAULT_WIDTH;
+    const startHeight = heightLimitationWindowSize?.height ?? HEIGHT_LIMITATION_DEFAULT_HEIGHT;
+    setIsResizingHeightLimitationWindow(true);
+    heightLimitationResizeStartRef.current = { x: 'touches' in e ? e.touches[0].clientX : e.clientX, y: 'touches' in e ? e.touches[0].clientY : e.clientY, startWidth: el?.offsetWidth ?? startWidth, startHeight: el?.offsetHeight ?? startHeight };
+  }, [heightLimitationWindowSize]);
+
+  const handleHeightLimitationWindowResizeMove = useCallback((e: MouseEvent | TouchEvent) => {
+    if (!isResizingHeightLimitationWindow || !heightLimitationResizeStartRef.current) return;
+    e.preventDefault();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const deltaX = clientX - heightLimitationResizeStartRef.current.x;
+    const deltaY = clientY - heightLimitationResizeStartRef.current.y;
+    let w = heightLimitationResizeStartRef.current.startWidth + deltaX;
+    let h = heightLimitationResizeStartRef.current.startHeight + deltaY;
+    w = Math.max(HEIGHT_LIMITATION_MIN_WIDTH, Math.min(420, w));
+    h = Math.max(HEIGHT_LIMITATION_MIN_HEIGHT, Math.min(500, h));
+    setHeightLimitationWindowSize({ width: w, height: h });
+  }, [isResizingHeightLimitationWindow]);
+
+  const handleHeightLimitationWindowResizeEnd = useCallback(() => {
+    setIsResizingHeightLimitationWindow(false);
+    heightLimitationResizeStartRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (isResizingHeightLimitationWindow) {
+      const handleMove = (e: MouseEvent | TouchEvent) => handleHeightLimitationWindowResizeMove(e);
+      const handleEnd = () => handleHeightLimitationWindowResizeEnd();
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleEnd);
+      window.addEventListener('touchmove', handleMove, { passive: false });
+      window.addEventListener('touchend', handleEnd);
+      return () => {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleEnd);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('touchend', handleEnd);
+      };
+    }
+  }, [isResizingHeightLimitationWindow, handleHeightLimitationWindowResizeMove, handleHeightLimitationWindowResizeEnd]);
+
+  const handleHeightLimitationExport = useCallback(async () => {
+    const { points, outputLegend, safetyLegend } = heightLimitationData;
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/9b85fa3a-0326-44ec-9988-4f66144050f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2992b'},body:JSON.stringify({sessionId:'e2992b',location:'MapPanel.tsx:exportEntry',message:'export started',data:{pointsLength:points.length,flightPathLength:flightPath.length,hasContainer:!!mapContainer.current,hasMap:!!map.current},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
+    if (points.length === 0 || !mapContainer.current || !map.current) {
+      alert('אין נתוני גובה לייצוא. טען מסלול ופרופיל גובה.');
+      return;
+    }
+    const legend = heightLimitationMode === 'output' ? outputLegend : safetyLegend;
+    const title = heightLimitationMode === 'output' ? 'גובה תוצר' : 'גובה בטיחות';
+
+    const legendEl = document.createElement('div');
+    legendEl.className = 'height-limitation-export-legend';
+    legendEl.setAttribute('data-export-legend', 'true');
+    legendEl.innerHTML = `
+      <div class="height-limitation-export-legend__title">${title}</div>
+      ${legend ? `
+        <div class="height-limitation-export-legend__row"><span class="height-limitation-export-legend__dot" style="background:${HEIGHT_LIMITATION_COLORS.green}"></span>${legend.green}</div>
+        <div class="height-limitation-export-legend__row"><span class="height-limitation-export-legend__dot" style="background:${HEIGHT_LIMITATION_COLORS.yellow}"></span>${legend.yellow}</div>
+        <div class="height-limitation-export-legend__row"><span class="height-limitation-export-legend__dot" style="background:${HEIGHT_LIMITATION_COLORS.red}"></span>${legend.red}</div>
+      ` : ''}
+    `;
+    mapContainer.current.appendChild(legendEl);
+
+    try {
+      const scale = window.devicePixelRatio || 1;
+      const canvas = await html2canvas(mapContainer.current, {
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: null,
+        scale,
+        ignoreElements: (el: Element) => {
+          if (el.classList?.contains('map-instruction-banner') || el.classList?.contains('routes-panel')) return true;
+          if (el.closest?.('.map-instruction-banner') || el.closest?.('.routes-panel')) return true;
+          if (el.classList?.contains('leaflet-control-zoom') || el.classList?.contains('leaflet-control-attribution') || el.classList?.contains('leaflet-control-scale')) return true;
+          if (el.closest?.('.leaflet-control-zoom') || el.closest?.('.leaflet-control-attribution') || el.closest?.('.leaflet-control-scale')) return true;
+          if (/\bleaflet-control\b/.test(el.className?.toString() || '')) return true;
+          if (el.closest?.('[class*="leaflet-control"]')) return true;
+          return false;
+        }
+      });
+      legendEl.remove();
+
+      const ctx = canvas.getContext('2d');
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/9b85fa3a-0326-44ec-9988-4f66144050f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2992b'},body:JSON.stringify({sessionId:'e2992b',location:'MapPanel.tsx:exportPNG',message:'post-html2canvas',data:{pointsLength:points.length,flightPathLength:flightPath.length,hasCtx:!!ctx,hasMap:!!map.current,canvasW:canvas.width,canvasH:canvas.height,scale},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+      // #endregion
+      if (ctx && map.current) {
+        const toCanvas = (lat: number, lng: number) => {
+          const p = map.current!.latLngToContainerPoint(L.latLng(lat, lng));
+          return { x: p.x * scale, y: p.y * scale };
+        };
+        // #region agent log
+        if (points.length > 0) {
+          const first = points[0];
+          const c0 = toCanvas(first.lat, first.lng);
+          fetch('http://127.0.0.1:7242/ingest/9b85fa3a-0326-44ec-9988-4f66144050f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2992b'},body:JSON.stringify({sessionId:'e2992b',location:'MapPanel.tsx:toCanvas',message:'first point canvas coords',data:{lat:first.lat,lng:first.lng,canvasX:c0.x,canvasY:c0.y,outputColor:first.outputColor,safetyColor:first.safetyColor,mode:heightLimitationMode},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+        }
+        // #endregion
+
+        // 1. Thick colored path (green / yellow / red segments) along profile points
+        const lineWidth = 14 * scale;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = lineWidth;
+        let segmentsDrawn = 0;
+        for (let i = 0; i < points.length - 1; i++) {
+          const pt = points[i];
+          const next = points[i + 1];
+          const color = heightLimitationMode === 'output' ? (pt.outputColor ?? '#94a3b8') : (pt.safetyColor ?? '#94a3b8');
+          const a = toCanvas(pt.lat, pt.lng);
+          const b = toCanvas(next.lat, next.lng);
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.strokeStyle = color;
+          ctx.stroke();
+          segmentsDrawn++;
+        }
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/9b85fa3a-0326-44ec-9988-4f66144050f1',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'e2992b'},body:JSON.stringify({sessionId:'e2992b',location:'MapPanel.tsx:pathDrawn',message:'segments drawn',data:{segmentsDrawn,canvasW:canvas.width,canvasH:canvas.height},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+        // #endregion
+
+        // 2. Small colored dots on each profile point (on top of the path)
+        const dotRadius = 5 * scale;
+        points.forEach((pt) => {
+          const color = heightLimitationMode === 'output' ? (pt.outputColor ?? '#94a3b8') : (pt.safetyColor ?? '#94a3b8');
+          const { x, y } = toCanvas(pt.lat, pt.lng);
+          ctx.beginPath();
+          ctx.arc(x, y, dotRadius, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.fill();
+          ctx.strokeStyle = '#1e293b';
+          ctx.lineWidth = Math.max(1, Math.round(scale));
+          ctx.stroke();
+        });
+
+        // 3. Numbered waypoint markers (white fill, red outline) at flight path points
+        const waypointRadius = 14 * scale;
+        flightPath.forEach((wp, idx) => {
+          const { x, y } = toCanvas(wp.lat, wp.lng);
+          ctx.beginPath();
+          ctx.arc(x, y, waypointRadius, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+          ctx.strokeStyle = '#dc2626';
+          ctx.lineWidth = Math.max(2, Math.round(scale * 1.5));
+          ctx.stroke();
+          ctx.fillStyle = '#dc2626';
+          ctx.font = `bold ${12 * scale}px sans-serif`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(idx + 1), x, y);
+        });
+      }
+
+      const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((b) => resolve(b), 'image/png', 1);
+      });
+      if (!blob) {
+        alert('שגיאה ביצירת התמונה');
+        return;
+      }
+      const defaultFilename = `height_limitation_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.png`;
+      await saveFileWithLocation(blob, defaultFilename, 'image/png');
+    } catch (e) {
+      legendEl.remove();
+      if ((e as Error)?.message !== 'User cancelled file save') {
+        console.error('Height limitation export failed:', e);
+        alert('שגיאה בייצוא התמונה');
+      }
+    }
+  }, [heightLimitationData, heightLimitationMode, flightPath]);
 
   const createParallelLinesBatch = useCallback(
     (lineIds: string[], distanceOverride?: number) => {
@@ -8560,6 +8978,103 @@ const MapPanel: React.FC<MapPanelProps> = ({
           />
         </div>
       )}
+      {heightLimitationWindowOpen && (
+        <div
+          ref={heightLimitationWindowRef}
+          className="height-limitation-window"
+          style={{
+            left: heightLimitationWindowPosition?.x ?? 20,
+            top: heightLimitationWindowPosition?.y ?? 100,
+            width: heightLimitationWindowSize?.width ?? HEIGHT_LIMITATION_DEFAULT_WIDTH,
+            height: heightLimitationWindowSize?.height ?? HEIGHT_LIMITATION_DEFAULT_HEIGHT,
+            cursor: isDraggingHeightLimitationWindow ? 'grabbing' : isResizingHeightLimitationWindow ? 'nwse-resize' : 'default'
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div
+            className="height-limitation-window__header"
+            onMouseDown={handleHeightLimitationWindowDragStart}
+            onTouchStart={handleHeightLimitationWindowDragStart}
+            style={{ cursor: isDraggingHeightLimitationWindow ? 'grabbing' : 'grab' }}
+          >
+            <span className="height-limitation-window__title">הגבלות גובה</span>
+            <div className="height-limitation-window__header-actions">
+              <button type="button" className="height-limitation-window__reset-btn" onClick={resetHeightLimitationWindowPosition} title="איפוס מיקום" aria-label="איפוס מיקום">↻</button>
+              <button type="button" className="height-limitation-window__close-btn" onClick={() => setHeightLimitationWindowOpen(false)} title="סגור" aria-label="סגור">×</button>
+            </div>
+          </div>
+          <div className="height-limitation-window__content">
+            <div className="height-limitation-window__modes">
+              <div className="quick-modal__segmented" style={{ width: '100%' }} role="group" aria-label="מצב הצגה">
+                <button
+                  type="button"
+                  className={`quick-modal__pill ${heightLimitationMode === 'output' ? 'active' : ''}`}
+                  onClick={() => setHeightLimitationMode('output')}
+                  aria-pressed={heightLimitationMode === 'output'}
+                >
+                  גובה תוצר
+                </button>
+                <button
+                  type="button"
+                  className={`quick-modal__pill ${heightLimitationMode === 'safety' ? 'active' : ''}`}
+                  onClick={() => setHeightLimitationMode('safety')}
+                  aria-pressed={heightLimitationMode === 'safety'}
+                >
+                  גובה בטיחות
+                </button>
+              </div>
+            </div>
+            <div className="height-limitation-window__legend">
+              <div className="height-limitation-window__legend-title">מקרא</div>
+              {heightLimitationMode === 'output' && heightLimitationData.outputLegend && (
+                <div className="height-limitation-window__legend-section">
+                  <div className="height-limitation-window__legend-subtitle">גובה תוצר</div>
+                  <div><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.green }} /> {heightLimitationData.outputLegend.green}</div>
+                  <div><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.yellow }} /> {heightLimitationData.outputLegend.yellow}</div>
+                  <div><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.red }} /> {heightLimitationData.outputLegend.red}</div>
+                </div>
+              )}
+              {heightLimitationMode === 'safety' && heightLimitationData.safetyLegend && (
+                <div className="height-limitation-window__legend-section">
+                  <div className="height-limitation-window__legend-subtitle">גובה בטיחות</div>
+                  <div><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.green }} /> {heightLimitationData.safetyLegend.green}</div>
+                  <div><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.yellow }} /> {heightLimitationData.safetyLegend.yellow}</div>
+                  <div><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.red }} /> {heightLimitationData.safetyLegend.red}</div>
+                </div>
+              )}
+            </div>
+            <div className="height-limitation-window__stats">
+              <div className="height-limitation-window__stats-title">סטטיסטיקה</div>
+              <div className="height-limitation-window__stats-line">
+                {heightLimitationData.stats.total > 0 ? (
+                  <>
+                    <span><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.green }} /> {(100 * heightLimitationData.stats.green / heightLimitationData.stats.total).toFixed(0)}%</span>
+                    <span className="height-limitation-window__stats-sep">|</span>
+                    <span><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.yellow }} /> {(100 * heightLimitationData.stats.yellow / heightLimitationData.stats.total).toFixed(0)}%</span>
+                    <span className="height-limitation-window__stats-sep">|</span>
+                    <span><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.red }} /> {(100 * heightLimitationData.stats.red / heightLimitationData.stats.total).toFixed(0)}%</span>
+                  </>
+                ) : (
+                  <>
+                    <span><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.green }} /> —</span>
+                    <span className="height-limitation-window__stats-sep">|</span>
+                    <span><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.yellow }} /> —</span>
+                    <span className="height-limitation-window__stats-sep">|</span>
+                    <span><span className="height-limitation-window__dot" style={{ background: HEIGHT_LIMITATION_COLORS.red }} /> —</span>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="height-limitation-window__actions">
+              <button type="button" className="btn btn-primary" onClick={handleHeightLimitationExport} disabled={heightLimitationData.points.length === 0}>
+                ייצוא PNG
+              </button>
+              <button type="button" className="btn btn-tertiary" onClick={() => setHeightLimitationWindowOpen(false)}>סגור</button>
+            </div>
+          </div>
+          <div className="height-limitation-window__resize-handle" onMouseDown={handleHeightLimitationWindowResizeStart} onTouchStart={handleHeightLimitationWindowResizeStart} title="שנה גודל" aria-label="שנה גודל החלון" />
+        </div>
+      )}
       <SuccessNotification
         isOpen={successNotification.isOpen}
         message={successNotification.message}
@@ -8794,6 +9309,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 >
                   <Icon name="search" />
                   <span className="sr-only">{hasViewshedResult ? 'הגדרות שדה ראייה' : 'חשב שדה ראייה'}</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip="הצג חריגות על המפה">
+                <button
+                  onClick={() => setHeightLimitationWindowOpen(true)}
+                  className={`btn btn-tertiary btn-icon ${heightLimitationWindowOpen ? 'active' : ''}`}
+                  aria-label="הגבלות גובה"
+                  type="button"
+                  disabled={!dtmLoaded || flightPath.length < 2 || elevationProfile.length === 0}
+                >
+                  <Icon name="altitude" />
+                  <span className="sr-only">הגבלות גובה</span>
                 </button>
               </Tooltip>
               <Tooltip tooltip={isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע במיקום העכבר'}>

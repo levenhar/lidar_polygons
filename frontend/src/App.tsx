@@ -1812,6 +1812,7 @@ function App() {
             kmlImports={kmlImports}
             nominalFlightHeight={nominalFlightHeight}
             safetyRadius={safetySearchRadius}
+            safetyHeight={safetyHeight}
             overlapPercentage={overlapPercentage}
             fovDegrees={fovDegrees}
             resolutionHeight={resolutionHeight}

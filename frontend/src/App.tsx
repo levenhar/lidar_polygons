@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import MapPanel from './components/MapPanel';
 import ElevationProfile from './components/ElevationProfile';
 import ExportSettingsModal from './components/ExportSettingsModal';
@@ -1676,6 +1676,30 @@ function AppContent() {
     dtmDisplaySettings, showNextLineSuggestions, kmlImports
   ]);
 
+  // Ctrl+S / Cmd+S: save project
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const isMac = navigator.platform?.toUpperCase().indexOf('MAC') >= 0;
+      const modifier = isMac ? e.metaKey : e.ctrlKey;
+      const isKeyS = e.code === 'KeyS' || e.key === 's' || e.key === 'S';
+      if (!modifier || !isKeyS) return;
+      const activeElement = document.activeElement;
+      if (activeElement) {
+        const tagName = activeElement.tagName.toLowerCase();
+        const isEditable =
+          tagName === 'input' ||
+          tagName === 'textarea' ||
+          (activeElement as HTMLElement).isContentEditable ||
+          activeElement.getAttribute('contenteditable') === 'true';
+        if (isEditable) return;
+      }
+      e.preventDefault();
+      handleSaveProject();
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [handleSaveProject]);
+
   // Migrate entry height from AGL to ASL for old projects
   const migrateEntryHeightIfNeeded = useCallback(async (
     projectData: ProjectFileData,
@@ -2079,7 +2103,7 @@ function AppContent() {
             className="btn btn-secondary btn-icon header-action-btn"
             type="button"
             aria-label="שמור פרויקט"
-            title="שמור פרויקט"
+            title="שמור פרויקט (Ctrl+S)"
           >
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />

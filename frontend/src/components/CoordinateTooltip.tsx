@@ -34,7 +34,7 @@ const CoordinateTooltip: React.FC<CoordinateTooltipProps> = ({ point, utm }) => 
       )}
       <div className="tooltip-divider" />
       <div className="tooltip-section">
-        <span className="tooltip-label">גובה מהקרקע:</span> {point.flightHeight?.toFixed(1)} מ'
+        <span className="tooltip-label">גובה מפני הים:</span> {(point.elevation + (point.flightHeight ?? 0)).toFixed(1)} מ'
       </div>
       {point.minElevation !== undefined && (
         <div className="tooltip-section">

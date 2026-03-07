@@ -98,6 +98,13 @@ DTM_STATUS_PROTECTED = 'protected'
 DTM_STATUS_DELETING = 'deleting'
 DTM_STATUS_DELETED = 'deleted'
 
+
+# ============================================================================
+# OVERLAP PARAMETERS
+# ============================================================================
+
+THRESH_AZ_OVERLAP = np.deg2rad(10)
+
 # ============================================================================
 # DEFAULT PARAMETERS
 # ============================================================================
@@ -113,3 +120,5 @@ DEFAULT_VIEWSHED_USE_SUBSAMPLED = True
 # Note: Most API routes are defined in main.py and don't need to be constants
 # unless they're referenced in multiple places or need to be shared with frontend
 
+
+MAX_DISTANCE_BETWEEN_LINES = 300

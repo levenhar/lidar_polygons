@@ -7111,7 +7111,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
               // Extract filename from path for display
               const uploadedFileName = data.path?.split('/').pop()?.split('\\').pop() || 'Uploaded DTM';
               setActiveDtmName(stripDtmTimestamp(uploadedFileName));
-              onDtmLoad(data.path, data);
+              onDtmLoad(data.path, data, undefined, {
+                sourceType: 'local',
+                originalFile: file
+              });
             } else {
               throw new Error(data.error || 'Upload failed');
             }

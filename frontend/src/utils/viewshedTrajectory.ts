@@ -44,7 +44,7 @@ export function buildViewshedTrajectory(
   });
 }
 
-function interpolatePlannedAltitude(
+export function interpolatePlannedAltitude(
   profile: ElevationPoint[],
   distance: number,
   fallback: number

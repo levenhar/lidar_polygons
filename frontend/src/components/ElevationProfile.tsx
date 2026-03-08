@@ -158,6 +158,7 @@ interface ElevationProfileProps {
   climbWarnings: string[];
   showMetadata: boolean;
   activeRouteName?: string;
+  dtmName?: string;
   profileError?: string | null;
 }
 
@@ -186,6 +187,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   climbWarnings,
   showMetadata,
   activeRouteName,
+  dtmName,
   profileError
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -2696,7 +2698,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         const topMetadata = [
           `שם מסלול: ${activeRouteName || '-'}`,
           `אחוז חפיפה: ${overlapPercentage.toFixed(1)}%`,
-          `רדיוס בטיחות: ${safetyRadius.toFixed(1)} מ'`
+          `רדיוס בטיחות: ${safetyRadius.toFixed(1)} מ'`,
+          `DTM פעיל: ${dtmName || '-'}`
         ];
         ctx.fillStyle = '#374151';
         ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';

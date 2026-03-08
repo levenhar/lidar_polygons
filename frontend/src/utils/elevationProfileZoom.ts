@@ -128,6 +128,28 @@ export function panWindow(
  * @param tolerance - Tolerance for considering "fully zoomed out" (default: 0.1 meters)
  * @returns True if zoomed in
  */
+/**
+ * Clamps a D3 zoom transform so the viewport never pans past the data extent.
+ * Ensures tx is in [-(k-1)*width, 0] and ty is in [-(k-1)*height, 0].
+ * @param tx - Transform x translation
+ * @param ty - Transform y translation
+ * @param k - Transform scale factor
+ * @param w - Chart width in pixels
+ * @param h - Chart height in pixels
+ * @returns Clamped { x, y, k }
+ */
+export function clampZoomTransform(
+  tx: number,
+  ty: number,
+  k: number,
+  w: number,
+  h: number
+): { x: number; y: number; k: number } {
+  const x = Math.min(0, Math.max(tx, -(k - 1) * w));
+  const y = Math.min(0, Math.max(ty, -(k - 1) * h));
+  return { x, y, k };
+}
+
 export function isZoomed(
   viewStart: number,
   viewEnd: number,

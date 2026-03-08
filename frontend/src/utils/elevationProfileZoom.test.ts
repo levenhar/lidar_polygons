@@ -2,7 +2,7 @@
  * Unit tests for elevation profile zoom utilities.
  */
 
-import { clampWindow, zoomWindow, panWindow, isZoomed } from './elevationProfileZoom';
+import { clampWindow, zoomWindow, panWindow, isZoomed, clampZoomTransform } from './elevationProfileZoom';
 
 describe('elevationProfileZoom', () => {
   const totalDistance = 1000;
@@ -69,6 +69,70 @@ describe('elevationProfileZoom', () => {
     it('clamps end to totalDistance', () => {
       const [, end] = panWindow(600, totalDistance, totalDistance, 1000, width);
       expect(end).toBeLessThanOrEqual(totalDistance);
+    });
+  });
+
+  describe('clampZoomTransform', () => {
+    const w = 800;
+    const h = 400;
+
+    it('returns identity unchanged at scale 1', () => {
+      const result = clampZoomTransform(0, 0, 1, w, h);
+      expect(result).toEqual({ x: 0, y: 0, k: 1 });
+    });
+
+    it('keeps valid transform unchanged when within bounds', () => {
+      // At k=2, x can be [-(2-1)*800, 0] = [-800, 0], y can be [-400, 0]
+      const result = clampZoomTransform(-400, -200, 2, w, h);
+      expect(result).toEqual({ x: -400, y: -200, k: 2 });
+    });
+
+    it('clamps positive x to 0 (prevents panning past left edge)', () => {
+      const result = clampZoomTransform(100, 0, 2, w, h);
+      expect(result.x).toBe(0);
+    });
+
+    it('clamps positive y to 0 (prevents panning past top edge)', () => {
+      const result = clampZoomTransform(0, 50, 2, w, h);
+      expect(result.y).toBe(0);
+    });
+
+    it('clamps x past right edge to -(k-1)*width', () => {
+      // At k=2, min x = -(2-1)*800 = -800
+      const result = clampZoomTransform(-1000, 0, 2, w, h);
+      expect(result.x).toBe(-800);
+    });
+
+    it('clamps y past bottom edge to -(k-1)*height', () => {
+      // At k=2, min y = -(2-1)*400 = -400
+      const result = clampZoomTransform(0, -600, 2, w, h);
+      expect(result.y).toBe(-400);
+    });
+
+    it('clamps both axes simultaneously', () => {
+      const result = clampZoomTransform(50, -900, 3, w, h);
+      // x: min(0, max(50, -(3-1)*800)) = min(0, max(50, -1600)) = min(0, 50) = 0
+      expect(result.x).toBe(0);
+      // y: min(0, max(-900, -(3-1)*400)) = min(0, max(-900, -800)) = min(0, -800) = -800
+      expect(result.y).toBe(-800);
+    });
+
+    it('preserves scale factor unchanged', () => {
+      const result = clampZoomTransform(-9999, 9999, 5, w, h);
+      expect(result.k).toBe(5);
+    });
+
+    it('at scale 1, clamps any translation to 0,0', () => {
+      const result = clampZoomTransform(-100, 50, 1, w, h);
+      expect(result.x + 0).toBe(0); // +0 to normalize -0
+      expect(result.y + 0).toBe(0);
+    });
+
+    it('at high zoom, allows large negative translations', () => {
+      // At k=10, x can be [-(10-1)*800, 0] = [-7200, 0]
+      const result = clampZoomTransform(-5000, -2000, 10, w, h);
+      expect(result.x).toBe(-5000);
+      expect(result.y).toBe(-2000);
     });
   });
 

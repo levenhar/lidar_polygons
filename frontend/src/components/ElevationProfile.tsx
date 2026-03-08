@@ -2074,21 +2074,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
       if (minDist < climbConfig.vertexProximityMeters) {
         const msg = intervalsOverlap
-          ? `New climb (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') overlaps with existing climb ` +
-          `(${existingStart.toFixed(1)} מ' - ${existingEnd.toFixed(1)} מ'). Climbs cannot overlap.`
-          : `New climb (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') is too close to existing climb ` +
+          ? `עלייה חדשה (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') חופפת עם עלייה קיימת ` +
+          `(${existingStart.toFixed(1)} מ' - ${existingEnd.toFixed(1)} מ'). אין אפשרות להדבק בין עליות.`
+          : `עלייה חדשה (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') קרובה מדי לעלייה קיימת ` +
           `(${existingStart.toFixed(1)} מ' - ${existingEnd.toFixed(1)} מ'). ` +
-          `Minimum distance required: ${climbConfig.vertexProximityMeters} מ' (current: ${minDist.toFixed(1)} מ').`;
+          `מרחק מינימלי נדרש: ${climbConfig.vertexProximityMeters} מ' (נוכחי: ${minDist.toFixed(1)} מ').`;
         console.log('VALIDATION FAILED:', msg);
         setClimbAmountError(msg);
-        setClimbValidationPopup(msg);
         return;
       }
     }
 
     const notReachable =
-      !climbConfig.allowTurnsDuringClimb &&
-      (Math.abs(preview.appliedClimb - parsed) > 1e-3 || (preview.warnings?.length ?? 0) > 0);
+      Math.abs(preview.appliedClimb - parsed) > 1e-3 ||
+      (!climbConfig.allowTurnsDuringClimb && (preview.warnings?.length ?? 0) > 0);
 
     if (notReachable) {
       console.log('Climb not reachable:', {
@@ -2097,9 +2096,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         warnings: preview.warnings,
         notReachable
       });
-      const msg = 'Climb cancelled: turns are disabled and the requested elevation change cannot be reached at this point.';
-      setClimbAmountError('Cannot reach requested climb with turns disabled; adjust amount or enable turns.');
-      setClimbValidationPopup(msg);
+      setClimbAmountError(
+        preview.warnings?.length
+          ? preview.warnings[0]
+          : 'לא ניתן להגיע לעלייה המבוקשת. התאם את הכמות או הפעל פניות בעלייה.'
+      );
       return;
     }
 

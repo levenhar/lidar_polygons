@@ -12,6 +12,7 @@ import { ClimbConfig, computeClimbProfile, BaseAltitudeSample, ClimbPreset } fro
 import { latLngToUTM } from '../utils/coordinates';
 import { computeCumulativeDistances, getNearestConstraints } from '../utils/constraints';
 import { findAnchorPointsForClimb, ClimbRequest } from '../utils/climbAnchors';
+import { clampZoomTransform } from '../utils/elevationProfileZoom';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   const common = {
@@ -1249,7 +1250,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill', 'transparent')
       .style('cursor', 'crosshair')
       .style('pointer-events', 'all');
-    overlay.lower();
+    function clampTransform(t: d3.ZoomTransform, w: number, h: number): d3.ZoomTransform {
+      const clamped = clampZoomTransform(t.x, t.y, t.k, w, h);
+      return d3.zoomIdentity.translate(clamped.x, clamped.y).scale(clamped.k);
+    }
 
     // Function to update all elements based on current transform
     const updateElementsWithTransform = (transform: d3.ZoomTransform) => {
@@ -1442,10 +1446,15 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       }
     };
 
+    // Raise overlay to top so it captures all pointer events (wheel, click, hover)
+    // above every drawn chart element (areas, lines, markers, etc.)
+    overlay.raise();
+
     // Setup zoom behavior - only for wheel zoom, not for panning
     const zoomBehavior = d3.zoom<SVGRectElement, unknown>()
       .scaleExtent([1, 20])
       .extent([[0, 0], [width, height]])
+      .translateExtent([[0, 0], [width, height]])
       .on('zoom', (event) => {
         // Handle wheel zoom and programmatic transforms (like reset button)
         const isWheelEvent = event.sourceEvent && event.sourceEvent.type === 'wheel';
@@ -1463,8 +1472,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             }
           } else {
             // Save the transform so it persists across re-renders
-            savedZoomTransformRef.current = event.transform;
-            updateElementsWithTransform(event.transform);
+            const clamped = clampTransform(event.transform, width, height);
+            savedZoomTransformRef.current = clamped;
+            updateElementsWithTransform(clamped);
           }
         }
       })
@@ -1542,8 +1552,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           isDraggingRef.current = true;
           
           // Create new transform by adding translation to the start transform
-          const newTransform = panStartTransformRef.current.translate(dx, dy);
-          
+          const newTransform = clampTransform(panStartTransformRef.current.translate(dx, dy), width, height);
+
           // Update the transform and render in real-time
           savedZoomTransformRef.current = newTransform;
           updateElementsWithTransform(newTransform);
@@ -1573,7 +1583,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         const dy = mouseY - dragStartRef.current.y;
         
         // Apply final translation
-        const finalTransform = panStartTransformRef.current.translate(dx, dy);
+        const finalTransform = clampTransform(panStartTransformRef.current.translate(dx, dy), width, height);
         savedZoomTransformRef.current = finalTransform;
         
         // Update the d3.zoom behavior's transform so it persists
@@ -2394,6 +2404,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // Use a reasonable minimum (at least 800px) and maximum (2000px) for export
     const exportWidth = Math.max(800, Math.min(2000, maxExportWidth));
     
+    // Reset zoom to full extent for export, then restore after.
+    // We must ALSO apply identity to the D3 overlay node so that
+    // d3.zoomTransform(overlayNode) returns identity during the re-render
+    // triggered by the container resize (otherwise the re-render reads the
+    // old zoomed transform from D3's internal state and re-applies it).
+    const savedTransform = savedZoomTransformRef.current;
+    savedZoomTransformRef.current = d3.zoomIdentity;
+    if (overlayRef.current && zoomBehaviorRef.current) {
+      d3.select(overlayRef.current.node() as any).call(
+        zoomBehaviorRef.current.transform as any,
+        d3.zoomIdentity
+      );
+    }
+
     // Store original container width and style
     const originalStyleWidth = containerRef.current.style.width;
     const originalStyleMinWidth = containerRef.current.style.minWidth;
@@ -2624,7 +2648,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           }
         });
         
-        // Restore original container width and style
+        // Restore original container width, style, and zoom state
+        savedZoomTransformRef.current = savedTransform;
+        if (overlayRef.current && zoomBehaviorRef.current && savedTransform) {
+          d3.select(overlayRef.current.node() as any).call(
+            zoomBehaviorRef.current.transform as any,
+            savedTransform
+          );
+        }
         if (containerRef.current) {
           containerRef.current.style.width = originalStyleWidth;
           containerRef.current.style.minWidth = originalStyleMinWidth;

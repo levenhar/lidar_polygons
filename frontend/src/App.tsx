@@ -121,6 +121,7 @@ function App() {
   const [dtmSourceType, setDtmSourceType] = useState<'local' | 'server' | null>(null);
   const [serverDtmId, setServerDtmId] = useState<string | null>(null);
   const [serverDtmMetadata, setServerDtmMetadata] = useState<{ displayName?: string; sizeBytes?: number; modifiedAt?: string } | null>(null);
+  const [activeDtmName, setActiveDtmName] = useState<string | null>(null);
   const [aoiGeometry, setAoiGeometry] = useState<{ type: 'bbox' | 'polygon' | 'kml'; bbox?: { minLon: number; minLat: number; maxLon: number; maxLat: number }; polygon?: [number, number][] } | null>(null);
   // Project load state
   const [missingLocalDtmModal, setMissingLocalDtmModal] = useState<{ isOpen: boolean; descriptor: LocalDtmDescriptor | null }>({ isOpen: false, descriptor: null });
@@ -1234,13 +1235,15 @@ function App() {
         setLocalDtmFile(originalFile);
         setServerDtmId(null);
         setServerDtmMetadata(null);
+        setActiveDtmName(originalFile.name);
       } else if (sourceType === 'server' && serverId) {
         setServerDtmId(serverId);
         setServerDtmMetadata(serverMetadata || null);
         setLocalDtmFile(null);
+        setActiveDtmName(serverMetadata?.displayName || null);
       }
     }
-    
+
     if (aoi) {
       setAoiGeometry(aoi);
     }
@@ -1264,6 +1267,7 @@ function App() {
     setDtmSource(null);
     setDtmInfo(null);
     setActiveClippedId(null);
+    setActiveDtmName(null);
     // Clear elevation profile when unloading DTM
     clearProfile();
     // Clear stable profile result
@@ -1943,6 +1947,7 @@ function App() {
             climbWarnings={fullProfileResult.warnings}
             showMetadata={showMetadata}
             activeRouteName={routes.find(r => r.id === activeRouteId)?.name}
+            dtmName={activeDtmName || undefined}
             profileError={profileError}
           />
         </SplitPane>

@@ -16,6 +16,7 @@ import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
 import { ClimbConfig } from '../utils/climb';
 import { saveFileWithLocation } from '../utils/fileSave';
+import { buildViewshedTrajectory } from '../utils/viewshedTrajectory';
 import html2canvas from 'html2canvas';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
@@ -7521,15 +7522,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Use flightPath (user waypoints only) so overlap leg pairs are based on legs between waypoints.
       // The backend interpolates between waypoints for the viewshed raster; segment boundaries
       // are derived from waypoints → 4 points → 1 pair, 6 points → 2 pairs, etc.
-      const trajectory = flightPath.map((point) => {
-        const heightASL =
-          point.height !== undefined ? point.height : nominalFlightHeight;
-        return {
-          lng: point.lng,
-          lat: point.lat,
-          height: Math.max(0, heightASL)
-        };
-      });
+      const trajectory = buildViewshedTrajectory(flightPath, elevationProfile, nominalFlightHeight);
 
       const response = await fetch('/api/viewshed/start', {
         method: 'POST',

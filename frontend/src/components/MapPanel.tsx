@@ -16,7 +16,7 @@ import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
 import { ClimbConfig } from '../utils/climb';
 import { saveFileWithLocation } from '../utils/fileSave';
-import { buildViewshedTrajectory } from '../utils/viewshedTrajectory';
+import { buildViewshedTrajectory, interpolatePlannedAltitude } from '../utils/viewshedTrajectory';
 import html2canvas from 'html2canvas';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
@@ -4885,53 +4885,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
       const distanceAlongPath = segmentStartDistance + (segmentLength * t);
       
       // Get planned altitude from elevation profile if available, otherwise interpolate between start and end heights
-      let plannedAltitude: number;
-      if (elevationProfile && elevationProfile.length > 0) {
-        // Find the two adjacent points in elevation profile for interpolation
-        let pointBefore: ElevationPoint | null = null;
-        let pointAfter: ElevationPoint | null = null;
-        
-        for (let j = 0; j < elevationProfile.length - 1; j++) {
-          const p1 = elevationProfile[j];
-          const p2 = elevationProfile[j + 1];
-          if (p1.distance <= distanceAlongPath && p2.distance >= distanceAlongPath) {
-            pointBefore = p1;
-            pointAfter = p2;
-            break;
-          }
-        }
-        
-        if (pointBefore && pointAfter) {
-          // Interpolate between the two points
-          const distRange = pointAfter.distance - pointBefore.distance;
-          const distFromBefore = distanceAlongPath - pointBefore.distance;
-          const interpolationFactor = distRange > 0 ? distFromBefore / distRange : 0;
-          
-          // Prefer plannedAltitude, then baseAltitude, then fallback to nominalFlightHeight
-          const altBefore = pointBefore.plannedAltitude ?? pointBefore.baseAltitude ?? nominalFlightHeight;
-          const altAfter = pointAfter.plannedAltitude ?? pointAfter.baseAltitude ?? nominalFlightHeight;
-          plannedAltitude = altBefore + (altAfter - altBefore) * interpolationFactor;
-          
-        } else {
-          // Distance is outside profile range, use closest point
-          let closestPoint = elevationProfile[0];
-          let minDelta = Math.abs(closestPoint.distance - distanceAlongPath);
-          
-          for (const profilePoint of elevationProfile) {
-            const delta = Math.abs(profilePoint.distance - distanceAlongPath);
-            if (delta < minDelta) {
-              minDelta = delta;
-              closestPoint = profilePoint;
-            }
-          }
-          
-          plannedAltitude = closestPoint.plannedAltitude ?? closestPoint.baseAltitude ?? nominalFlightHeight;
-        }
-      } else {
-        // No elevation profile: interpolate between start and end heights (both are ASL)
-        // Entry height (nominalFlightHeight) is ASL, so startHeight and endHeight are ASL
-        plannedAltitude = startHeight + (endHeight - startHeight) * t;
-      }
+      const plannedAltitude = elevationProfile && elevationProfile.length > 0
+        ? interpolatePlannedAltitude(elevationProfile, distanceAlongPath, nominalFlightHeight)
+        : startHeight + (endHeight - startHeight) * t;
       
       // Query DTM elevation at this point
       const groundElevation = calculateElevationAtPoint(point.lat, point.lng);
@@ -5541,16 +5497,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
         const isModifierPressed = e.ctrlKey || e.metaKey;
 
-        // If clicking on a point while holding Ctrl/Cmd, extend selection
-        // without clearing existing selected points.
+        // If clicking on a point while holding Ctrl/Cmd, toggle selection (add or remove)
         if (isModifierPressed) {
-          if (!selectedPointIndices.has(index)) {
-            setSelectedPointIndices((prev) => {
-              const next = new Set(prev);
-              next.add(index);
-              return next;
-            });
-          }
+          setSelectedPointIndices((prev) => {
+            const next = new Set(prev);
+            if (next.has(index)) {
+              next.delete(index); // Deselect if already selected
+            } else {
+              next.add(index); // Select if not selected
+            }
+            return next;
+          });
         } else {
           // No modifier: clicking a non-selected point should select ONLY that point
           if (!selectedPointIndices.has(index)) {

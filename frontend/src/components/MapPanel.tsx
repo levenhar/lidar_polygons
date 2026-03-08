@@ -683,6 +683,7 @@ interface MapPanelProps {
   onAddPoint: (point: Coordinate) => void;
   onAddPoints: (points: Coordinate[]) => void;
   onInsertPoints: (index: number, points: Coordinate[]) => void;
+  onDeleteClimbsOnSegment?: (pointIdA: string, pointIdB: string) => void;
   onUpdatePoint: (index: number, point: Coordinate) => void;
   onDeletePoint: (index: number) => void;
   onAddRoute: () => void;
@@ -749,6 +750,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onAddPoint,
   onAddPoints,
   onInsertPoints,
+  onDeleteClimbsOnSegment,
   onUpdatePoint,
   onDeletePoint,
   onAddRoute,
@@ -8109,6 +8111,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
           startHeight !== undefined
             ? pts.map(p => ({ ...p, height: startHeight }))
             : pts;
+        // Delete any climb points that sat on the segment being replaced by the U-turn arc.
+        // Only targets the exact A→B segment; all other climb points are preserved.
+        if (startPoint.id && endPoint.id && onDeleteClimbsOnSegment) {
+          onDeleteClimbsOnSegment(startPoint.id, endPoint.id);
+        }
         onInsertPoints(startPointIndex + 1, uTurnPoints);
         setSelectedPointIndices(new Set());
         resetDialog();

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/DELL/.claude/**)",
+      "Bash(npm test:*)",
+      "Bash(npm run:*)"
+    ]
+  }
+}

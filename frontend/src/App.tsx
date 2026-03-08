@@ -14,7 +14,7 @@ import { useElevationProfile } from './hooks/useElevationProfile';
 import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
 import climbPresetData from './config/climbPresets.json';
 import { GlobalUndoRedoProvider, useGlobalUndoRedo } from './contexts/GlobalUndoRedoContext';
-import { findClimbsAnchoredToPoint, ClimbRequest, getClimbPositionFromAnchors, findAnchorPointsForClimb } from './utils/climbAnchors';
+import { findClimbsAnchoredToPoint, ClimbRequest, getClimbPositionFromAnchors, findAnchorPointsForClimb, removeClimbsOnSegment, getEffectiveEndDistance } from './utils/climbAnchors';
 import { computeCumulativeDistances } from './utils/constraints';
 import { 
   exportProject, 
@@ -239,6 +239,7 @@ function App() {
     importKML,
     importRoutes,
     setClimbRequestsByRoute,
+    syncClimbRequestsByRoute,
     // Local undo/redo are registered with globalUndoRedo and called through it
     undo: _undo,
     redo: _redo,
@@ -272,6 +273,17 @@ function App() {
     isInsertOperationRef.current = true;
     insertPoints(index, points);
   }, [insertPoints]);
+
+  // Delete all climb points anchored to the direct segment between two waypoints.
+  // Called when a U-turn arc is inserted between those waypoints, making the segment invalid.
+  const handleDeleteClimbsOnSegment = React.useCallback((pointIdA: string, pointIdB: string) => {
+    setClimbRequestsByRoute((prev) => {
+      const current = prev[activeRouteId] || [];
+      const next = removeClimbsOnSegment(current, pointIdA, pointIdB);
+      if (next.length === current.length) return prev; // nothing changed, avoid re-render
+      return { ...prev, [activeRouteId]: next };
+    });
+  }, [activeRouteId, setClimbRequestsByRoute]);
   
   // Calculate default entry height: (safetyHeight + outputHeight) / 2 + groundElevation
   const calculateDefaultEntryHeight = React.useCallback(async (
@@ -414,7 +426,47 @@ function App() {
     
     return requests;
   }, [climbRequestsByRoute, activeRouteId, flightPath]);
-  
+
+  // Silently sync the stored endDistance of each climb to the anchor-derived effective value
+  // whenever the flight path changes (e.g. after a U-turn insertion). This keeps endDistance
+  // accurate without adding a spurious undo entry, so ElevationProfile can continue to match
+  // climbs by endDistance when the user edits or deletes them.
+  React.useEffect(() => {
+    if (flightPath.length < 2) return;
+    syncClimbRequestsByRoute((prev) => {
+      let changed = false;
+      const updated: Record<string, ClimbRequest[]> = {};
+      for (const [routeId, climbs] of Object.entries(prev)) {
+        // Only sync the active route (we only have the flight path for the active route here)
+        if (routeId !== activeRouteId) {
+          updated[routeId] = climbs;
+          continue;
+        }
+        const nextClimbs = climbs.map((c) => {
+          const effective = getEffectiveEndDistance(c, flightPath);
+          if (Math.abs(effective - c.endDistance) > 0.001) {
+            changed = true;
+            return { ...c, endDistance: effective };
+          }
+          return c;
+        });
+        updated[routeId] = nextClimbs;
+      }
+      return changed ? updated : prev;
+    });
+  }, [flightPath, activeRouteId]); // intentionally omit syncClimbRequestsByRoute (stable ref)
+
+  // Derived climb requests with endDistance recomputed from anchor IDs + segmentRatio.
+  // After the sync effect runs the stored values are already correct; this is kept as a
+  // safety net for the first render after a path change (before the effect fires).
+  const effectiveClimbRequests = React.useMemo(() =>
+    climbRequests.map((c) => ({
+      ...c,
+      endDistance: getEffectiveEndDistance(c, flightPath)
+    })),
+    [climbRequests, flightPath]
+  );
+
   // Set climb requests for the active route (now goes through undo/redo)
   const setClimbRequests = React.useCallback((updater: React.SetStateAction<ClimbRequest[]>) => {
     setClimbRequestsByRoute((prev) => {
@@ -568,8 +620,10 @@ function App() {
       };
     }
 
-    // 3. Process climb requests sequentially
-    const sortedClimbs = [...climbRequests].sort((a, b) => a.endDistance - b.endDistance);
+    // 3. Process climb requests sequentially.
+    // effectiveClimbRequests has endDistance derived from anchor IDs + segmentRatio,
+    // so positions are stable even when points are inserted/removed on the route.
+    const sortedClimbs = [...effectiveClimbRequests].sort((a, b) => a.endDistance - b.endDistance);
     let currentBase = baseAltitudeProfile;
     let currentPlanned = basePlanPoints;
     const allWarnings: string[] = [];
@@ -617,7 +671,7 @@ function App() {
       })),
       warnings: allWarnings
     };
-  }, [elevationProfile, nominalFlightHeight, flightPath, climbRequests, climbConfig]);
+  }, [elevationProfile, nominalFlightHeight, flightPath, effectiveClimbRequests, climbConfig]);
 
   // Stable profile that only updates when queue is empty AND server confirms it's ready
   const [stableProfileResult, setStableProfileResult] = React.useState(() => fullProfileResultInternal);
@@ -757,8 +811,8 @@ function App() {
       return route[route.length - 1];
     };
 
-    climbRequests.forEach((climb) => {
-      // Calculate required horizontal distance for the climb
+    effectiveClimbRequests.forEach((climb) => {
+      // climb.endDistance is already the anchor-derived effective distance
       const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
       const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
 
@@ -767,7 +821,7 @@ function App() {
       if (climb.anchorPointIdA && climb.anchorPointIdB) {
         endCoord = getClimbPositionFromAnchors(climb, flightPath, climb.endDistance);
       }
-      
+
       // Fallback to distance-based calculation if no anchors or anchors not found
       if (!endCoord) {
         const cumulativeDistances = computeCumulativeDistances(flightPath);
@@ -859,7 +913,7 @@ function App() {
     });
 
     return markers;
-  }, [climbRequests, fullProfileResult.points, climbConfig, flightPath]);
+  }, [effectiveClimbRequests, fullProfileResult.points, climbConfig, flightPath]);
 
   const deleteDtmOnServer = useCallback(async (
     pathToDelete?: string,
@@ -1783,6 +1837,7 @@ function App() {
             onAddPoint={addPointWrapped}
             onAddPoints={addPointsWrapped}
             onInsertPoints={insertPointsWrapped}
+            onDeleteClimbsOnSegment={handleDeleteClimbsOnSegment}
             onUpdatePoint={handleUpdatePoint}
             onDeletePoint={handleDeletePoint}
             onAddRoute={addRoute}
@@ -1827,7 +1882,7 @@ function App() {
             onShowMetadataChange={setShowMetadata}
             showNextLineSuggestions={showNextLineSuggestions}
             onShowNextLineSuggestionsChange={setShowNextLineSuggestions}
-            climbRequests={climbRequests}
+            climbRequests={effectiveClimbRequests}
             elevationProfile={fullProfileResult.points}
             climbConfig={climbConfig}
             onExportClick={() => {
@@ -1883,7 +1938,7 @@ function App() {
             climbPresets={CLIMB_PRESETS}
             selectedClimbPresetId={selectedClimbPresetId}
             climbConfig={climbConfig}
-            climbRequests={climbRequests}
+            climbRequests={effectiveClimbRequests}
             setClimbRequests={setClimbRequests}
             climbWarnings={fullProfileResult.warnings}
             showMetadata={showMetadata}

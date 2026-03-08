@@ -1399,6 +1399,24 @@ export function useFlightPath(
     [setState]
   );
 
+  // Silent (non-undoable) variant used to keep endDistance values in sync with
+  // the effective anchor-derived positions after route insertions/deletions.
+  const syncClimbRequestsByRoute = useCallback(
+    (updater: React.SetStateAction<Record<string, { endDistance: number; climbAmount: number }[]>>) => {
+      setState(
+        (prevState) => {
+          const next = typeof updater === 'function' ? updater(prevState.climbRequestsByRoute) : updater;
+          return {
+            ...prevState,
+            climbRequestsByRoute: next
+          };
+        },
+        false // do NOT record in undo history
+      );
+    },
+    [setState]
+  );
+
   // Import routes directly (for project restore)
   const importRoutes = useCallback(
     (routesToImport: FlightRoute[], climbRequestsByRouteToImport?: Record<string, { endDistance: number; climbAmount: number; anchorPointIdA?: string; anchorPointIdB?: string; segmentRatio?: number }[]>) => {
@@ -1487,6 +1505,7 @@ export function useFlightPath(
     importKML,
     importRoutes,
     setClimbRequestsByRoute,
+    syncClimbRequestsByRoute,
     undo,
     redo,
     canUndo,

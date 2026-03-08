@@ -95,6 +95,74 @@ export function findClimbsAnchoredToPoint(
 }
 
 /**
+ * Remove all climb points that are anchored to the specific segment between two points.
+ * Used when a U-turn is inserted between two consecutive waypoints, replacing their direct
+ * connection with a curve — any climb point that lived on that segment becomes invalid.
+ * @param climbRequests Current list of climb requests
+ * @param pointIdA ID of the segment start waypoint
+ * @param pointIdB ID of the segment end waypoint
+ * @returns New array with the matching climb requests removed
+ */
+export function removeClimbsOnSegment(
+  climbRequests: ClimbRequest[],
+  pointIdA: string,
+  pointIdB: string
+): ClimbRequest[] {
+  return climbRequests.filter(
+    (c) => !(c.anchorPointIdA === pointIdA && c.anchorPointIdB === pointIdB)
+  );
+}
+
+/**
+ * Derive the true endDistance for a climb from its anchor IDs and segmentRatio.
+ *
+ * When points are inserted into the path (e.g. a U-turn arc), the cumulative
+ * distances of all subsequent waypoints shift. The stored `endDistance` becomes
+ * stale. This function recomputes it from the stable anchor IDs + segmentRatio
+ * so the climb position on the elevation profile stays correct regardless of
+ * insertions elsewhere on the route.
+ *
+ * Falls back to `climb.endDistance` for legacy climbs that have no anchor IDs
+ * or whose anchors cannot be found in the current path.
+ *
+ * @param climb Climb request with optional anchor IDs and segmentRatio
+ * @param flightPath Current flight path (must have IDs on points)
+ * @returns Effective distance from route start to the climb's position
+ */
+export function getEffectiveEndDistance(
+  climb: ClimbRequest,
+  flightPath: Coordinate[]
+): number {
+  if (!climb.anchorPointIdA || !climb.anchorPointIdB || climb.segmentRatio === undefined) {
+    return climb.endDistance;
+  }
+
+  const cumulativeDistances = computeCumulativeDistances(flightPath);
+
+  let segmentStartIdx = -1;
+  let segmentEndIdx = -1;
+  for (let i = 0; i < flightPath.length; i++) {
+    if (flightPath[i].id === climb.anchorPointIdA) segmentStartIdx = i;
+    if (flightPath[i].id === climb.anchorPointIdB) segmentEndIdx = i;
+  }
+
+  if (
+    segmentStartIdx === -1 ||
+    segmentEndIdx === -1 ||
+    segmentEndIdx !== segmentStartIdx + 1
+  ) {
+    // Anchors not found or no longer consecutive — fall back to stored value
+    return climb.endDistance;
+  }
+
+  const segmentStartDist = cumulativeDistances[segmentStartIdx];
+  const segmentEndDist = cumulativeDistances[segmentEndIdx];
+  const segmentLength = segmentEndDist - segmentStartDist;
+
+  return segmentStartDist + climb.segmentRatio * segmentLength;
+}
+
+/**
  * Generate a stable ID for a coordinate if it doesn't have one
  * @param point The coordinate
  * @returns The point with an ID (generated if needed)

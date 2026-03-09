@@ -9164,8 +9164,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip tooltip="העלאת מסלול טיסה (KML)">
                 <label
                   htmlFor="import-kml-map"
-                  className={`btn btn-secondary btn-icon ${!dtmSource ? 'disabled' : ''}`}
-                  style={!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : undefined}
+                  className="btn btn-secondary btn-icon"
                   aria-label="העלאת מסלול טיסה"
                 >
                   <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">

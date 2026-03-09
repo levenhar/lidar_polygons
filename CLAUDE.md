@@ -108,6 +108,10 @@ Projects are saved as `.nehorai` ZIP archives (also accepts legacy `.routeproj`)
 - On startup, `main.py` builds a `tif_footprints_cache` scanning `DTM_TIFF/` for fast overlap queries.
 - CRS: WGS84 (`EPSG:4326`) for coordinates; UTM 36N (`EPSG:32636`) for metric calculations.
 
+## Keyboard Shortcuts
+
+Whenever a new keyboard shortcut is added to the app, it **must also be added** to the "מקשי קיצור" tab in `frontend/src/components/SettingsModal.tsx`. The shortcuts are listed as a static table grouped by category (מפה, פרויקט, דיאלוגים, etc.). Add a new category group if needed.
+
 ## Environment Variables
 
 The Node backend reads from a `.env` file in `backend/`. Key vars: `BACKEND_PORT`, `MAPS_TOKEN`, `MAPS_URL`, `MAPS_CRS`, `UPLOADS_DIR`. See `backend/env-no-secret.md` for the full list (without values).

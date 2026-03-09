@@ -22,7 +22,7 @@ const GearIcon: React.FC = () => (
   </svg>
 );
 
-type TabId = 'general' | 'mission' | 'ascend-descend';
+type TabId = 'general' | 'mission' | 'ascend-descend' | 'shortcuts';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -329,7 +329,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Keyboard navigation for tabs
   const handleTabKeyDown = (e: React.KeyboardEvent, tabId: TabId) => {
-    const tabs: TabId[] = ['general', 'mission', 'ascend-descend'];
+    const tabs: TabId[] = ['general', 'mission', 'ascend-descend', 'shortcuts'];
     const currentIndex = tabs.indexOf(tabId);
 
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -418,6 +418,19 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             type="button"
           >
             עלייה/ירידה
+          </button>
+          <button
+            role="tab"
+            aria-selected={activeTab === 'shortcuts'}
+            aria-controls="tab-panel-shortcuts"
+            id="tab-shortcuts"
+            className={`settings-modal__tab ${activeTab === 'shortcuts' ? 'active' : ''}`}
+            onClick={() => setActiveTab('shortcuts')}
+            onKeyDown={(e) => handleTabKeyDown(e, 'shortcuts')}
+            tabIndex={activeTab === 'shortcuts' ? 0 : -1}
+            type="button"
+          >
+            מקשי קיצור
           </button>
         </div>
 
@@ -823,6 +836,67 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="settings-modal__info-box">
                 שינויים חלים מיד על עליות חדשות. עליות קיימות מחושבות מחדש עם המדיניות החדשה.
               </div>
+            </div>
+          )}
+
+          {/* Keyboard Shortcuts Tab */}
+          {activeTab === 'shortcuts' && (
+            <div
+              role="tabpanel"
+              id="tab-panel-shortcuts"
+              aria-labelledby="tab-shortcuts"
+              className="settings-modal__panel"
+            >
+              {[
+                {
+                  category: 'מפה',
+                  rows: [
+                    { key: 'לחיצה כפולה עם לחצן ימני', action: 'הפעלת מצב שרטוט' },
+                    { key: 'לחצן ימני / ESC', action: 'יציאה ממצב שרטוט' },
+                    { key: 'Alt (בזמן גרירת נקודה)', action: 'עיגון כיוון הקו (ראשונה/אחרונה בלבד)' },
+                    { key: 'Ctrl + לחיצה על נקודה', action: 'בחירה מרובה' },
+                    { key: 'Delete / Backspace', action: 'מחיקת נקודות שנבחרו' },
+                    { key: 'ESC (בזמן גרירה)', action: 'ביטול גרירה' },
+                  ],
+                },
+                {
+                  category: 'פרויקט',
+                  rows: [
+                    { key: 'Ctrl+S / Cmd+S', action: 'שמירת פרויקט' },
+                  ],
+                },
+                {
+                  category: 'דיאלוגים',
+                  rows: [
+                    { key: 'Enter', action: 'אישור קלט' },
+                    { key: 'ESC', action: 'סגירת חלון' },
+                  ],
+                },
+              ].map(({ category, rows }) => (
+                <div key={category} className="settings-modal__field">
+                  <div className="settings-modal__label" style={{ marginBottom: '6px' }}>{category}</div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <tbody>
+                      {rows.map(({ key, action }) => (
+                        <tr key={key} style={{ borderBottom: '1px solid var(--border-color, #e5e7eb)' }}>
+                          <td style={{ padding: '6px 8px 6px 0', width: '55%', verticalAlign: 'middle' }}>
+                            <kbd style={{
+                              fontFamily: 'monospace',
+                              background: '#f0f0f0',
+                              border: '1px solid #ccc',
+                              borderRadius: '3px',
+                              padding: '1px 5px',
+                              fontSize: '0.85em',
+                              whiteSpace: 'nowrap',
+                            }}>{key}</kbd>
+                          </td>
+                          <td style={{ padding: '6px 0', verticalAlign: 'middle', fontSize: '0.9em' }}>{action}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           )}
         </div>

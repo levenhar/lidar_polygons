@@ -10,6 +10,8 @@ export interface ClimbRequest {
   anchorPointIdA?: string; // ID of the first anchor point (segment start)
   anchorPointIdB?: string; // ID of the second anchor point (segment end)
   segmentRatio?: number; // Ratio along the segment (0 = at pointA, 1 = at pointB) - stored to preserve position
+  climbRatio?: number;   // Per-point climb ratio override (horizontal : vertical). Overrides global climbConfig.climbRatio
+  descentRatio?: number; // Per-point descent ratio override. Overrides global climbConfig.descentRatio
 }
 
 /**

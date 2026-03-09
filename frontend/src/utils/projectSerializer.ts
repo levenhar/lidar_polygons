@@ -175,8 +175,10 @@ export interface ProjectFileData {
     anchorPointIdA?: string;
     anchorPointIdB?: string;
     segmentRatio?: number;
+    climbRatio?: number;
+    descentRatio?: number;
   }>>;
-  
+
   // Settings
   general: GeneralSettings;
   mission: MissionSettings;
@@ -248,7 +250,7 @@ export function exportProject(params: {
   // Routes
   routes: FlightRoute[];
   activeRouteId: string;
-  climbRequestsByRoute: Record<string, Array<{ endDistance: number; climbAmount: number; anchorPointIdA?: string; anchorPointIdB?: string; segmentRatio?: number }>>;
+  climbRequestsByRoute: Record<string, Array<{ endDistance: number; climbAmount: number; anchorPointIdA?: string; anchorPointIdB?: string; segmentRatio?: number; climbRatio?: number; descentRatio?: number }>>;
   
   // Settings
   general: GeneralSettings;
@@ -358,7 +360,9 @@ export function exportProject(params: {
       climbAmount: req.climbAmount,
       ...(req.anchorPointIdA && { anchorPointIdA: req.anchorPointIdA }),
       ...(req.anchorPointIdB && { anchorPointIdB: req.anchorPointIdB }),
-      ...(req.segmentRatio !== undefined && { segmentRatio: req.segmentRatio })
+      ...(req.segmentRatio !== undefined && { segmentRatio: req.segmentRatio }),
+      ...(req.climbRatio !== undefined && { climbRatio: req.climbRatio }),
+      ...(req.descentRatio !== undefined && { descentRatio: req.descentRatio })
     }));
   });
   

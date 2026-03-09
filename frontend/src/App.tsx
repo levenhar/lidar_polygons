@@ -642,15 +642,17 @@ function App() {
     const allWarnings: string[] = [];
 
     sortedClimbs.forEach((climb, idx) => {
-      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const activeRatio = climb.climbAmount > 0
+        ? (climb.climbRatio ?? climbConfig.climbRatio)
+        : (climb.descentRatio ?? climbConfig.descentRatio);
       const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
       const startDistanceOfClimb = Math.max(0, climb.endDistance - requiredHorizontal);
 
       const res = computeClimbProfile(
         startDistanceOfClimb,
         climb.climbAmount,
-        climbConfig.climbRatio,
-        climbConfig.descentRatio,
+        climb.climbRatio ?? climbConfig.climbRatio,
+        climb.descentRatio ?? climbConfig.descentRatio,
         climbConfig.allowTurnsDuringClimb,
         flightPath,
         currentBase,

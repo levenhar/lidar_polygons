@@ -6,7 +6,8 @@
       "Bash(npm run:*)",
       "Bash(ls:*)",
       "Bash(npx vitest:*)",
-      "Bash(awk:*)"
+      "Bash(awk:*)",
+      "Bash(xargs grep:*)"
     ]
   }
 }

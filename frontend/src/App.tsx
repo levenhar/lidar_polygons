@@ -4,6 +4,7 @@ import ElevationProfile from './components/ElevationProfile';
 import ExportSettingsModal from './components/ExportSettingsModal';
 import SettingsModal, { GearIcon } from './components/SettingsModal';
 import AnchorPointWarningModal from './components/AnchorPointWarningModal';
+import ReverseWarningModal from './components/ReverseWarningModal';
 import MissingLocalDTMModal from './components/MissingLocalDTMModal';
 import SaveFileDialog from './components/SaveFileDialog';
 import SuccessNotification from './components/SuccessNotification';
@@ -2668,37 +2669,14 @@ function AppContent() {
         onClose={() => setSuccessNotification({ isOpen: false, message: '' })}
         autoCloseDelay={3000}
       />
-      {reverseWarningOpen && (
-        <div
-          className="dtm-loader-overlay"
-          onClick={() => setReverseWarningOpen(false)}
-        >
-          <div
-            className="dtm-loader-dialog"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3>הפוך כיוון מסלול</h3>
-            <p>פעולה זו תמחק את כל נקודות העלייה/ירידה במסלול. האם להמשיך?</p>
-            <div className="dtm-loader-dialog-buttons">
-              <button
-                className="btn btn-secondary"
-                onClick={() => setReverseWarningOpen(false)}
-              >
-                ביטול
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={() => {
-                  setReverseWarningOpen(false);
-                  reverseFlightPath();
-                }}
-              >
-                המשך
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ReverseWarningModal
+        isOpen={reverseWarningOpen}
+        onCancel={() => setReverseWarningOpen(false)}
+        onContinue={() => {
+          setReverseWarningOpen(false);
+          reverseFlightPath();
+        }}
+      />
     </div>
   );
 }

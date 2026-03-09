@@ -1463,6 +1463,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
           safetyStatus?: HeightLimitStatus;
           outputColor?: string;
           safetyColor?: string;
+          excess: number;
+          isWorst: boolean;
         }>,
         stats: { total: 0, green: 0, yellow: 0, red: 0 },
         outputLegend: null as { green: string; yellow: string; red: string } | null,
@@ -1480,6 +1482,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       safetyStatus?: HeightLimitStatus;
       outputColor?: string;
       safetyColor?: string;
+      excess: number;
+      isWorst: boolean;
     }> = [];
     let green = 0, yellow = 0, red = 0;
     for (let i = 0; i < profile.length; i++) {
@@ -1504,6 +1508,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
       const outputColor = outputStatus ? HEIGHT_LIMITATION_COLORS[outputStatus] : undefined;
       const safetyColor = safetyStatus ? HEIGHT_LIMITATION_COLORS[safetyStatus] : undefined;
+      // excess: how much the flight altitude exceeds the limit (positive = violation)
+      const excess = outMode
+        ? flightAltitude - outputAltitude   // output mode: too high above resolution limit
+        : safetyAltitude - flightAltitude;  // safety mode: too close/below safety height
       points.push({
         index: i,
         lat: p.latitude,
@@ -1514,7 +1522,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         outputStatus,
         safetyStatus,
         outputColor,
-        safetyColor
+        safetyColor,
+        excess,
+        isWorst: false
       });
       // For stats: count worst status per point when both modes (spec: aggregate by color)
       const outC = outputStatus ? HEIGHT_LIMITATION_COLORS[outputStatus] : null;
@@ -1525,6 +1535,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
       else if (isYellow) yellow++;
       else green++;
     }
+    // Mark the single worst-offending point (highest positive excess)
+    const worstCandidate = [...points].filter(p => p.excess > 0).sort((a, b) => b.excess - a.excess)[0];
+    if (worstCandidate) worstCandidate.isWorst = true;
+
     // Legend: absolute heights above ground (AGL) in meters
     const out10 = resolutionHeight - HEIGHT_LIMITATION_THRESHOLD_M;
     const safe10 = safetyHeight + HEIGHT_LIMITATION_THRESHOLD_M;
@@ -1551,12 +1565,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const { points } = heightLimitationData;
     const outMode = heightLimitationMode === 'output';
     const safeMode = heightLimitationMode === 'safety';
+    let worstCircle: L.CircleMarker | null = null;
     points.forEach((pt) => {
       if (safeMode) {
+        const isWorst = pt.isWorst;
+        const fillColor = isWorst ? '#7f0000' : (pt.safetyColor ?? '#94a3b8');
         const circle = L.circleMarker([pt.lat, pt.lng], {
           radius: 10,
-          color: pt.safetyColor ?? '#94a3b8',
-          fillColor: pt.safetyColor ?? '#94a3b8',
+          color: fillColor,
+          fillColor,
           fillOpacity: 0.9,
           weight: 2,
           opacity: 1
@@ -1564,16 +1581,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
         (circle as any).__heightLimitPoint = pt;
         circle.bindTooltip(() => {
           const x = (circle as any).__heightLimitPoint as typeof pt;
-          return `נקודה ${x.index + 1} | גובה טיסה: ${x.flightAltitude.toFixed(1)}מ' | בטיחות: ${x.safetyAltitude.toFixed(1)}מ' | ${x.safetyStatus === 'green' ? 'תקין' : x.safetyStatus === 'yellow' ? 'אזהרה' : 'קריטי'}`;
+          const status = x.safetyStatus === 'green' ? 'תקין' : x.safetyStatus === 'yellow' ? 'אזהרה' : 'קריטי';
+          const excessStr = x.excess > 0 ? ` | חריגה: ${x.excess.toFixed(1)}מ'` : '';
+          return `נקודה ${x.index + 1} | גובה טיסה: ${x.flightAltitude.toFixed(1)}מ' | בטיחות: ${x.safetyAltitude.toFixed(1)}מ' | ${status}${excessStr}`;
         }, { direction: 'top', offset: [0, -8] });
         circle.addTo(m);
         heightLimitationMarkersRef.current.push(circle);
+        if (isWorst) {
+          worstCircle = circle;
+          const label = L.marker([pt.lat, pt.lng], {
+            icon: L.divIcon({
+              className: '',
+              html: `<div style="display:inline-block;background:rgba(127,0,0,0.85);color:#fff;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:3px;white-space:nowrap;transform:translate(-50%,-26px);pointer-events:none;border:1px solid #000;box-shadow:0 0 0 1px #000">+${pt.excess.toFixed(0)}מ'</div>`,
+              iconSize: [0, 0],
+              iconAnchor: [0, 0]
+            }),
+            interactive: false,
+            zIndexOffset: 1000
+          });
+          label.addTo(m);
+          heightLimitationMarkersRef.current.push(label as unknown as L.CircleMarker);
+        }
       }
       if (outMode) {
+        const isWorst = pt.isWorst;
+        const fillColor = isWorst ? '#7f0000' : (pt.outputColor ?? '#94a3b8');
         const circle = L.circleMarker([pt.lat, pt.lng], {
           radius: 10,
-          color: pt.outputColor ?? '#94a3b8',
-          fillColor: pt.outputColor ?? '#94a3b8',
+          color: fillColor,
+          fillColor,
           fillOpacity: 0.95,
           weight: 2,
           opacity: 1
@@ -1581,12 +1617,31 @@ const MapPanel: React.FC<MapPanelProps> = ({
         (circle as any).__heightLimitPoint = pt;
         circle.bindTooltip(() => {
           const x = (circle as any).__heightLimitPoint as typeof pt;
-          return `נקודה ${x.index + 1} | גובה טיסה: ${x.flightAltitude.toFixed(1)}מ' | תוצר: ${x.outputAltitude.toFixed(1)}מ' | ${x.outputStatus === 'green' ? 'תקין' : x.outputStatus === 'yellow' ? 'אזהרה' : 'קריטי'}`;
+          const status = x.outputStatus === 'green' ? 'תקין' : x.outputStatus === 'yellow' ? 'אזהרה' : 'קריטי';
+          const excessStr = x.excess > 0 ? ` | חריגה: ${x.excess.toFixed(1)}מ'` : '';
+          return `נקודה ${x.index + 1} | גובה טיסה: ${x.flightAltitude.toFixed(1)}מ' | תוצר: ${x.outputAltitude.toFixed(1)}מ' | ${status}${excessStr}`;
         }, { direction: 'top', offset: [0, -8] });
         circle.addTo(m);
         heightLimitationMarkersRef.current.push(circle);
+        if (isWorst) {
+          worstCircle = circle;
+          const label = L.marker([pt.lat, pt.lng], {
+            icon: L.divIcon({
+              className: '',
+              html: `<div style="display:inline-block;background:rgba(127,0,0,0.85);color:#fff;font-size:10px;font-weight:bold;padding:1px 4px;border-radius:3px;white-space:nowrap;transform:translate(-50%,-26px);pointer-events:none;border:1px solid #000;box-shadow:0 0 0 1px #000">+${pt.excess.toFixed(0)}מ'</div>`,
+              iconSize: [0, 0],
+              iconAnchor: [0, 0]
+            }),
+            interactive: false,
+            zIndexOffset: 1000
+          });
+          label.addTo(m);
+          heightLimitationMarkersRef.current.push(label as unknown as L.CircleMarker);
+        }
       }
     });
+    // Bring worst circle to front after all markers are added
+    if (worstCircle) (worstCircle as L.CircleMarker).bringToFront();
     return () => {
       heightLimitationMarkersRef.current.forEach(marker => {
         if (m && m.hasLayer(marker)) m.removeLayer(marker);
@@ -2270,6 +2325,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           if (el.closest?.('.map-instruction-banner') || el.closest?.('.routes-panel')) return true;
           if (el.classList?.contains('basemap-toggle') || el.classList?.contains('display-settings-container')) return true;
           if (el.closest?.('.basemap-toggle') || el.closest?.('.display-settings-container')) return true;
+          if (el.classList?.contains('segment-length-label') || el.closest?.('.segment-length-label')) return true;
           if (el.classList?.contains('leaflet-control-zoom') || el.classList?.contains('leaflet-control-attribution') || el.classList?.contains('leaflet-control-scale')) return true;
           if (el.closest?.('.leaflet-control-zoom') || el.closest?.('.leaflet-control-attribution') || el.closest?.('.leaflet-control-scale')) return true;
           if (/\bleaflet-control\b/.test(el.className?.toString() || '')) return true;
@@ -2332,23 +2388,38 @@ const MapPanel: React.FC<MapPanelProps> = ({
           ctx.fill();
         });
 
-        // 3. Numbered waypoint markers (white fill, red outline) at flight path points
+        // 3. Numbered waypoint markers (red fill, white border + text) at flight path points
         const waypointRadius = 14 * scale;
         flightPath.forEach((wp, idx) => {
           const { x, y } = toCanvas(wp.lat, wp.lng);
+          // Red filled circle
           ctx.beginPath();
           ctx.arc(x, y, waypointRadius, 0, Math.PI * 2);
-          ctx.fillStyle = '#ffffff';
+          ctx.fillStyle = '#ff0000';
           ctx.fill();
-          ctx.strokeStyle = '#dc2626';
-          ctx.lineWidth = Math.max(2, Math.round(scale * 1.5));
+          // White border
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2 * scale;
           ctx.stroke();
-          ctx.fillStyle = '#dc2626';
+          // White number
+          ctx.fillStyle = '#ffffff';
           ctx.font = `bold ${12 * scale}px sans-serif`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText(String(idx + 1), x, y);
         });
+
+        // 4. Worst-point marker: dark red dot + label with excess value
+        const worst = points.find(p => p.isWorst);
+        if (worst) {
+          const { x, y } = toCanvas(worst.lat, worst.lng);
+          const worstDotRadius = 7 * scale;
+
+          ctx.beginPath();
+          ctx.arc(x, y, worstDotRadius, 0, Math.PI * 2);
+          ctx.fillStyle = '#7f0000';
+          ctx.fill();
+        }
       }
 
       const blob = await new Promise<Blob | null>((resolve) => {

@@ -289,6 +289,36 @@
   font-size: 0.95rem;
 }
 
+.climb-modal__ratios {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  margin-top: 0.5rem;
+}
+
+.climb-modal__ratio-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.climb-modal__ratio-label {
+  font-size: 0.875rem;
+  color: #64748b;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.climb-modal__ratio-input {
+  width: 5rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  background: white;
+  text-align: center;
+}
+
 .climb-modal__hint {
   color: #475569;
   font-size: 0.9rem;

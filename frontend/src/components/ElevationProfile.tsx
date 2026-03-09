@@ -212,10 +212,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const [climbAmountError, setClimbAmountError] = useState<string | null>(null);
   const [climbValidationPopup, setClimbValidationPopup] = useState<string | null>(null);
   const [showDeleteAllConfirmation, setShowDeleteAllConfirmation] = useState(false);
-  const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number } | null>(null);
+  const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number; climbRatio?: number; descentRatio?: number } | null>(null);
   const climbContextMenuRef = useRef<HTMLDivElement | null>(null);
   // Track the climb being edited to exclude it from constraint checks
   const [editingClimb, setEditingClimb] = useState<{ endDistance: number; climbAmount: number } | null>(null);
+  // Per-point ratio overrides for the modal (empty string = use global config)
+  const [customClimbRatio, setCustomClimbRatio] = useState<string>('');
+  const [customDescentRatio, setCustomDescentRatio] = useState<string>('');
 
   const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -277,11 +280,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         continue;
       }
       
-      const existingRatio = existingClimb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const existingRatio = existingClimb.climbAmount > 0
+        ? (existingClimb.climbRatio ?? climbConfig.climbRatio)
+        : (existingClimb.descentRatio ?? climbConfig.descentRatio);
       const existingRequiredHorizontal = Math.abs(existingClimb.climbAmount) * existingRatio;
       const existingStart = Math.max(0, existingClimb.endDistance - existingRequiredHorizontal);
       const existingEnd = existingClimb.endDistance;
-      
+
       // Calculate forbidden area: climb area + buffer before and after
       const forbiddenStart = existingStart - climbConfig.vertexProximityMeters;
       const forbiddenEnd = existingEnd + climbConfig.vertexProximityMeters;
@@ -301,6 +306,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (elevationProfile.length === 0) return 0;
     return elevationProfile[elevationProfile.length - 1].distance;
   }, [elevationProfile]);
+
+  // Effective ratios for the current modal climb point (custom override or global default)
+  const modalClimbRatio = parseFloat(customClimbRatio) > 0 ? parseFloat(customClimbRatio) : climbConfig.climbRatio;
+  const modalDescentRatio = parseFloat(customDescentRatio) > 0 ? parseFloat(customDescentRatio) : climbConfig.descentRatio;
 
   // Calculate max climb/descent values for display
   const maxValues = useMemo(() => {
@@ -330,12 +339,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const dAvail = distanceToLeftConstraint;
     
     // Calculate maximum climb/descent based on available distance to constraints
-    // Always round down (floor) to ensure we don't exceed the limit
-    const maxClimbUp = Math.floor((dAvail / climbConfig.climbRatio) * 10) / 10;
-    const maxDescend = Math.floor((dAvail / climbConfig.descentRatio) * 10) / 10;
-    
+    // Always round down (floor) to ensure we don't exceed the limit, then subtract 0.1 as safety margin
+    const maxClimbUp = Math.floor((dAvail / modalClimbRatio) * 10) / 10 - 0.1;
+    const maxDescend = Math.floor((dAvail / modalDescentRatio) * 10) / 10 - 0.1;
+
     return { maxClimbUp, maxDescend };
-  }, [pendingClimbEnd, totalRouteLength, vertexDistances, climbConfig, climbRequests]);
+  }, [pendingClimbEnd, totalRouteLength, vertexDistances, climbConfig, climbRequests, modalClimbRatio, modalDescentRatio]);
 
   // Calculate tooltip position to keep it on screen
   useLayoutEffect(() => {
@@ -1049,7 +1058,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .attr('stroke-width', 2);
     }
 
-    const endMarkersData = climbRequests.map((c) => ({ endDistance: c.endDistance, climbAmount: c.climbAmount }));
+    const endMarkersData = climbRequests.map((c) => ({ endDistance: c.endDistance, climbAmount: c.climbAmount, climbRatio: c.climbRatio, descentRatio: c.descentRatio }));
 
     climbEndMarkers = chartArea.selectAll<SVGGElement, any>('.climb-end-marker')
       .data(endMarkersData)
@@ -1063,7 +1072,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         const clickY = (event as MouseEvent).clientY;
         // Close regular context menu if open
         setContextMenu(null);
-        setClimbContextMenu({ x: clickX, y: clickY, endDistance: d.endDistance, climbAmount: d.climbAmount });
+        setClimbContextMenu({ x: clickX, y: clickY, endDistance: d.endDistance, climbAmount: d.climbAmount, climbRatio: d.climbRatio, descentRatio: d.descentRatio });
       });
 
     climbEndMarkers.append('circle')
@@ -1077,7 +1086,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Add start markers for each climb point
     const startMarkersData = climbRequests.map((c) => {
-      const activeRatio = c.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const activeRatio = c.climbAmount > 0
+        ? (c.climbRatio ?? climbConfig.climbRatio)
+        : (c.descentRatio ?? climbConfig.descentRatio);
       const requiredHorizontal = Math.abs(c.climbAmount) * activeRatio;
       const startDistance = Math.max(0, c.endDistance - requiredHorizontal);
       return { startDistance, endDistance: c.endDistance, climbAmount: c.climbAmount };
@@ -1695,6 +1706,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       setClimbAmountInput('');
       setClimbAmountError(null);
       setEditingClimb(null); // Clear any editing state when creating a new climb
+      setCustomClimbRatio('');
+      setCustomDescentRatio('');
       setIsClimbAmountOpen(true);
     });
 
@@ -1704,17 +1717,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       // Use a larger threshold (15px) to ensure we catch clicks on climb markers even if slightly off
       const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
       
-      let clickedClimb: { endDistance: number; climbAmount: number } | null = null;
+      let clickedClimb: { endDistance: number; climbAmount: number; climbRatio?: number; descentRatio?: number } | null = null;
 
       // Check for climb end markers with higher priority and larger threshold
       for (const climb of climbRequests) {
         const climbX = currentXScale(climb.endDistance);
         const climbY = currentYScale(getPlannedAltitudeAtDistance(climb.endDistance));
         const distToClimb = Math.sqrt(Math.pow(climbX - mouseX, 2) + Math.pow(climbY - mouseY, 2));
-        
+
         // Use 15px threshold to ensure we catch clicks on climb markers
         if (distToClimb < 15) {
-          clickedClimb = { endDistance: climb.endDistance, climbAmount: climb.climbAmount };
+          clickedClimb = { endDistance: climb.endDistance, climbAmount: climb.climbAmount, climbRatio: climb.climbRatio, descentRatio: climb.descentRatio };
           break;
         }
       }
@@ -1727,7 +1740,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         const clickY = event.clientY || (event as MouseEvent).clientY;
         // Close regular context menu if open
         setContextMenu(null);
-        setClimbContextMenu({ x: clickX, y: clickY, endDistance: clickedClimb.endDistance, climbAmount: clickedClimb.climbAmount });
+        setClimbContextMenu({ x: clickX, y: clickY, endDistance: clickedClimb.endDistance, climbAmount: clickedClimb.climbAmount, climbRatio: clickedClimb.climbRatio, descentRatio: clickedClimb.descentRatio });
         return; // Don't show regular context menu
       }
 
@@ -1995,14 +2008,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         : climbRequests;
       const sorted = [...climbsToProcess].sort((a, b) => a.endDistance - b.endDistance);
       sorted.forEach((c) => {
-        const activeRatio = c.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+        const activeRatio = c.climbAmount > 0
+          ? (c.climbRatio ?? climbConfig.climbRatio)
+          : (c.descentRatio ?? climbConfig.descentRatio);
         const requiredHorizontal = Math.abs(c.climbAmount) * activeRatio;
         const startDistance = Math.max(0, c.endDistance - requiredHorizontal);
         const res = computeClimbProfile(
           startDistance,
           c.climbAmount,
-          climbConfig.climbRatio,
-          climbConfig.descentRatio,
+          c.climbRatio ?? climbConfig.climbRatio,
+          c.descentRatio ?? climbConfig.descentRatio,
           climbConfig.allowTurnsDuringClimb,
           flightPath,
           currentBase,
@@ -2018,14 +2033,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return currentBase;
     })();
 
-    const activeRatio = parsed > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+    const submitClimbRatio = parseFloat(customClimbRatio) > 0 ? parseFloat(customClimbRatio) : climbConfig.climbRatio;
+    const submitDescentRatio = parseFloat(customDescentRatio) > 0 ? parseFloat(customDescentRatio) : climbConfig.descentRatio;
+    const activeRatio = parsed > 0 ? submitClimbRatio : submitDescentRatio;
     const requiredHorizontal = Math.abs(parsed) * activeRatio;
     const startDistance = Math.max(0, pendingClimbEnd - requiredHorizontal);
     const preview = computeClimbProfile(
       startDistance,
       parsed,
-      climbConfig.climbRatio,
-      climbConfig.descentRatio,
+      submitClimbRatio,
+      submitDescentRatio,
       climbConfig.allowTurnsDuringClimb,
       flightPath,
       baseAfterExisting,
@@ -2053,7 +2070,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         continue;
       }
       
-      const existingRatio = existingClimb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const existingRatio = existingClimb.climbAmount > 0
+        ? (existingClimb.climbRatio ?? climbConfig.climbRatio)
+        : (existingClimb.descentRatio ?? climbConfig.descentRatio);
       const existingRequiredHorizontal = Math.abs(existingClimb.climbAmount) * existingRatio;
       const existingStart = Math.max(0, existingClimb.endDistance - existingRequiredHorizontal);
       const existingEnd = existingClimb.endDistance;
@@ -2136,7 +2155,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           )
         : prev.filter((c) => Math.abs(c.endDistance - pendingClimbEnd) > 0.01);
       
-      // Create new climb request with anchor IDs and segment ratio
+      // Create new climb request with anchor IDs, segment ratio, and optional per-point ratio overrides
       const newClimb: ClimbRequest = {
         endDistance: pendingClimbEnd,
         climbAmount: parsed,
@@ -2144,7 +2163,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           anchorPointIdA: anchors.anchorPointIdA,
           anchorPointIdB: anchors.anchorPointIdB,
           segmentRatio: anchors.segmentRatio
-        })
+        }),
+        ...(parseFloat(customClimbRatio) > 0 && { climbRatio: parseFloat(customClimbRatio) }),
+        ...(parseFloat(customDescentRatio) > 0 && { descentRatio: parseFloat(customDescentRatio) })
       };
       
       console.log('[CLIMB_CREATE] New climb created:', {
@@ -2158,8 +2179,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     setIsClimbAmountOpen(false);
     setPendingClimbEnd(null);
     setClimbAmountError(null);
-    setEditingClimb(null); // Clear editing state after confirming
-  }, [climbAmountInput, pendingClimbEnd, climbRequests, climbConfig, flightPath, elevationProfile, nominalFlightHeight, setClimbRequests, editingClimb]);
+    setEditingClimb(null);
+    setCustomClimbRatio('');
+    setCustomDescentRatio('');
+  }, [climbAmountInput, pendingClimbEnd, climbRequests, climbConfig, flightPath, elevationProfile, nominalFlightHeight, setClimbRequests, editingClimb, customClimbRatio, customDescentRatio]);
 
   const handleRemoveClimb = useCallback(() => {
     setShowDeleteAllConfirmation(true);
@@ -3026,7 +3049,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           <div className="climb-modal__card">
             <div className="climb-modal__header">
               <div className="climb-modal__title">{parseFloat(climbAmountInput) < 0 ? 'החל ירידה' : 'החל עלייה'}</div>
-              <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); setEditingClimb(null); }}>×</button>
+              <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); setEditingClimb(null); setCustomClimbRatio(''); setCustomDescentRatio(''); }}>×</button>
             </div>
             <div className="climb-modal__body">
               <div className="climb-modal__title-row">
@@ -3084,8 +3107,37 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   </div>
                 </div>
               )}
+              {/* Per-point ratio overrides */}
+              <div className="climb-modal__ratios">
+                <div className="climb-modal__ratio-row">
+                  <label className="climb-modal__ratio-label" htmlFor="climb-ratio-override">יחס עלייה:</label>
+                  <input
+                    id="climb-ratio-override"
+                    type="number"
+                    step="0.5"
+                    min="0.1"
+                    className="climb-modal__ratio-input"
+                    value={customClimbRatio}
+                    placeholder={climbConfig.climbRatio.toString()}
+                    onChange={(e) => setCustomClimbRatio(e.target.value)}
+                  />
+                </div>
+                <div className="climb-modal__ratio-row">
+                  <label className="climb-modal__ratio-label" htmlFor="descent-ratio-override">יחס ירידה:</label>
+                  <input
+                    id="descent-ratio-override"
+                    type="number"
+                    step="0.5"
+                    min="0.1"
+                    className="climb-modal__ratio-input"
+                    value={customDescentRatio}
+                    placeholder={climbConfig.descentRatio.toString()}
+                    onChange={(e) => setCustomDescentRatio(e.target.value)}
+                  />
+                </div>
+              </div>
               <div className="climb-modal__hint">
-                יחס {parseFloat(climbAmountInput) > 0 ? climbConfig.climbRatio : climbConfig.descentRatio} : 1 (אופקי:אנכי).
+                יחס {parseFloat(climbAmountInput) > 0 ? modalClimbRatio : modalDescentRatio} : 1 (אופקי:אנכי).
                 {climbConfig.allowTurnsDuringClimb ? '  מאפשר עליה דרך פניות.' : '  אין עליה דרך פניות.'}
               </div>
               {climbAmountError && <div className="climb-modal__error">{climbAmountError}</div>}
@@ -3111,7 +3163,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               )}
             </div>
             <div className="climb-modal__actions">
-              <button className="btn btn-tertiary" type="button" onClick={() => { setIsClimbAmountOpen(false); setEditingClimb(null); }}>ביטול</button>
+              <button className="btn btn-tertiary" type="button" onClick={() => { setIsClimbAmountOpen(false); setEditingClimb(null); setCustomClimbRatio(''); setCustomDescentRatio(''); }}>ביטול</button>
               <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>{parseFloat(climbAmountInput) < 0 ? 'החל ירידה' : 'החל עלייה'}</button>
             </div>
           </div>
@@ -3171,6 +3223,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               setPendingClimbEnd(climbContextMenu.endDistance);
               setClimbAmountInput(climbContextMenu.climbAmount.toString());
               setClimbAmountError(null);
+              setCustomClimbRatio(climbContextMenu.climbRatio !== undefined ? climbContextMenu.climbRatio.toString() : '');
+              setCustomDescentRatio(climbContextMenu.descentRatio !== undefined ? climbContextMenu.descentRatio.toString() : '');
               // Track the climb being edited to exclude it from constraint checks
               setEditingClimb({ endDistance: climbContextMenu.endDistance, climbAmount: climbContextMenu.climbAmount });
               setIsClimbAmountOpen(true);

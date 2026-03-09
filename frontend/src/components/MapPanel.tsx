@@ -681,6 +681,7 @@ interface MapPanelProps {
   onPathChange: (path: Coordinate[]) => void;
   onGroupMoveCommitted?: (path: Coordinate[]) => void;
   onDeleteAllPoints: () => void;
+  onReverseFlightPath: () => void;
   onAddPoint: (point: Coordinate) => void;
   onAddPoints: (points: Coordinate[]) => void;
   onInsertPoints: (index: number, points: Coordinate[]) => void;
@@ -748,6 +749,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   onPathChange,
   onGroupMoveCommitted,
   onDeleteAllPoints,
+  onReverseFlightPath,
   onAddPoint,
   onAddPoints,
   onInsertPoints,
@@ -9321,6 +9323,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 >
                   <Icon name="pin" />
                   <span className="sr-only">{isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip="הפוך כיוון נקודות">
+                <button
+                  className="btn btn-tertiary btn-icon"
+                  onClick={onReverseFlightPath}
+                  title="הפוך כיוון נקודות"
+                  disabled={!dtmLoaded || flightPath.length < 2}
+                  aria-label="הפוך כיוון נקודות"
+                  type="button"
+                >
+                  <Icon name="refresh" />
+                  <span className="sr-only">הפוך כיוון נקודות</span>
                 </button>
               </Tooltip>
             </div>

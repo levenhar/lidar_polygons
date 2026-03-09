@@ -216,6 +216,7 @@ function AppContent() {
     deletePoint,
     insertPoints,
     setFlightPath,
+    reverseFlightPath,
     resetToSingleRoute,
     importKML,
     importRoutes,
@@ -326,12 +327,13 @@ function AppContent() {
   }, [dtmSource, activeClippedId, safetyHeight, resolutionHeight]);
 
   // Track previous first point per route to detect route-specific edits
-  const previousRouteFirstPointsRef = React.useRef<Record<string, { lng: number; lat: number }>>({});
+  // We store both coordinates and id to distinguish actual edits from reordering (e.g. reverse)
+  const previousRouteFirstPointsRef = React.useRef<Record<string, { lng: number; lat: number; id?: string }>>({});
 
   // Update entry height per route when that route's first point is added or edited
   React.useEffect(() => {
     const previousFirstPoints = previousRouteFirstPointsRef.current;
-    const nextFirstPoints: Record<string, { lng: number; lat: number }> = {};
+    const nextFirstPoints: Record<string, { lng: number; lat: number; id?: string }> = {};
 
     routes.forEach((route) => {
       if (route.points.length === 0) {
@@ -339,17 +341,23 @@ function AppContent() {
       }
 
       const firstPoint = route.points[0];
-      nextFirstPoints[route.id] = { lng: firstPoint.lng, lat: firstPoint.lat };
+      nextFirstPoints[route.id] = { lng: firstPoint.lng, lat: firstPoint.lat, id: firstPoint.id };
 
       const previousFirstPoint = previousFirstPoints[route.id];
       const isFirstPointAdded = !previousFirstPoint;
+      // Only treat as "edited" when the same waypoint (same id) moved, not when the
+      // first waypoint changed because the route was reversed or reordered.
+      const sameId = firstPoint.id && previousFirstPoint?.id
+        ? firstPoint.id === previousFirstPoint.id
+        : true; // no id tracking → fall back to old coordinate-change logic
       const isFirstPointEdited =
         !!previousFirstPoint &&
+        sameId &&
         (previousFirstPoint.lng !== firstPoint.lng || previousFirstPoint.lat !== firstPoint.lat);
 
       // Update entry height when:
       // 1. First point is added and route entry height is still at default (250), OR
-      // 2. First point is edited (coordinates changed)
+      // 2. First point is edited (coordinates changed for the same waypoint)
       // Skip when entrance height came from KML file - do not overwrite imported value
       if (route.entranceHeightFromFile) return;
       if (isFirstPointAdded || isFirstPointEdited) {
@@ -476,6 +484,9 @@ function AppContent() {
     affectedClimbsCount: 0,
     pendingAction: null
   });
+
+  // State for reverse warning modal
+  const [reverseWarningOpen, setReverseWarningOpen] = useState(false);
 
   const { elevationProfile, loading, profileReady, profileError, calculateProfile, clearProfile } = useElevationProfile();
 
@@ -1434,6 +1445,15 @@ function AppContent() {
     globalUndoRedo.redo();
   }, [globalUndoRedo]);
 
+  const handleReverseFlightPath = React.useCallback(() => {
+    const activeClimbs = climbRequestsByRoute[activeRouteId] ?? [];
+    if (activeClimbs.length > 0) {
+      setReverseWarningOpen(true);
+    } else {
+      reverseFlightPath();
+    }
+  }, [climbRequestsByRoute, activeRouteId, reverseFlightPath]);
+
   const handleImportKml = React.useCallback(() => {
     importKmlFile({
       onKmlImported: (kmlImport) => {
@@ -2227,6 +2247,7 @@ function AppContent() {
             onPathChange={setFlightPath}
             onGroupMoveCommitted={handleGroupMoveCommitted}
             onDeleteAllPoints={handleDeleteAllPoints}
+            onReverseFlightPath={handleReverseFlightPath}
             onAddPoint={addPointWrapped}
             onAddPoints={addPointsWrapped}
             onInsertPoints={insertPointsWrapped}
@@ -2647,6 +2668,37 @@ function AppContent() {
         onClose={() => setSuccessNotification({ isOpen: false, message: '' })}
         autoCloseDelay={3000}
       />
+      {reverseWarningOpen && (
+        <div
+          className="dtm-loader-overlay"
+          onClick={() => setReverseWarningOpen(false)}
+        >
+          <div
+            className="dtm-loader-dialog"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3>הפוך כיוון מסלול</h3>
+            <p>פעולה זו תמחק את כל נקודות העלייה/ירידה במסלול. האם להמשיך?</p>
+            <div className="dtm-loader-dialog-buttons">
+              <button
+                className="btn btn-secondary"
+                onClick={() => setReverseWarningOpen(false)}
+              >
+                ביטול
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setReverseWarningOpen(false);
+                  reverseFlightPath();
+                }}
+              >
+                המשך
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

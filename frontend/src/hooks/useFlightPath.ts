@@ -434,6 +434,27 @@ export function useFlightPath(
     [updateActiveRoute]
   );
 
+  const reverseFlightPath = useCallback(() => {
+    setState((prevState) => {
+      const prevActiveRoute =
+        prevState.routes.find((route) => route.id === prevState.activeRouteId) || prevState.routes[0];
+      if (!prevActiveRoute) return prevState;
+
+      return {
+        ...prevState,
+        routes: prevState.routes.map((route) =>
+          route.id === prevActiveRoute.id
+            ? { ...route, points: [...route.points].reverse() }
+            : route
+        ),
+        climbRequestsByRoute: {
+          ...prevState.climbRequestsByRoute,
+          [prevActiveRoute.id]: [], // clear climb points on reverse
+        },
+      };
+    }, true); // true = record in undo/redo history
+  }, [setState]);
+
   const resetAllRoutes = useCallback(() => {
     const clearedRoutes = state.routes.map((route, idx) => ({
       ...route,
@@ -1497,6 +1518,7 @@ export function useFlightPath(
     deletePoint,
     insertPoints,
     setFlightPath,
+    reverseFlightPath,
     resetAllRoutes,
     resetToSingleRoute,
     showAllRoutes,

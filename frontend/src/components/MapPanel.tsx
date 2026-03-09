@@ -1047,6 +1047,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [cursorElevation, setCursorElevation] = useState<{ elevation: number | null; lat: number; lng: number } | null>(null);
   const elevationQueryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const elevationCacheRef = useRef<Map<string, number | null>>(new Map());
+  // Measurement tools state
+  const [isCoordMode, setIsCoordMode] = useState<boolean>(false);
+  const [isMeasureLengthMode, setIsMeasureLengthMode] = useState<boolean>(false);
+  const [isAzimuthMode, setIsAzimuthMode] = useState<boolean>(false);
+  const [coordModePos, setCoordModePos] = useState<{ lat: number; lng: number; x: number; y: number } | null>(null);
+  const [measurePoint1, setMeasurePoint1] = useState<{ lat: number; lng: number } | null>(null);
+  const [, setMeasureResult] = useState<{ distance: number; azimuth?: number } | null>(null);
+  const measureLineRef = useRef<L.Polyline | null>(null);
+  const measureMarker1Ref = useRef<L.CircleMarker | null>(null);
+  const measureMarker2Ref = useRef<L.CircleMarker | null>(null);
+  const measureLabelRef = useRef<L.Marker | null>(null);
   const dtmRasterDataRef = useRef<{
     width: number;
     height: number;
@@ -3613,11 +3624,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     () => getViewshedClassColorsFromColormap(viewshedColormap),
     [viewshedColormap]
   );
-  const hoveredUtm = useMemo(() => {
-    if (!hoveredElevationPoint) return null;
-    return latLngToUTM(hoveredElevationPoint.latitude, hoveredElevationPoint.longitude);
-  }, [hoveredElevationPoint]);
-
   const formatSegmentLength = (meters: number): string => {
     if (!Number.isFinite(meters)) return '—';
     if (meters >= 1000) {
@@ -4272,7 +4278,64 @@ const MapPanel: React.FC<MapPanelProps> = ({
         e.originalEvent?.stopPropagation();
         return;
       }
-      
+
+      // Measurement tools: intercept clicks for length/azimuth measurement
+      if (isMeasureLengthMode || isAzimuthMode) {
+        const pt = { lat: e.latlng.lat, lng: e.latlng.lng };
+        if (!measurePoint1) {
+          // First click: place start marker
+          if (measureMarker1Ref.current) { measureMarker1Ref.current.remove(); }
+          if (measureMarker2Ref.current) { measureMarker2Ref.current.remove(); measureMarker2Ref.current = null; }
+          if (measureLineRef.current) { measureLineRef.current.remove(); measureLineRef.current = null; }
+          setMeasureResult(null);
+          measureMarker1Ref.current = L.circleMarker([pt.lat, pt.lng], {
+            radius: 6, color: '#f97316', fillColor: '#f97316', fillOpacity: 1, weight: 2
+          }).addTo(map.current!);
+          setMeasurePoint1(pt);
+        } else {
+          // Second click: place end marker, draw line, show result
+          if (measureMarker2Ref.current) { measureMarker2Ref.current.remove(); }
+          if (measureLineRef.current) { measureLineRef.current.remove(); }
+          measureMarker2Ref.current = L.circleMarker([pt.lat, pt.lng], {
+            radius: 6, color: '#f97316', fillColor: '#f97316', fillOpacity: 1, weight: 2
+          }).addTo(map.current!);
+          measureLineRef.current = L.polyline(
+            [[measurePoint1.lat, measurePoint1.lng], [pt.lat, pt.lng]],
+            { color: '#f97316', weight: 2, dashArray: '6,4' }
+          ).addTo(map.current!);
+          const dist = calculateDistance(measurePoint1, pt);
+          const azRad = isAzimuthMode ? calculateBearing(measurePoint1, pt) : undefined;
+          const azDeg = azRad !== undefined
+            ? Math.round(((azRad * 180 / Math.PI) % 360 + 360) % 360)
+            : undefined;
+          // Place label at midpoint using same style as route segment labels
+          const midLat = (measurePoint1.lat + pt.lat) / 2;
+          const midLng = (measurePoint1.lng + pt.lng) / 2;
+          const distLabel = dist >= 1000
+            ? `${(dist / 1000).toFixed(3)} km`
+            : `${Math.round(dist)} m`;
+          const labelText = azDeg !== undefined
+            ? `${distLabel} | ${azDeg}°`
+            : distLabel;
+          if (measureLabelRef.current) { measureLabelRef.current.remove(); }
+          measureLabelRef.current = L.marker([midLat, midLng], {
+            icon: L.divIcon({
+              className: 'segment-length-label',
+              html: `<span style="direction: ltr; text-align: left;">${labelText}</span>`
+            }),
+            interactive: false,
+            zIndexOffset: 500
+          }).addTo(map.current!);
+          setMeasureResult({ distance: dist, azimuth: azDeg });
+          // Reset to allow next measurement
+          setMeasurePoint1(null);
+        }
+        return;
+      }
+
+      // If in coord mode, ignore regular clicks
+      if (isCoordMode) return;
+
       // If editing a point, move it to the new location
       const currentEditingIndex = externalEditPointIndex !== undefined ? externalEditPointIndex : editingPointIndex;
       if (currentEditingIndex !== null && dtmLoaded) {
@@ -4455,7 +4518,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
     segmentIdByIndex,
     selectedPointIndices.size,
     setSelectedPointIndices,
-    isPointWithinBounds
+    isPointWithinBounds,
+    isMeasureLengthMode,
+    isAzimuthMode,
+    isCoordMode,
+    measurePoint1,
+    formatSegmentLength
   ]);
 
   // Multi-select helper functions
@@ -5165,6 +5233,41 @@ const MapPanel: React.FC<MapPanelProps> = ({
       elevationCacheRef.current.clear();
     };
   }, [isInfoMode, dtmSource, propClippedId, isPointWithinBounds, calculateElevationAtPoint]);
+
+  // Handle coordinate mode - show UTM on mouse move, copy on right-click
+  useEffect(() => {
+    if (!map.current || !isCoordMode) {
+      setCoordModePos(null);
+      return;
+    }
+
+    const handleMouseMove = (e: L.LeafletMouseEvent) => {
+      const originalEvent = e.originalEvent as MouseEvent | undefined;
+      if (originalEvent) {
+        setCoordModePos({ lat: e.latlng.lat, lng: e.latlng.lng, x: originalEvent.clientX, y: originalEvent.clientY });
+      }
+    };
+
+    const handleContextMenu = (e: L.LeafletMouseEvent) => {
+      e.originalEvent?.preventDefault();
+      const utm = latLngToUTM(e.latlng.lat, e.latlng.lng);
+      if (utm) {
+        const text = `N: ${utm.northing.toFixed(2)} E: ${utm.easting.toFixed(2)} (${utm.zone}${utm.hemisphere})`;
+        navigator.clipboard.writeText(text).catch(() => {/* ignore */});
+      }
+    };
+
+    map.current.on('mousemove', handleMouseMove);
+    map.current.on('contextmenu', handleContextMenu);
+
+    return () => {
+      if (map.current) {
+        map.current.off('mousemove', handleMouseMove);
+        map.current.off('contextmenu', handleContextMenu);
+      }
+      setCoordModePos(null);
+    };
+  }, [isCoordMode]);
 
   // Update flight path on map
   useEffect(() => {
@@ -7652,6 +7755,23 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [dtmSource, dtmLoaded, flightPath, isViewshedProcessing, nominalFlightHeight, propClippedId, stopViewshedPolling, viewshedStatus, loadViewshedFromArrayBuffer, flightPathSignature, resolutionHeight, fovDegrees]);
 
+  const deactivateAllMeasurementModes = useCallback(() => {
+    setIsInfoMode(false);
+    setIsCoordMode(false);
+    setIsMeasureLengthMode(false);
+    setIsAzimuthMode(false);
+    setCoordModePos(null);
+    setCursorElevation(null);
+    setMousePos(null);
+    setMeasurePoint1(null);
+    setMeasureResult(null);
+    if (measureLineRef.current) { measureLineRef.current.remove(); measureLineRef.current = null; }
+    if (measureMarker1Ref.current) { measureMarker1Ref.current.remove(); measureMarker1Ref.current = null; }
+    if (measureMarker2Ref.current) { measureMarker2Ref.current.remove(); measureMarker2Ref.current = null; }
+    if (measureLabelRef.current) { measureLabelRef.current.remove(); measureLabelRef.current = null; }
+    elevationCacheRef.current.clear();
+  }, []);
+
   const handleViewshedButtonClick = useCallback(() => {
     if (hasViewshedResult) {
       setViewshedModalMode('settings');
@@ -9233,6 +9353,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     setIsParallelLineMode(false);
                     if (nextIsDrawing) {
                       setIsRotateMode(false);
+                      deactivateAllMeasurementModes();
                     }
                   }}
                   className={isDrawing ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
@@ -9331,6 +9452,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       setIsDrawing(false);
                       setIsParallelLineMode(false);
                       setEditingPointIndex(null);
+                      deactivateAllMeasurementModes();
                       if (onEditPointIndexChange) {
                         onEditPointIndexChange(null);
                       }
@@ -9371,30 +9493,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">הגבלות גובה</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע במיקום העכבר'}>
-                <button
-                  onClick={() => {
-                    const newInfoMode = !isInfoMode;
-                    setIsInfoMode(newInfoMode);
-                    if (newInfoMode) {
-                      // Turn off route info when turning on info mode
-                      onShowMetadataChange(false);
-                      setCursorElevation(null);
-                    } else {
-                      setCursorElevation(null);
-                      setMousePos(null);
-                      elevationCacheRef.current.clear();
-                    }
-                  }}
-                  className={isInfoMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
-                  disabled={!dtmLoaded}
-                  aria-label={isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}
-                  type="button"
-                >
-                  <Icon name="pin" />
-                  <span className="sr-only">{isInfoMode ? 'כבה מצב מידע' : 'הצג גובה קרקע'}</span>
-                </button>
-              </Tooltip>
               <Tooltip tooltip="הפוך כיוון נקודות">
                 <button
                   className="btn btn-tertiary btn-icon"
@@ -9406,6 +9504,105 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 >
                   <Icon name="refresh" />
                   <span className="sr-only">הפוך כיוון נקודות</span>
+                </button>
+              </Tooltip>
+            </div>
+          </div>
+        </div>
+
+        <div className="control-group">
+          <div className="group-title">מדידה</div>
+          <div className="group-columns">
+            <div className="group-column group-column-icons">
+              <Tooltip tooltip={isInfoMode ? 'כבה מצב גובה' : 'הצג גובה קרקע במיקום העכבר'}>
+                <button
+                  onClick={() => {
+                    if (isInfoMode) {
+                      deactivateAllMeasurementModes();
+                    } else {
+                      deactivateAllMeasurementModes();
+                      setIsInfoMode(true);
+                      onShowMetadataChange(false);
+                    }
+                  }}
+                  className={isInfoMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  disabled={!dtmLoaded}
+                  aria-label={isInfoMode ? 'כבה מצב גובה' : 'הצג גובה קרקע'}
+                  type="button"
+                >
+                  <Icon name="pin" />
+                  <span className="sr-only">{isInfoMode ? 'כבה מצב גובה' : 'הצג גובה קרקע'}</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={isCoordMode ? 'כבה תצוגת קואורדינטות' : 'הצג קואורדינטות UTM'}>
+                <button
+                  onClick={() => {
+                    if (isCoordMode) {
+                      deactivateAllMeasurementModes();
+                    } else {
+                      deactivateAllMeasurementModes();
+                      setIsCoordMode(true);
+                    }
+                  }}
+                  className={isCoordMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  aria-label={isCoordMode ? 'כבה תצוגת קואורדינטות' : 'הצג קואורדינטות UTM'}
+                  type="button"
+                >
+                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+                    <circle cx="10" cy="10" r="3" stroke="currentColor" strokeWidth="1.5"/>
+                    <line x1="10" y1="2" x2="10" y2="6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <line x1="10" y1="14" x2="10" y2="18" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <line x1="2" y1="10" x2="6" y2="10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <line x1="14" y1="10" x2="18" y2="10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>
+                  <span className="sr-only">{isCoordMode ? 'כבה תצוגת קואורדינטות' : 'הצג קואורדינטות UTM'}</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={isMeasureLengthMode ? 'כבה מדידת מרחק' : 'מדוד מרחק'}>
+                <button
+                  onClick={() => {
+                    if (isMeasureLengthMode) {
+                      deactivateAllMeasurementModes();
+                    } else {
+                      deactivateAllMeasurementModes();
+                      setIsMeasureLengthMode(true);
+                    }
+                  }}
+                  className={isMeasureLengthMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  aria-label={isMeasureLengthMode ? 'כבה מדידת מרחק' : 'מדוד מרחק'}
+                  type="button"
+                >
+                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+                    <rect x="2" y="7" width="16" height="6" rx="1" stroke="currentColor" strokeWidth="1.5"/>
+                    <line x1="5" y1="10" x2="5" y2="13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <line x1="8" y1="10" x2="8" y2="12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <line x1="11" y1="10" x2="11" y2="12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <line x1="14" y1="10" x2="14" y2="13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>
+                  <span className="sr-only">{isMeasureLengthMode ? 'כבה מדידת מרחק' : 'מדוד מרחק'}</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={isAzimuthMode ? 'כבה מדידת אזימוט' : 'מדוד אזימוט ומרחק'}>
+                <button
+                  onClick={() => {
+                    if (isAzimuthMode) {
+                      deactivateAllMeasurementModes();
+                    } else {
+                      deactivateAllMeasurementModes();
+                      setIsAzimuthMode(true);
+                    }
+                  }}
+                  className={isAzimuthMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  aria-label={isAzimuthMode ? 'כבה מדידת אזימוט' : 'מדוד אזימוט'}
+                  type="button"
+                >
+                  <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" width="20" height="20">
+                    <circle cx="10" cy="10" r="7.5" stroke="currentColor" strokeWidth="1.5"/>
+                    <line x1="10" y1="3" x2="10" y2="10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                    <line x1="10" y1="10" x2="14.5" y2="14.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeDasharray="2,1.5"/>
+                    <circle cx="10" cy="10" r="1.5" fill="currentColor"/>
+                  </svg>
+                  <span className="sr-only">{isAzimuthMode ? 'כבה מדידת אזימוט' : 'מדוד אזימוט'}</span>
                 </button>
               </Tooltip>
             </div>
@@ -10049,7 +10246,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
             pointerEvents: tooltipPosition ? 'auto' : 'none'
           }}
         >
-          <CoordinateTooltip point={hoveredElevationPoint} utm={hoveredUtm} />
+          <CoordinateTooltip point={hoveredElevationPoint} />
         </div>
       )}
       {isInfoMode && mousePos && cursorElevation && (
@@ -10069,6 +10266,20 @@ const MapPanel: React.FC<MapPanelProps> = ({
           </div>
         </div>
       )}
+
+      {/* Coordinate mode tooltip */}
+      {isCoordMode && coordModePos && (() => {
+        const utm = latLngToUTM(coordModePos.lat, coordModePos.lng);
+        if (!utm) return null;
+        return (
+          <div className="hover-metadata-tooltip" style={{ left: coordModePos.x + 15, top: coordModePos.y + 15, pointerEvents: 'none' }}>
+            <div className="tooltip-section"><span className="tooltip-label">Northing:</span> {utm.northing.toFixed(2)}</div>
+            <div className="tooltip-section"><span className="tooltip-label">Easting:</span> {utm.easting.toFixed(2)}</div>
+            <div className="tooltip-section"><span className="tooltip-label">אזור:</span> {utm.zone}{utm.hemisphere}</div>
+            <div className="tooltip-section" style={{ fontSize: '0.75em', opacity: 0.6 }}>לחצן ימני להעתקה</div>
+          </div>
+        );
+      })()}
 
       {/* Unified DTM Loader Dialog */}
       {dtmLoaderOpen && (

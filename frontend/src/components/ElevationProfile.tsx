@@ -230,11 +230,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     mimeType: string;
   } | null>(null);
 
-  const hoveredUtm = useMemo(() => {
-    if (!hoveredPoint) return null;
-    return latLngToUTM(hoveredPoint.latitude, hoveredPoint.longitude);
-  }, [hoveredPoint]);
-
   const selectedPreset = useMemo(
     () => climbPresets.find((p) => p.id === selectedClimbPresetId),
     [climbPresets, selectedClimbPresetId]
@@ -3401,7 +3396,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             pointerEvents: tooltipPosition ? 'auto' : 'none'
           }}
         >
-          <CoordinateTooltip point={hoveredPoint} utm={hoveredUtm} />
+          <CoordinateTooltip point={hoveredPoint} />
         </div>
       )}
       {saveFileDialog && (

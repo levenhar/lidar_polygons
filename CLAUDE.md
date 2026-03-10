@@ -18,51 +18,14 @@ Three services, all run together in development:
 
 The frontend proxies `/api` requests to the Node backend (port 5000) via `vite.config.ts`. The Node backend handles DTM file uploads and proxies map tiles. The Python backend handles the heavy geospatial computation (elevation profiles, clipping, viewshed).
 
-## Commands
+## Frontend Change Validation (REQUIRED)
 
-### Install everything (first time)
+After **any** frontend code change, always run both:
 ```bash
-npm run install:all
+npm test        # all tests must pass
+npm run build   # build must succeed with no errors
 ```
-
-### Run in development
-```bash
-npm run dev          # starts both frontend (3000) and Node backend (5000) concurrently
-```
-
-### Frontend only
-```bash
-cd frontend && npm run dev
-```
-
-### Node backend only
-```bash
-cd backend && npm run dev
-```
-
-### Python backend
-```bash
-cd backend_python
-source venv/Scripts/activate   # Windows; use venv/bin/activate on Linux/Mac
-uvicorn main:app --reload
-```
-
-### Run frontend tests
-```bash
-npm test                        # from repo root
-cd frontend && npm test         # or from frontend dir
-cd frontend && npx vitest run   # single run (no watch)
-```
-
-### Run a single test file
-```bash
-cd frontend && npx vitest run src/utils/geometry.test.ts
-```
-
-### Build frontend for production
-```bash
-npm run build   # or: cd frontend && npm run build
-```
+Do not consider a frontend task complete until both commands succeed.
 
 ## Testing Rules (enforced by pre-push husky hook)
 

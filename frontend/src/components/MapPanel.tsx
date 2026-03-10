@@ -737,6 +737,7 @@ interface MapPanelProps {
   onImportKML: (file: File) => Promise<void>;
   canExport: boolean;
   zoomToBounds?: { minLon: number; minLat: number; maxLon: number; maxLat: number } | null;
+  onRequestClimbAtDistance?: (distance: number) => void;
 }
 
 const MapPanel: React.FC<MapPanelProps> = ({
@@ -800,7 +801,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
   currentAoi,
   dtmSourceType: propDtmSourceType,
   zoomToBounds,
-  kmlImports = []
+  kmlImports = [],
+  onRequestClimbAtDistance
 }) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -1035,6 +1037,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hoveredElevationMarkerRef = useRef<L.Marker | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
+  const [routeContextMenu, setRouteContextMenu] = useState<{ x: number; y: number; distance: number } | null>(null);
   const [editingPointIndex, setEditingPointIndex] = useState<number | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
   const [isUploading, setIsUploading] = useState<boolean>(false);
@@ -5476,6 +5479,33 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
 
     flightPathClickableLineRef.current.on('mousemove', handlePathMouseMove);
+
+    // Right-click on route line → show "Add climb point" context menu
+    const handleRouteContextMenu = (e: L.LeafletMouseEvent) => {
+      if (!onRequestClimbAtDistance) return;
+      e.originalEvent.preventDefault();
+      L.DomEvent.stop(e);
+
+      const mousePt = { lng: e.latlng.lng, lat: e.latlng.lat };
+      let minSegDist = Infinity;
+      let hoveredDistance = 0;
+      let currentCumulative = 0;
+      for (let i = 0; i < flightPath.length - 1; i++) {
+        const start = flightPath[i];
+        const end = flightPath[i + 1];
+        const segmentLen = calculateDistance(start, end);
+        const result = findClosestPointOnLine(mousePt, start, end);
+        if (result.distance < minSegDist) {
+          minSegDist = result.distance;
+          hoveredDistance = currentCumulative + result.t * segmentLen;
+        }
+        currentCumulative += segmentLen;
+      }
+      setRouteContextMenu({ x: e.originalEvent.clientX, y: e.originalEvent.clientY, distance: hoveredDistance });
+    };
+
+    flightPathClickableLineRef.current.on('contextmenu', handleRouteContextMenu);
+
     flightPathClickableLineRef.current.on('mouseout', (e) => {
       setMousePos(null);
       const originalEvent = (e as any).originalEvent as MouseEvent;
@@ -8952,6 +8982,17 @@ const MapPanel: React.FC<MapPanelProps> = ({
           onDelete={() => {
             onDeletePoint(contextMenu.pointIndex);
             setContextMenu(null);
+          }}
+        />
+      )}
+      {routeContextMenu && (
+        <ContextMenu
+          x={routeContextMenu.x}
+          y={routeContextMenu.y}
+          onClose={() => setRouteContextMenu(null)}
+          onAddClimb={() => {
+            onRequestClimbAtDistance?.(routeContextMenu.distance);
+            setRouteContextMenu(null);
           }}
         />
       )}

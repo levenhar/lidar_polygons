@@ -489,6 +489,9 @@ function AppContent() {
   // State for reverse warning modal
   const [reverseWarningOpen, setReverseWarningOpen] = useState(false);
 
+  // State for triggering climb creation from the map right-click
+  const [mapClimbTriggerDistance, setMapClimbTriggerDistance] = useState<number | null>(null);
+
   const { elevationProfile, loading, profileReady, profileError, calculateProfile, clearProfile } = useElevationProfile();
 
   // When the profile error pop-up is closed, keep showing the error in the profile panel (don't clear it).
@@ -2334,6 +2337,7 @@ function AppContent() {
               await importKML(file, dtmSource);
             }}
             canExport={flightPath.length >= 2}
+            onRequestClimbAtDistance={(d) => setMapClimbTriggerDistance(d)}
           />
           <ElevationProfile
             elevationProfile={fullProfileResult.points}
@@ -2362,6 +2366,8 @@ function AppContent() {
             activeRouteName={routes.find(r => r.id === activeRouteId)?.name}
             dtmName={activeDtmName || undefined}
             profileError={profileError}
+            pendingMapClimbDistance={mapClimbTriggerDistance}
+            onMapClimbConsumed={() => setMapClimbTriggerDistance(null)}
           />
         </SplitPane>
       </div>

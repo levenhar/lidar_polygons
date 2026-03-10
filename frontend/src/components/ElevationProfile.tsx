@@ -160,6 +160,8 @@ interface ElevationProfileProps {
   activeRouteName?: string;
   dtmName?: string;
   profileError?: string | null;
+  pendingMapClimbDistance?: number | null;
+  onMapClimbConsumed?: () => void;
 }
 
 const ElevationProfile: React.FC<ElevationProfileProps> = ({
@@ -188,7 +190,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   showMetadata,
   activeRouteName,
   dtmName,
-  profileError
+  profileError,
+  pendingMapClimbDistance,
+  onMapClimbConsumed
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -229,6 +233,33 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     fileContent: string | Blob;
     mimeType: string;
   } | null>(null);
+
+  // Open the climb amount modal when triggered from map right-click
+  useEffect(() => {
+    if (pendingMapClimbDistance != null) {
+      onMapClimbConsumed?.();
+
+      const turnVertexValidation = isTooCloseToTurnVertex(pendingMapClimbDistance);
+      if (!turnVertexValidation.isValid) {
+        setClimbValidationPopup(turnVertexValidation.message || 'לא ניתן ליצור נקודת עלייה במיקום זה - קרוב מדי לנקודת פנייה.');
+        return;
+      }
+
+      const forbiddenValidation = isLocationInForbiddenClimbArea(pendingMapClimbDistance);
+      if (!forbiddenValidation.isValid) {
+        setClimbValidationPopup(forbiddenValidation.message || 'לא ניתן ליצור נקודת עלייה במיקום זה.');
+        return;
+      }
+
+      setPendingClimbEnd(pendingMapClimbDistance);
+      setClimbAmountInput('');
+      setClimbAmountError(null);
+      setEditingClimb(null);
+      setCustomClimbRatio('');
+      setCustomDescentRatio('');
+      setIsClimbAmountOpen(true);
+    }
+  }, [pendingMapClimbDistance]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedPreset = useMemo(
     () => climbPresets.find((p) => p.id === selectedClimbPresetId),

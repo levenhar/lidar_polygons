@@ -606,9 +606,9 @@ function App() {
   const fullProfileResultInternal = React.useMemo(() => {
     if (elevationProfile.length === 0) return { points: [], warnings: [] };
 
-    // 1. Calculate base altitude profile (entry height is now ASL, not AGL)
-    // Entry height (nominalFlightHeight) is absolute altitude above sea level
-    const constantAltitude = nominalFlightHeight;
+    // 1. Calculate base altitude profile normalized to 0.
+    // nominalFlightHeight is applied as a cheap O(n) offset in heightAdjustedStableProfile.
+    const constantAltitude = 0;
     const baseAltitudeProfile: BaseAltitudeSample[] = elevationProfile.map((p) => ({
       distance: p.distance,
       baseAltitude: constantAltitude,
@@ -689,7 +689,7 @@ function App() {
       })),
       warnings: allWarnings
     };
-  }, [elevationProfile, nominalFlightHeight, flightPath, effectiveClimbRequests, climbConfig]);
+  }, [elevationProfile, flightPath, effectiveClimbRequests, climbConfig]);
 
   // Stable profile that only updates when queue is empty AND server confirms it's ready
   const [stableProfileResult, setStableProfileResult] = React.useState(() => fullProfileResultInternal);
@@ -771,11 +771,6 @@ function App() {
     }
   }, [flightPath.length]);
 
-  // Unlock profile when nominal height changes so it can be recalculated
-  React.useEffect(() => {
-    profileLockedRef.current = false;
-  }, [nominalFlightHeight]);
-
   // Unlock profile when climb requests or climb config changes so it can be recalculated
   React.useEffect(() => {
     profileLockedRef.current = false;
@@ -792,8 +787,27 @@ function App() {
     }
   }, [fullProfileResultInternal, editQueue.length, isProcessingQueue, profileReady, flightPath.length]);
 
+  // Apply nominalFlightHeight offset to the stable normalized profile.
+  // This is O(n) and avoids a full profile recomputation when only height changes.
+  const heightAdjustedStableProfile = React.useMemo(() => {
+    if (stableProfileResult.points.length === 0) return stableProfileResult;
+    return {
+      ...stableProfileResult,
+      points: stableProfileResult.points.map((p) => ({
+        ...p,
+        baseAltitude: (p.baseAltitude ?? 0) + nominalFlightHeight,
+        plannedAltitude: p.plannedAltitude !== undefined
+          ? p.plannedAltitude + nominalFlightHeight
+          : undefined,
+        flightHeight: p.plannedAltitude !== undefined
+          ? (p.plannedAltitude + nominalFlightHeight) - p.elevation
+          : p.flightHeight,
+      })),
+    };
+  }, [stableProfileResult, nominalFlightHeight]);
+
   // Use stable profile - this ensures the profile only shows the final version when queue is empty and ready
-  const fullProfileResult = stableProfileResult;
+  const fullProfileResult = heightAdjustedStableProfile;
 
   const climbMarkers = React.useMemo(() => {
     if (!fullProfileResult.points.length || climbRequests.length === 0) return [];

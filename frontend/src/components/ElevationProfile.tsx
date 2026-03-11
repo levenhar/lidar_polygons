@@ -209,6 +209,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const isPanningRef = useRef(false); // Track if we're actually panning (after threshold)
   // Track container width to trigger chart re-render when it changes (for export)
   const [containerWidth, setContainerWidth] = useState<number>(0);
+  const [containerHeight, setContainerHeight] = useState<number>(400);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
   const [isClimbAmountOpen, setIsClimbAmountOpen] = useState(false);
   const [pendingClimbEnd, setPendingClimbEnd] = useState<number | null>(null);
@@ -451,14 +452,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         setContainerWidth(entry.contentRect.width);
+        setContainerHeight(entry.contentRect.height);
       }
     });
-    
+
     resizeObserver.observe(containerRef.current);
-    
-    // Set initial width
+
+    // Set initial values
     if (containerRef.current) {
       setContainerWidth(containerRef.current.clientWidth);
+      setContainerHeight(containerRef.current.clientHeight);
     }
     
     return () => {
@@ -490,7 +493,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const margin = { top: 20, right: 80, bottom: 110, left: 80 }; // left fits y-axis ticks + labels (PNG export)
     const legendWidth = 0; // Move legend under the plot
     const width = containerRef.current.clientWidth - margin.left - margin.right - legendWidth;
-    const height = 400 - margin.top - margin.bottom;
+    const height = Math.max(containerHeight, 250) - margin.top - margin.bottom;
 
     // Set SVG dimensions (include space for legend)
     // Height will be adjusted later if legend needs two rows
@@ -1983,6 +1986,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     onElevationPointHover,
     hoveredPoint,
     containerWidth, // Include container width to trigger re-render when it changes (for export)
+    containerHeight,
     activeClimbStartDistance,
     getPlannedAltitudeAtDistance,
     isLocationInForbiddenClimbArea,

@@ -21,6 +21,7 @@ import html2canvas from 'html2canvas';
 import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 import { aoiContains, AOIGeometry } from '../utils/aoiContainment';
+import ThreeDView from './ThreeDView';
 
 
 type TileLayerOptionsWithAgent = TileLayerOptions;
@@ -306,7 +307,8 @@ type IconName =
   | 'rotate'
   | 'chart'
   | 'refresh'
-  | 'altitude';
+  | 'altitude'
+  | 'cube';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
 
@@ -621,6 +623,14 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M6 15l6 6 6-6" />
         </svg>
       );
+    case 'cube':
+      return (
+        <svg {...common}>
+          <path {...stroke} d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+          <path {...stroke} d="M3.27 6.96L12 12.01l8.73-5.05" />
+          <path {...stroke} d="M12 22.08V12" />
+        </svg>
+      );
     default:
       return (
         <svg {...common}>
@@ -826,6 +836,15 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [isDraggingParallelWindow, setIsDraggingParallelWindow] = useState(false);
   const dragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
   const parallelWindowRef = useRef<HTMLDivElement | null>(null);
+
+  // 3D float window state
+  const [threeDFloatPosition, setThreeDFloatPosition] = useState<{ x: number; y: number } | null>(null);
+  const [threeDFloatSize, setThreeDFloatSize] = useState<{ w: number; h: number }>({ w: 640, h: 420 });
+  const [isDraggingThreeDFloat, setIsDraggingThreeDFloat] = useState(false);
+  const [isResizingThreeDFloat, setIsResizingThreeDFloat] = useState(false);
+  const threeDFloatRef = useRef<HTMLDivElement | null>(null);
+  const threeDFloatDragStartRef = useRef<{ x: number; y: number; startX: number; startY: number } | null>(null);
+  const threeDFloatResizeStartRef = useRef<{ x: number; y: number; startW: number; startH: number } | null>(null);
   const lastParallelOffsetRef = useRef<number | null>(null);
   const lastParallelOffsetByLineIdRef = useRef<Map<string, number>>(new Map());
   const averageNextLineSpacingRef = useRef<number>(50); // Default fallback
@@ -1045,8 +1064,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const [isDtmProcessing, setIsDtmProcessing] = useState<boolean>(false);
   const [baseMaps, setBaseMaps] = useState<BaseMapConfig[]>([]);
   const [activeBaseMapId, setActiveBaseMapId] = useState<string | null>(null);
+  const [threeDActiveBaseMapId, setThreeDActiveBaseMapId] = useState<string | null>(null);
+  const [mapToken, setMapToken] = useState<string>('');
   const [previewConfig, setPreviewConfig] = useState<BaseMapPreviewResponse | null>(null);
   const [isInfoMode, setIsInfoMode] = useState<boolean>(false);
+  const [threeDMode, setThreeDMode] = useState<'off' | 'full' | 'float'>('off');
+  const is3DFull = threeDMode === 'full';
+  const is3DFloat = threeDMode === 'float';
   const [cursorElevation, setCursorElevation] = useState<{ elevation: number | null; lat: number; lng: number } | null>(null);
   const elevationQueryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const elevationCacheRef = useRef<Map<string, number | null>>(new Map());
@@ -1340,6 +1364,26 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Ignore parse errors
     }
   }, []);
+
+  // Load 3D float window position from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('threeDFloatWindowPosition');
+      if (saved) {
+        const p = JSON.parse(saved);
+        if (p && typeof p.x === 'number' && typeof p.y === 'number') {
+          setThreeDFloatPosition({ x: Math.max(0, Math.min(p.x, window.innerWidth - 200)), y: Math.max(0, Math.min(p.y, window.innerHeight - 100)) });
+        }
+      }
+    } catch (e) { /* ignore */ }
+  }, []);
+
+  // Save 3D float window position to localStorage when it changes
+  useEffect(() => {
+    if (threeDFloatPosition) {
+      try { localStorage.setItem('threeDFloatWindowPosition', JSON.stringify(threeDFloatPosition)); } catch (e) { /* ignore */ }
+    }
+  }, [threeDFloatPosition]);
 
   // Save parallel window position to localStorage when it changes
   useEffect(() => {
@@ -2051,6 +2095,96 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setIsDraggingParallelWindow(false);
     dragStartRef.current = null;
   }, []);
+
+  // 3D float window drag handlers
+  const handleThreeDFloatDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const currentX = threeDFloatPosition?.x ?? (window.innerWidth - 660);
+    const currentY = threeDFloatPosition?.y ?? 60;
+    setIsDraggingThreeDFloat(true);
+    threeDFloatDragStartRef.current = { x: clientX, y: clientY, startX: currentX, startY: currentY };
+  }, [threeDFloatPosition]);
+
+  const handleThreeDFloatDragMove = useCallback((e: MouseEvent | TouchEvent) => {
+    if (!isDraggingThreeDFloat || !threeDFloatDragStartRef.current) return;
+    e.preventDefault();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    const deltaX = clientX - threeDFloatDragStartRef.current.x;
+    const deltaY = clientY - threeDFloatDragStartRef.current.y;
+    let newX = threeDFloatDragStartRef.current.startX + deltaX;
+    let newY = threeDFloatDragStartRef.current.startY + deltaY;
+    const winW = threeDFloatRef.current?.offsetWidth || 640;
+    const winH = threeDFloatRef.current?.offsetHeight || 420;
+    newX = Math.max(0, Math.min(newX, window.innerWidth - winW));
+    newY = Math.max(0, Math.min(newY, window.innerHeight - winH));
+    setThreeDFloatPosition({ x: newX, y: newY });
+  }, [isDraggingThreeDFloat]);
+
+  const handleThreeDFloatDragEnd = useCallback(() => {
+    setIsDraggingThreeDFloat(false);
+    threeDFloatDragStartRef.current = null;
+  }, []);
+
+  const handleThreeDFloatResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingThreeDFloat(true);
+    threeDFloatResizeStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      startW: threeDFloatRef.current?.offsetWidth ?? threeDFloatSize.w,
+      startH: threeDFloatRef.current?.offsetHeight ?? threeDFloatSize.h,
+    };
+  }, [threeDFloatSize]);
+
+  const handleThreeDFloatResizeMove = useCallback((e: MouseEvent) => {
+    if (!isResizingThreeDFloat || !threeDFloatResizeStartRef.current) return;
+    e.preventDefault();
+    const deltaX = e.clientX - threeDFloatResizeStartRef.current.x;
+    const deltaY = e.clientY - threeDFloatResizeStartRef.current.y;
+    const newW = Math.max(320, threeDFloatResizeStartRef.current.startW + deltaX);
+    const newH = Math.max(220, threeDFloatResizeStartRef.current.startH + deltaY);
+    setThreeDFloatSize({ w: newW, h: newH });
+  }, [isResizingThreeDFloat]);
+
+  const handleThreeDFloatResizeEnd = useCallback(() => {
+    setIsResizingThreeDFloat(false);
+    threeDFloatResizeStartRef.current = null;
+  }, []);
+
+  // Set up global drag handlers for 3D float window
+  useEffect(() => {
+    if (isDraggingThreeDFloat) {
+      const handleMove = (e: MouseEvent | TouchEvent) => handleThreeDFloatDragMove(e);
+      const handleEnd = () => handleThreeDFloatDragEnd();
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleEnd);
+      window.addEventListener('touchmove', handleMove, { passive: false });
+      window.addEventListener('touchend', handleEnd);
+      return () => {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleEnd);
+        window.removeEventListener('touchmove', handleMove);
+        window.removeEventListener('touchend', handleEnd);
+      };
+    }
+  }, [isDraggingThreeDFloat, handleThreeDFloatDragMove, handleThreeDFloatDragEnd]);
+
+  // Set up global resize handlers for 3D float window
+  useEffect(() => {
+    if (isResizingThreeDFloat) {
+      window.addEventListener('mousemove', handleThreeDFloatResizeMove);
+      window.addEventListener('mouseup', handleThreeDFloatResizeEnd);
+      return () => {
+        window.removeEventListener('mousemove', handleThreeDFloatResizeMove);
+        window.removeEventListener('mouseup', handleThreeDFloatResizeEnd);
+      };
+    }
+  }, [isResizingThreeDFloat, handleThreeDFloatResizeMove, handleThreeDFloatResizeEnd]);
 
   // Set up global drag handlers
   useEffect(() => {
@@ -3730,15 +3864,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
       baseLayerRef.current.remove();
     }
 
-    let urlWithToken = nextBaseMap.url;
-
-    // Only append token if it's not empty
-    if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
-      const separator = nextBaseMap.url.includes('?') ? '&' : '?';
-      urlWithToken = `${nextBaseMap.url}${separator}token=${mapTokenRef.current}`;
-    }
-
-    baseLayerRef.current = L.tileLayer(urlWithToken, tileLayerOptionsRef.current).addTo(map.current);
+    // Use same-origin proxy (token added server-side); Leaflet substitutes {z},{x},{y}
+    const proxyUrl = `/api/map-tile/${nextBaseMap.id}/{z}/{x}/{y}`;
+    baseLayerRef.current = L.tileLayer(proxyUrl, tileLayerOptionsRef.current).addTo(map.current);
     setActiveBaseMapId(nextBaseMap.id);
   }, [activeBaseMapId, baseMaps]);
 
@@ -3748,6 +3876,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
     const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % baseMaps.length : 0;
     switchBaseMap(baseMaps[nextIndex].id);
   }, [activeBaseMapId, baseMaps, switchBaseMap]);
+
+  const handleCycle3DBaseMap = useCallback(() => {
+    if (baseMaps.length < 2 || !threeDActiveBaseMapId) return;
+    const currentIndex = baseMaps.findIndex(b => b.id === threeDActiveBaseMapId);
+    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % baseMaps.length : 0;
+    setThreeDActiveBaseMapId(baseMaps[nextIndex].id);
+  }, [threeDActiveBaseMapId, baseMaps]);
 
   const handleBaseMapButtonClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -3815,8 +3950,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         throw new Error(errorData.error || 'Failed to get token for maps ${response.status}');
       }
       const MAPS_TOKEN = await response_token.json();
-      mapTokenRef.current = MAPS_TOKEN.token || '';
-
+      const tokenValue = MAPS_TOKEN.token || '';
+      mapTokenRef.current = tokenValue;
+      setMapToken(tokenValue);
 
       const response_url = await fetch('/api/url')
 
@@ -3854,16 +3990,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       if (map.current && availableBaseMaps.length > 0 && tileLayerOptionsRef.current) {
         const initialBaseMap = availableBaseMaps[0];
-        let initialUrl = initialBaseMap.url;
-
-        // Only append token if it's not empty
-        if (mapTokenRef.current && mapTokenRef.current.trim() !== '') {
-          const separator = initialBaseMap.url.includes('?') ? '&' : '?';
-          initialUrl = `${initialBaseMap.url}${separator}token=${mapTokenRef.current}`;
-        }
-
-        baseLayerRef.current = L.tileLayer(initialUrl, tileLayerOptionsRef.current).addTo(map.current);
+        // Use same-origin proxy (token added server-side); Leaflet substitutes {z},{x},{y}
+        const proxyUrl = `/api/map-tile/${initialBaseMap.id}/{z}/{x}/{y}`;
+        baseLayerRef.current = L.tileLayer(proxyUrl, tileLayerOptionsRef.current).addTo(map.current);
         setActiveBaseMapId(initialBaseMap.id);
+        setThreeDActiveBaseMapId(initialBaseMap.id); // 3D starts on same basemap as 2D
       } else {
         debug.error('Cannot add basemap - missing dependencies');
       }
@@ -3881,6 +4012,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       baseLayerRef.current = null;
       tileLayerOptionsRef.current = null;
       mapTokenRef.current = null;
+      setMapToken('');
     };
   }, []);
 
@@ -6352,6 +6484,31 @@ const MapPanel: React.FC<MapPanelProps> = ({
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [selectedPointIndices, flightPath.length, onDeletePoint, setSelectedPointIndices]);
+
+  // Ctrl+3 keyboard shortcut to cycle 3D view modes
+  useEffect(() => {
+    const handle3DShortcut = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === '3') {
+        e.preventDefault();
+        if (dtmLoaded) {
+          setThreeDMode(prev => prev === 'off' ? 'full' : prev === 'full' ? 'float' : 'off');
+        }
+      }
+    };
+    window.addEventListener('keydown', handle3DShortcut);
+    return () => window.removeEventListener('keydown', handle3DShortcut);
+  }, [dtmLoaded]);
+
+  // Re-validate Leaflet map size when returning from full-screen 3D mode
+  useEffect(() => {
+    if (threeDMode !== 'full' && map.current) {
+      // Small delay to let display:none → visible transition complete
+      const timer = setTimeout(() => {
+        map.current?.invalidateSize();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [threeDMode]);
 
   // Render halos for selected lines in parallel mode
   // Halos are PERSISTENT - they remain visible until:
@@ -9664,6 +9821,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       <div
         ref={mapContainer}
         className="map-container"
+        style={{ display: threeDMode === 'full' ? 'none' : undefined }}
         onDragEnter={handleDragEnter}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}

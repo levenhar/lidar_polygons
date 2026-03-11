@@ -866,6 +866,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                   ],
                 },
                 {
+                  category: 'תצוגה',
+                  rows: [
+                    { key: 'Ctrl+3 / Cmd+3', action: 'מחזור תצוגות תלת-ממד: כבוי ← מסך מלא ← חלון צף' },
+                  ],
+                },
+                {
                   category: 'דיאלוגים',
                   rows: [
                     { key: 'Enter', action: 'אישור קלט' },

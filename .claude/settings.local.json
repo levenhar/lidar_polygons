@@ -8,7 +8,11 @@
       "Bash(npx vitest:*)",
       "Bash(awk:*)",
       "Bash(xargs grep:*)",
-      "Bash(npx tsc --noEmit)"
+      "Bash(npx tsc --noEmit)",
+      "Bash(ls -la /c/Users/DELL/Documents/python/00-Git-Repos/lidar_polygons/backend_python/ | grep -E \"\\\\.py$|^d\")",
+      "Bash(grep -rn \"three\\\\|Three.js\\\\|cesium\\\\|Cesium\\\\|babylon\\\\|deck.gl\\\\|DeckGL\" /c/Users/DELL/Documents/python/00-Git-Repos/lidar_polygons/frontend/src --include=\"*.ts\" --include=\"*.tsx\" 2>/dev/null | head -5)",
+      "Bash(npm install:*)",
+      "Bash(grep -r \"floating\\\\|draggable\\\\|window\" /c/Users/DELL/Documents/python/00-Git-Repos/lidar_polygons/frontend/src/components/*.tsx | grep -i \"position\\\\|fixed\\\\|absolute\" | head -10)"
     ]
   }
 }

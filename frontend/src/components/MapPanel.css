@@ -3178,3 +3178,196 @@
     height: 22px;
   }
 }
+
+/* ── 3D Toggle Button (bottom-left, next to display settings) ──── */
+
+.three-d-toggle-btn {
+  position: absolute;
+  bottom: 32px;
+  right: 90px;
+  z-index: 4001;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: all 0.15s ease;
+}
+
+.three-d-toggle-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #0369a1;
+}
+
+.three-d-toggle-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.three-d-toggle-btn.active {
+  background: #0369a1;
+  color: #ffffff;
+}
+
+.three-d-toggle-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+[dir="rtl"] .three-d-toggle-btn,
+.map-panel[dir="rtl"] .three-d-toggle-btn {
+  right: auto;
+  left: 90px;
+}
+
+/* ── 3D View ────────────────────────────────────────────────────── */
+
+.three-d-view-container {
+  position: absolute;
+  inset: 0;
+  z-index: 500;
+  background: #87ceeb;
+}
+
+.three-d-view-container canvas {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.three-d-view-banner {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  padding: 6px 18px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  pointer-events: none;
+  z-index: 510;
+  white-space: nowrap;
+}
+
+/* Basemap toggle button inside 3D view — positioned at same corner as 2D equivalent */
+.three-d-basemap-toggle {
+  position: absolute;
+  bottom: 28px;
+  right: 28px;
+  z-index: 510;
+  /* Inherits .basemap-toggle visual styles */
+}
+
+/* ── 3D Float Window ────────────────────────────────────────────── */
+
+.three-d-float-window {
+  position: fixed;
+  z-index: 1300;
+  background: #000;
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  border: 1px solid #334155;
+  pointer-events: auto;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+  min-width: 320px;
+  min-height: 220px;
+  overflow: hidden;
+}
+
+.three-d-float-window__resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 22px;
+  height: 22px;
+  cursor: se-resize;
+  z-index: 600;
+  background: linear-gradient(135deg, transparent 40%, #475569 40%, #475569 50%, transparent 50%, transparent 65%, #475569 65%, #475569 75%, transparent 75%);
+  border-radius: 0 0 10px 0;
+}
+
+.three-d-float-window__resize-handle:hover {
+  background: linear-gradient(135deg, transparent 40%, #94a3b8 40%, #94a3b8 50%, transparent 50%, transparent 65%, #94a3b8 65%, #94a3b8 75%, transparent 75%);
+}
+
+.three-d-float-window__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: #0f172a;
+  cursor: grab;
+  border-radius: 10px 10px 0 0;
+  border-bottom: 1px solid #334155;
+  flex-shrink: 0;
+}
+
+.three-d-float-window__header:active {
+  cursor: grabbing;
+}
+
+.three-d-float-window__title {
+  color: #e2e8f0;
+  font-weight: 600;
+  font-size: 0.9rem;
+  pointer-events: none;
+}
+
+.three-d-float-window__header-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.three-d-float-window__expand-btn,
+.three-d-float-window__close-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  border-radius: 5px;
+  padding: 3px 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.three-d-float-window__expand-btn:hover,
+.three-d-float-window__close-btn:hover {
+  background: #1e293b;
+  color: #e2e8f0;
+}
+
+.three-d-float-window__expand-btn svg,
+.three-d-float-window__close-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.three-d-float-window__content {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.three-d-float-window__content .three-d-view-container {
+  position: absolute;
+  inset: 0;
+}
+
+.three-d-toggle-btn.float-mode {
+  background: #0369a1;
+  color: #fff;
+  outline: 2px dashed #7dd3fc;
+  outline-offset: 1px;
+}

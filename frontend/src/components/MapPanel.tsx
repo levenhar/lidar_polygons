@@ -3853,9 +3853,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
       baseLayerRef.current.remove();
     }
 
-    // Use same-origin proxy (token added server-side); Leaflet substitutes {z},{x},{y}
-    const proxyUrl = `/api/map-tile/${nextBaseMap.id}/{z}/{x}/{y}`;
-    baseLayerRef.current = L.tileLayer(proxyUrl, tileLayerOptionsRef.current).addTo(map.current);
+    const tokenValue = mapTokenRef.current ?? '';
+    const sep = nextBaseMap.url.includes('?') ? '&' : '?';
+    const directUrl = tokenValue.trim()
+      ? `${nextBaseMap.url}${sep}token=${tokenValue}`
+      : nextBaseMap.url;
+    baseLayerRef.current = L.tileLayer(directUrl, { ...tileLayerOptionsRef.current, subdomains: 'abc' }).addTo(map.current);
     setActiveBaseMapId(nextBaseMap.id);
   }, [activeBaseMapId, baseMaps]);
 
@@ -3979,9 +3982,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       if (map.current && availableBaseMaps.length > 0 && tileLayerOptionsRef.current) {
         const initialBaseMap = availableBaseMaps[0];
-        // Use same-origin proxy (token added server-side); Leaflet substitutes {z},{x},{y}
-        const proxyUrl = `/api/map-tile/${initialBaseMap.id}/{z}/{x}/{y}`;
-        baseLayerRef.current = L.tileLayer(proxyUrl, tileLayerOptionsRef.current).addTo(map.current);
+        const sep = initialBaseMap.url.includes('?') ? '&' : '?';
+        const directUrl = tokenValue.trim()
+          ? `${initialBaseMap.url}${sep}token=${tokenValue}`
+          : initialBaseMap.url;
+        baseLayerRef.current = L.tileLayer(directUrl, { ...tileLayerOptionsRef.current, subdomains: 'abc' }).addTo(map.current);
         setActiveBaseMapId(initialBaseMap.id);
         setThreeDActiveBaseMapId(initialBaseMap.id); // 3D starts on same basemap as 2D
       } else {

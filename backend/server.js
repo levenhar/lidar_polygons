@@ -379,39 +379,6 @@ app.get('/api/crs', (req, res) => {
   res.json({ crs: MAPS_CRS })
 })
 
-// GET /api/map-tile/:mapId/:z/:x/:y — proxy map tiles to avoid CORS issues in WebGL textures
-// mapId: 'primary' | 'alternate'
-app.get('/api/map-tile/:mapId/:z/:x/:y', async (req, res) => {
-  try {
-    const { mapId, z, x, y } = req.params;
-    const urlTemplate = mapId === 'alternate' ? MAPS_URL_ALT : MAPS_URL;
-    if (!urlTemplate) return res.status(404).json({ error: 'Map not configured' });
-
-    let tileUrl = urlTemplate
-      .replace('{z}', z)
-      .replace('{x}', x)
-      .replace('{y}', y)
-      .replace('{s}', 'a'); // subdomain for OSM-style templates (matches 2D Leaflet)
-    if (MAPS_TOKEN && MAPS_TOKEN.trim()) {
-      const sep = tileUrl.includes('?') ? '&' : '?';
-      tileUrl = `${tileUrl}${sep}token=${MAPS_TOKEN}`;
-    }
-
-    const response = await fetch(tileUrl);
-    if (!response.ok) return res.status(response.status).end();
-
-    const contentType = response.headers.get('Content-Type') || 'image/png';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-
-    const { Readable } = await import('node:stream');
-    Readable.fromWeb(response.body).pipe(res);
-  } catch (error) {
-    console.error('Error proxying map tile:', error);
-    res.status(500).end();
-  }
-})
-
 
 // Test GeoTIFF reading endpoint
 app.get('/api/dtm/:filename/test', async (req, res) => {

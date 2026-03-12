@@ -102,7 +102,7 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
   rasterData,
   baseMaps,
   activeBaseMapId,
-  mapToken: _mapToken = '',
+  mapToken = '',
   routes,
   activeRouteId,
   elevationProfile,
@@ -327,13 +327,19 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
       mat.needsUpdate = true;
     };
 
-    // Use same-origin proxy so the canvas is not tainted (cross-origin images would
-    // taint the canvas and cause WebGL "Tainted canvases may not be loaded" errors).
-    // The proxy uses /api/url config and adds the token server-side.
     for (let ty = minTile.y; ty <= maxTile.y; ty++) {
       for (let tx = minTile.x; tx <= maxTile.x; tx++) {
-        const proxyUrl = `/api/map-tile/${activeMap.id}/${zoom}/${tx}/${ty}`;
+        let tileUrl = activeMap.url
+          .replace('{z}', String(zoom))
+          .replace('{x}', String(tx))
+          .replace('{y}', String(ty))
+          .replace('{s}', 'a');
+        if (mapToken.trim()) {
+          const sep = tileUrl.includes('?') ? '&' : '?';
+          tileUrl = `${tileUrl}${sep}token=${mapToken}`;
+        }
         const img = new Image();
+        img.crossOrigin = 'anonymous';
         img.onload = () => {
           const [minLng, minLat, maxLng, maxLat] = bounds;
           const tileLngMin = tileToLng(tx, zoom);
@@ -353,10 +359,10 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
           loaded++;
           if (loaded === total) applyTexture();
         };
-        img.src = proxyUrl;
+        img.src = tileUrl;
       }
     }
-  }, [baseMaps, activeBaseMapId]);
+  }, [baseMaps, activeBaseMapId, mapToken]);
 
   // ── Rebuild texture on basemap change ─────────────────────────────
 
@@ -563,9 +569,19 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
   const nextBaseMap = baseMaps.length > 1
     ? baseMaps[(Math.max(currentBaseIndex, 0) + 1) % baseMaps.length]
     : null;
-  // Same-origin proxy for preview (avoids CORS/tainting; token added server-side)
   const nextBaseMapPreviewUrl = nextBaseMap
-    ? `/api/map-tile/${nextBaseMap.id}/1/1/0`
+    ? (() => {
+        let url = nextBaseMap.url
+          .replace('{z}', '1')
+          .replace('{x}', '1')
+          .replace('{y}', '0')
+          .replace('{s}', 'a');
+        if (mapToken.trim()) {
+          const sep = url.includes('?') ? '&' : '?';
+          url = `${url}${sep}token=${mapToken}`;
+        }
+        return url;
+      })()
     : null;
 
   return (

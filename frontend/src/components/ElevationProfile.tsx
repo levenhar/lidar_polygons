@@ -2549,7 +2549,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         }
 
         const minElevation = Math.min(...elevationProfile.map(p => p.elevation));
-        const maxElevation = Math.max(...elevationProfile.map(p => p.elevation));
+        const maxElevation = Math.max(
+          ...elevationProfile.map(p => p.elevation),
+          ...elevationProfile.map(p => p.maxElevation ?? -Infinity).filter(v => v !== -Infinity)
+        );
         const elevationRange = maxElevation - minElevation;
         const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
 
@@ -2801,8 +2804,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           { label: 'מרחק כולל:', value: `${totalDistance.toFixed(1)} מ'` },
           { label: 'עלייה כוללת:', value: `${totalAscent.toFixed(1)} מ'` },
           { label: 'ירידה כוללת:', value: `${totalDescent.toFixed(1)} מ'` },
-          { label: 'גובה טיסה מקסימלי:', value: `${maxHeightFromMinPoint.toFixed(1)} מ'` },
-          { label: 'גובה טיסה מינימלי:', value: `${minFlightHeight.toFixed(1)} מ'` }
+          { label: 'גובה תוצר מקסימלי:', value: `${maxHeightFromMinPoint.toFixed(1)} מ'` },
+          { label: 'גובה בטיחות מינימלי:', value: `${minFlightHeight.toFixed(1)} מ'` }
         ];
 
         let xPos = canvas.width - statPadding;

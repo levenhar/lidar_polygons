@@ -3445,13 +3445,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               </span>
             </div>
             <div className="stat">
-              <span className="stat-label">גובה טיסה מינימלי :</span>
+              <span className="stat-label">גובה בטיחות מינימלי :</span>
               <span className="stat-value">
                 {minFlightHeight.toFixed(1)} מ'
               </span>
             </div>
             <div className="stat">
-              <span className="stat-label">גובה טיסה מקסימלי :</span>
+              <span className="stat-label">גובה תוצר מקסימלי :</span>
               <span className="stat-value">
                 {maxHeightFromMinPoint.toFixed(1)} מ'
               </span>

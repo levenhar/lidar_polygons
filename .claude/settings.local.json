@@ -15,7 +15,8 @@
       "Bash(grep -r \"floating\\\\|draggable\\\\|window\" /c/Users/DELL/Documents/python/00-Git-Repos/lidar_polygons/frontend/src/components/*.tsx | grep -i \"position\\\\|fixed\\\\|absolute\" | head -10)",
       "Bash(grep -n \"CoordinateTooltip\" /c/Users/DELL/Documents/python/00-Git-Repos/lidar_polygons/frontend/src/components/*.tsx)",
       "Bash(grep -l \"hover-metadata-tooltip\\\\|tooltip\" /c/Users/DELL/Documents/python/00-Git-Repos/lidar_polygons/frontend/src/components/*.css)",
-      "Bash(grep -r \"elevation-profile\" /c/Users/DELL/Documents/python/00-Git-Repos/lidar_polygons/backend --include=\"*.js\" 2>/dev/null | head -5)"
+      "Bash(grep -r \"elevation-profile\" /c/Users/DELL/Documents/python/00-Git-Repos/lidar_polygons/backend --include=\"*.js\" 2>/dev/null | head -5)",
+      "Bash(grep -n \"vertexProximity\\\\|נמצאת בטווח של\" frontend/src/components/*.tsx frontend/src/utils/*.ts 2>/dev/null | head -50)"
     ]
   }
 }

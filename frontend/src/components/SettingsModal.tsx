@@ -256,7 +256,11 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     if (isOpen) {
       validateAll();
     }
-  }, [isOpen, generalDraft.safetyRadius, generalDraft.safetyHeight, generalDraft.outputHeight, validateAll]);
+  }, [isOpen, generalDraft.safetyRadius, generalDraft.safetyHeight, generalDraft.outputHeight,
+      climbDraft.climbRatio, climbDraft.descentRatio, climbDraft.vertexProximityMeters,
+      climbDraft.minClimb, climbDraft.maxClimb,
+      missionDraft.overlapPercentage, missionDraft.fovDegrees,
+      validateAll]);
 
   const getFieldError = (field: string): string | undefined => {
     return errors.find(e => e.field === field)?.message;
@@ -563,7 +567,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     value={missionDraft.overlapPercentage}
                     onChange={(e) => {
                       setMissionDraft(prev => ({ ...prev, overlapPercentage: e.target.value }));
-                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('overlapPercentage') ? 'error' : ''}`}
                     aria-describedby={getFieldError('overlapPercentage') ? 'overlap-error' : undefined}
@@ -596,7 +599,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     value={missionDraft.fovDegrees}
                     onChange={(e) => {
                       setMissionDraft(prev => ({ ...prev, fovDegrees: e.target.value }));
-                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('fovDegrees') ? 'error' : ''}`}
                     aria-describedby={getFieldError('fovDegrees') ? 'fov-error' : undefined}
@@ -689,7 +691,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                         climbRatio: e.target.value,
                         descentRatio: prev.linkRatios ? e.target.value : prev.descentRatio
                       }));
-                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('climbRatio') ? 'error' : ''}`}
                   />
@@ -718,7 +719,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     onChange={(e) => {
                       markCustomPreset();
                       setClimbDraft(prev => ({ ...prev, descentRatio: e.target.value }));
-                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('descentRatio') ? 'error' : ''}`}
                     disabled={climbDraft.linkRatios}
@@ -738,18 +738,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                 </label>
                 <input
                   id="vertex-proximity"
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  max="1000"
-                  required
+                  type="text"
                   inputMode="decimal"
+                  required
                   aria-required="true"
                   value={climbDraft.vertexProximityMeters}
                   onChange={(e) => {
                     markCustomPreset();
-                    setClimbDraft(prev => ({ ...prev, vertexProximityMeters: e.target.value }));
-                    setTimeout(() => validateAll(), 0);
+                    // Allow only digits and a single decimal point
+                    const raw = e.target.value.replace(/[^0-9.]/g, '').replace(/^(\d*\.?\d*).*$/, '$1');
+                    setClimbDraft(prev => ({ ...prev, vertexProximityMeters: raw }));
                   }}
                   className={`settings-modal__input ${getFieldError('vertexProximityMeters') ? 'error' : ''}`}
                 />
@@ -780,7 +778,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     onChange={(e) => {
                       markCustomPreset();
                       setClimbDraft(prev => ({ ...prev, minClimb: e.target.value }));
-                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('minClimb') ? 'error' : ''}`}
                   />
@@ -809,7 +806,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     onChange={(e) => {
                       markCustomPreset();
                       setClimbDraft(prev => ({ ...prev, maxClimb: e.target.value }));
-                      setTimeout(() => validateAll(), 0);
                     }}
                     className={`settings-modal__input ${getFieldError('maxClimb') ? 'error' : ''}`}
                   />

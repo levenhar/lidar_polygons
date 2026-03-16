@@ -6,6 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 LiDAR Mission Planner — a web app for planning aerial LiDAR scanning missions. Users draw flight paths on a map, configure altitude/climb profiles, and see a synchronized elevation profile against a DTM (Digital Terrain Model). Projects save as `.nehorai` files.
 
+
+## Workflow 
+When creating a plan for complex features, implement the changes in the same session rather than ending at the planning stage. If the task is too large, implement the most critical piece and note remaining work.
+
+## Build & Test 
+This is a TypeScript project. Always run `npm run build` and `npm run test` after making changes. All tests must pass before considering a task complete.
+
+## UI/CSS Guidelines 
+When fixing UI layout issues (flex containers, chart sizing, resize handles), check parent container constraints (min-height, overflow, z-index) before modifying child elements. Test at multiple viewport sizes.
+
+Add under ## Route/Flight Path Editing section in CLAUDE.md\n\nWhen implementing features that modify route points (reverse, insert, delete), always verify: 1) undo/redo works correctly, 2) map rendering syncs with profile, 3) climb points are handled (decrease/increase swap, position recalculation).
+
 ## Architecture
 
 Three services, all run together in development:

@@ -1,243 +1,193 @@
 # LiDAR Mission Planner
 
-A production-ready web application for planning LiDAR scanning missions with synchronized overhead map view and real-time elevation profile visualization.
+A web application for planning aerial LiDAR scanning missions. Draw flight paths on a map, configure altitude and climb profiles, and visualize a synchronized elevation profile against a DTM (Digital Terrain Model). Projects save as `.nehorai` files.
 
-## Features
+## Architecture
 
-🔶 **Left Panel - Overhead Map View**
-- Display DTM (Digital Terrain Model) raster as base layer
-- Load DTM from GeoTIFF file or server endpoint
-- Interactive flight path polyline with drawing/editing capabilities
-- Drag markers to modify flight path points
-- Right-click markers to delete points
-- Hover over points to highlight in elevation profile
-- Import/export flight paths as GeoJSON
+Three services run together in development:
 
-🔶 **Right Panel - Elevation Profile**
-- Dynamic elevation cross-section based on DTM
-- Real-time updates when flight path changes
-- Visualizes:
-  - Ground elevation (brown line)
-  - Flight altitude AGL (blue dashed line)
-  - Nominal flight height (configurable)
-- Export elevation profile as PNG or CSV
-- Statistics panel showing min/max elevation and distance
+| Service | Directory | Stack | Port |
+|---|---|---|---|
+| Frontend | `frontend/` | React 18 + TypeScript, Vite, Leaflet, D3.js | 3000 |
+| Node backend | `backend/` | Express, GeoTIFF.js, proj4 | 5000 |
+| Python backend | `backend_python/` | FastAPI, rasterio, pyproj, numpy | configured via env |
 
-## Technology Stack
+The frontend proxies `/api` requests to the Node backend. The Node backend handles DTM uploads and map tile proxying. The Python backend handles heavy geospatial computation (elevation profiles, clipping, viewshed).
 
-### Frontend
-- **React 18** with TypeScript
-- **MapLibre GL JS** for map visualization
-- **D3.js** for elevation profile charts
-- **Vite** for fast development and building
+## Prerequisites
 
-### Backend
-- **Node.js** with Express
-- **Multer** for file uploads
-- **GeoTIFF.js** for DTM processing (ready for implementation)
+- **Node.js 18+** and npm
+- **Python 3.10+** and pip (or conda)
 
-## Project Structure
-
-```
-polygon_plane/
-├── frontend/                 # React frontend application
-│   ├── src/
-│   │   ├── components/       # React components
-│   │   │   ├── MapPanel.tsx  # Map view with flight path
-│   │   │   └── ElevationProfile.tsx  # Elevation chart
-│   │   ├── hooks/            # Custom React hooks
-│   │   │   ├── useFlightPath.ts
-│   │   │   └── useElevationProfile.ts
-│   │   ├── App.tsx           # Main application component
-│   │   └── main.tsx          # Entry point
-│   ├── package.json
-│   └── vite.config.ts
-├── backend/                  # Express backend server
-│   ├── server.js             # Main server file
-│   ├── uploads/              # Uploaded DTM files (created at runtime)
-│   └── package.json
-├── examples/                 # Example datasets
-│   └── flight-path-example.geojson
-└── README.md
-```
+---
 
 ## Installation
 
-### Prerequisites
-- Node.js 18+ and npm
-- A modern web browser (Chrome, Firefox, Edge, Safari)
+### 1. Node dependencies
 
-### Setup Steps
+From the repo root:
 
-1. **Install all dependencies:**
-   ```bash
-   npm run install:all
-   ```
-   
-   Or install separately:
-   ```bash
-   # Install root dependencies
-   npm install
-   
-   # Install frontend dependencies
-   cd frontend
-   npm install
-   
-   # Install backend dependencies
-   cd ../backend
-   npm install
-   ```
+```bash
+# Install root + frontend + backend dependencies
+npm run install:all
+```
 
-2. **Start the development servers:**
-   
-   From the root directory:
-   ```bash
-   npm run dev
-   ```
-   
-   This starts both frontend (port 3000) and backend (port 5000) concurrently.
-   
-   Or start them separately:
-   ```bash
-   # Terminal 1 - Backend
-   cd backend
-   npm run dev
-   
-   # Terminal 2 - Frontend
-   cd frontend
-   npm run dev
-   ```
+Or install each separately:
 
-3. **Open the application:**
-   - Frontend: http://localhost:3000
-   - Backend API: http://localhost:5000
+```bash
+npm install          # root
+cd frontend && npm install
+cd ../backend && npm install
+```
 
-## Usage Guide
+### 2. Python dependencies
 
-### Loading a DTM (Digital Terrain Model)
+```bash
+cd backend_python
+pip install -r requirements.txt
+```
 
-1. Click the **"Load DTM"** button in the map panel
-2. Select a GeoTIFF file (.tif, .tiff, .geotiff)
-3. The DTM will be uploaded to the server and displayed on the map
+Using a virtual environment is recommended:
 
-**Note:** Currently, the backend accepts DTM files but uses mock elevation data. For production use, implement GeoTIFF parsing in `backend/server.js` to extract actual elevation values.
+```bash
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-### Drawing a Flight Path
+---
 
-1. Click the **"Draw Path"** button in the map panel
-2. Click on the map to add points to your flight path
-3. The path will appear as a red line connecting the points
-4. Click **"Stop Drawing"** when finished
+## Configuration
 
-### Editing the Flight Path
+### Node backend (`backend/.env`)
 
-- **Move a point:** Drag any numbered marker on the map
-- **Delete a point:** Right-click on a marker
-- **Hover over a point:** Move your mouse over a marker to see it highlighted in the elevation profile
+Create `backend/.env` based on `backend/env-no-secret.md`. Key variables:
 
-### Configuring Flight Parameters
+| Variable | Description |
+|---|---|
+| `BACKEND_PORT` | Port for the Node server (default: 5000) |
+| `MAPS_TOKEN` | API token for map tile provider |
+| `MAPS_URL` | Map tile URL template |
+| `UPLOADS_DIR` | Directory for uploaded DTM files |
 
-- Adjust the **Nominal Flight Height** in the header to set the AGL (Above Ground Level) altitude
-- The elevation profile will update automatically
+### Python backend
 
-### Importing/Exporting
+The Python backend reads the same `backend/.env` file (via `python-dotenv`). Key variables:
 
-- **Export GeoJSON:** Click "Export GeoJSON" in the header to download the current flight path
-- **Import GeoJSON:** Click "Import GeoJSON" and select a GeoJSON file with a LineString feature
-- **Export Elevation Profile:**
-  - **PNG:** Click "Export PNG" in the elevation panel to save the chart as an image
-  - **CSV:** Click "Export CSV" to download elevation data as a spreadsheet
+| Variable | Description |
+|---|---|
+| `DTM_DATA_DIR` | Directory containing source DTM GeoTIFF files (read-only) |
+| `DTM_CACHE_DIR` | Directory for cached clipped DTMs (read-write) |
+| `DTM_SUBSAMPLED_CACHE_DIR` | Directory for subsampled display DTMs (optional) |
+| `DTM_CACHE_TTL_SECONDS` | How long before stale cached clips are deleted (default: 18000) |
+| `DTM_CLEANUP_INTERVAL_SECONDS` | Background cleanup interval (default: 1800) |
 
-### Example Dataset
+---
 
-An example flight path is provided in `examples/flight-path-example.geojson`. You can import this to see a sample flight path over San Francisco.
+## Running Locally
 
-## API Endpoints
+### Option A — All services at once (recommended)
 
-### Backend API
+From the repo root:
 
-- `GET /api/health` - Health check
-- `POST /api/upload-dtm` - Upload a GeoTIFF file
-  - Body: `multipart/form-data` with `dtm` field
-  - Returns: `{ success: true, filename: string, path: string }`
-- `GET /api/dtm/:filename/metadata` - Get DTM metadata
-- `POST /api/elevation-profile` - Calculate elevation profile
-  - Body: `{ coordinates: number[][], dtmPath: string }`
-  - Returns: `{ profile: ElevationPoint[] }`
+```bash
+npm run dev
+```
+
+This starts the frontend (port 3000) and Node backend (port 5000) concurrently. You still need to start the Python backend separately (see below).
+
+### Option B — Each service individually
+
+**Terminal 1 — Node backend and fronend:**
+
+```bash
+npm run dev
+```
+
+**Terminal 2 — Python backend:**
+
+```bash
+cd backend_python
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+> The Python backend port must match what the Node backend expects. Check your `.env` for the configured port.
+
+Once both are running, open one of the following in your browser:
+
+- **http://localhost:3000** — frontend dev server (hot reload, for active development)
+- **http://localhost:5000** — Node backend serving the built static files (for testing the production build)
+
+---
 
 ## Development
 
-### Building for Production
+### Running tests
+
+```bash
+cd frontend
+npm test
+```
+
+### Building for production
 
 ```bash
 cd frontend
 npm run build
 ```
 
-The built files will be in `frontend/dist/`.
+Built files are output to `frontend/dist/`.
 
-### Code Structure
+### Project file format
 
-The application follows a modular architecture:
+Projects are saved as `.nehorai` ZIP archives (schema version 4). The app also loads legacy `.routeproj` files.
 
-- **Components:** Reusable UI components (`MapPanel`, `ElevationProfile`)
-- **Hooks:** Custom React hooks for state management (`useFlightPath`, `useElevationProfile`)
-- **Backend:** RESTful API for file handling and data processing
+---
 
-### Extending the Application
+## Project Structure
 
-#### Adding Real GeoTIFF Processing
-
-To process actual GeoTIFF files, enhance `backend/server.js`:
-
-```javascript
-import { fromFile } from 'geotiff';
-
-// In the elevation-profile endpoint:
-const tiff = await fromFile(filePath);
-const image = await tiff.getImage();
-const rasters = await image.readRasters();
-// Sample elevation at coordinates
+```
+lidar_polygons/
+├── frontend/               # React + TypeScript frontend (Vite, Leaflet, D3.js)
+│   └── src/
+│       ├── App.tsx         # Root component, owns all top-level state
+│       ├── components/     # MapPanel, ElevationProfile, SettingsModal, etc.
+│       ├── hooks/          # useFlightPath, useElevationProfile, useUndoRedo
+│       ├── utils/          # climb.ts, projectSerializer.ts, kmlGenerator.ts, etc.
+│       └── config/         # climbPresets.json
+├── backend/                # Node.js / Express backend
+│   ├── server.js
+│   ├── .env                # Environment config (not committed)
+│   └── env-no-secret.md    # Documented env vars (no values)
+├── backend_python/         # Python / FastAPI backend
+│   ├── main.py             # FastAPI app, startup cache build
+│   ├── constants.py        # All shared numeric/string constants
+│   ├── dtm_lease_manager.py # SQLite-backed DTM lease system
+│   └── requirements.txt
+└── README.md
 ```
 
-#### Adding DTM Raster Layer to Map
-
-To display the DTM as a raster layer on the map:
-
-1. Create tile endpoints in the backend
-2. Add a raster source to MapLibre
-3. Configure the layer styling
+---
 
 ## Troubleshooting
 
-### Port Already in Use
-If port 3000 or 5000 is already in use:
-- Frontend: Edit `frontend/vite.config.ts` and change the port
-- Backend: Edit `backend/server.js` and change `PORT`
+**Port already in use**
+- Frontend: change the port in `frontend/vite.config.ts`
+- Node backend: change `BACKEND_PORT` in `backend/.env`
+- Python backend: pass a different `--port` to uvicorn
 
-### CORS Errors
-The backend includes CORS middleware. If you encounter CORS issues, check that the frontend proxy is configured correctly in `vite.config.ts`.
+**Python backend fails to start**
+- Make sure all packages from `requirements.txt` are installed in the active environment
+- Verify `DTM_DATA_DIR` and `DTM_CACHE_DIR` point to existing directories
 
-### DTM Not Displaying
-Currently, DTM files are uploaded but not rendered as map layers. This requires additional GeoTIFF tile generation. The elevation profile uses mock data until real GeoTIFF processing is implemented.
+**Map tiles not loading**
+- Set `MAPS_TOKEN` and `MAPS_URL` in `backend/.env`
 
-## Future Enhancements
+**CORS errors**
+- The Node backend includes CORS middleware. Verify the frontend proxy in `frontend/vite.config.ts` targets the correct backend port.
 
-- [ ] Real GeoTIFF parsing and elevation extraction
-- [ ] DTM raster tile generation and display
-- [ ] Multiple flight path support
-- [ ] Waypoint altitude constraints
-- [ ] 3D visualization
-- [ ] Mission planning templates
-- [ ] Cloud storage integration
-- [ ] Real-time weather overlay
+---
 
 ## License
 
 MIT
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-

@@ -99,6 +99,17 @@
   color: white;
 }
 
+.header-action-btn.auto-save-active {
+  background: #166534;
+  color: #bbf7d0;
+  border-color: #22c55e;
+}
+
+.header-action-btn.auto-save-active:hover:not(:disabled) {
+  background: #15803d;
+  color: #dcfce7;
+}
+
 .kml-count-badge {
   position: absolute;
   top: -4px;

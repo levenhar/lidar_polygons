@@ -3,32 +3,14 @@
  * Allows persisting directory access across page refreshes
  */
 
-const DB_NAME = 'lidar_mission_planner';
-const STORE_NAME = 'directory_handles';
+import { openDB, STORE_DIRECTORY_HANDLES } from './idbHelper';
+
+const STORE_NAME = STORE_DIRECTORY_HANDLES;
 const KEY_NAME = 'export_directory';
 
 interface StoredDirectory {
   label: string; // Display name like "Desktop" or folder name
   handle: FileSystemDirectoryHandle; // The actual directory handle
-}
-
-/**
- * Open IndexedDB database
- */
-async function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
-
-    request.onupgradeneeded = (event) => {
-      const db = (event.target as IDBOpenDBRequest).result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
-      }
-    };
-  });
 }
 
 /**

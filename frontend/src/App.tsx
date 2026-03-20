@@ -31,6 +31,7 @@ import { debug } from './utils/debug';
 import { importKmlFile } from './utils/importKmlFlow';
 import KmlManagerModal, { KmlImport } from './components/KmlManagerModal';
 import { calculateDistance } from './utils/geometry';
+import { storeAutoSaveState, getAutoSaveState, clearAutoSaveState, updateAutoSaveSnapshot } from './utils/autoSaveStorage';
 import './App.css';
 
 export interface Coordinate {
@@ -488,6 +489,12 @@ function AppContent() {
 
   // State for reverse warning modal
   const [reverseWarningOpen, setReverseWarningOpen] = useState(false);
+
+  // Auto-save state
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
+  const [autoSaveFileHandle, setAutoSaveFileHandle] = useState<FileSystemFileHandle | null>(null);
+  const [autoSaveFileName, setAutoSaveFileName] = useState('');
+  const autoSaveInProgressRef = React.useRef(false);
 
   // State for triggering climb creation from the map right-click
   const [mapClimbTriggerDistance, setMapClimbTriggerDistance] = useState<number | null>(null);
@@ -1774,9 +1781,102 @@ function AppContent() {
     dtmDisplaySettings, showNextLineSuggestions, kmlImports
   ]);
 
+  // Helper: generate current project JSON
+  const generateProjectJson = useCallback(() => {
+    const projectData = exportProject({
+      dtmSource, dtmInfo, activeClippedId, dtmSourceType, localDtmFile, serverDtmId, serverDtmMetadata,
+      aoiGeometry: aoiGeometry || undefined,
+      routes, activeRouteId, climbRequestsByRoute,
+      general: { nominalFlightHeight, safetyRadius: safetySearchRadius, safetyHeight, outputHeight: resolutionHeight },
+      mission: { overlapPercentage, fovDegrees },
+      ascendDescend: { selectedPresetId: selectedClimbPresetId, climbConfig },
+      display: { dtmPalette: dtmDisplaySettings.palette, dtmInverted: dtmDisplaySettings.inverted, dtmOpacity: dtmDisplaySettings.opacity, showMetadata, showClimbLabels, showNextLineSuggestions },
+      kmlImports
+    });
+    return JSON.stringify(projectData, null, 2);
+  }, [
+    dtmSource, dtmInfo, activeClippedId, dtmSourceType, localDtmFile, serverDtmId, serverDtmMetadata, aoiGeometry,
+    routes, activeRouteId, climbRequestsByRoute,
+    nominalFlightHeight, safetySearchRadius, safetyHeight, resolutionHeight,
+    overlapPercentage, fovDegrees,
+    selectedClimbPresetId, climbConfig,
+    showMetadata, showClimbLabels,
+    dtmDisplaySettings, showNextLineSuggestions, kmlImports
+  ]);
+
+  // Write project JSON to a file handle
+  const writeToFileHandle = useCallback(async (handle: FileSystemFileHandle, json: string) => {
+    const writable = await (handle as any).createWritable();
+    await writable.write(json);
+    await writable.close();
+  }, []);
+
+  // Toggle auto-save on/off
+  const handleToggleAutoSave = useCallback(async () => {
+    if (autoSaveEnabled) {
+      // Turn OFF
+      setAutoSaveEnabled(false);
+      setAutoSaveFileHandle(null);
+      setAutoSaveFileName('');
+      await clearAutoSaveState();
+      return;
+    }
+    // Turn ON
+    if (!('showSaveFilePicker' in window)) {
+      alert('שמירה אוטומטית נתמכת רק בדפדפני Chrome / Edge');
+      return;
+    }
+    try {
+      const defaultName = `project_${new Date().toISOString().split('T')[0]}.nehorai`;
+      const handle: FileSystemFileHandle = await (window as any).showSaveFilePicker({
+        suggestedName: defaultName,
+        types: [{ description: 'Nehorai Project', accept: { 'application/json': ['.nehorai'] } }]
+      });
+      const name = handle.name;
+      setAutoSaveFileHandle(handle);
+      setAutoSaveFileName(name);
+      setAutoSaveEnabled(true);
+      // Immediate first save
+      const json = generateProjectJson();
+      await writeToFileHandle(handle, json);
+      await storeAutoSaveState({ enabled: true, fileName: name, fileHandle: handle, projectSnapshot: json, savedAt: new Date().toISOString() });
+    } catch (err: any) {
+      // User cancelled the picker
+      if (err?.name === 'AbortError') return;
+      console.error('Auto-save setup failed:', err);
+    }
+  }, [autoSaveEnabled, generateProjectJson, writeToFileHandle]);
+
+  // Auto-save effect: debounced write after any change
+  useEffect(() => {
+    if (!autoSaveEnabled || !autoSaveFileHandle) return;
+    const timer = setTimeout(async () => {
+      if (autoSaveInProgressRef.current) return;
+      autoSaveInProgressRef.current = true;
+      try {
+        const json = generateProjectJson();
+        await writeToFileHandle(autoSaveFileHandle, json);
+        await updateAutoSaveSnapshot(json);
+      } catch (err: any) {
+        if (err?.name === 'NotAllowedError') {
+          console.warn('Auto-save permission lost, disabling');
+          setAutoSaveEnabled(false);
+          setAutoSaveFileHandle(null);
+          setAutoSaveFileName('');
+          await clearAutoSaveState();
+        } else {
+          console.error('Auto-save failed:', err);
+        }
+      } finally {
+        autoSaveInProgressRef.current = false;
+      }
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [autoSaveEnabled, autoSaveFileHandle, generateProjectJson, writeToFileHandle]);
+
   // Ctrl+S / Cmd+S: save project
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
       const isMac = navigator.platform?.toUpperCase().indexOf('MAC') >= 0;
       const modifier = isMac ? e.metaKey : e.ctrlKey;
       const isKeyS = e.code === 'KeyS' || e.key === 's' || e.key === 'S';
@@ -1792,11 +1892,23 @@ function AppContent() {
         if (isEditable) return;
       }
       e.preventDefault();
-      handleSaveProject();
+      // If auto-save is active, write immediately to the file handle
+      if (autoSaveEnabled && autoSaveFileHandle) {
+        try {
+          const json = generateProjectJson();
+          await writeToFileHandle(autoSaveFileHandle, json);
+          await updateAutoSaveSnapshot(json);
+        } catch (err) {
+          console.error('Ctrl+S auto-save write failed:', err);
+          handleSaveProject();
+        }
+      } else {
+        handleSaveProject();
+      }
     };
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [handleSaveProject]);
+  }, [handleSaveProject, autoSaveEnabled, autoSaveFileHandle, generateProjectJson, writeToFileHandle]);
 
   // Migrate entry height from AGL to ASL for old projects
   const migrateEntryHeightIfNeeded = useCallback(async (
@@ -1929,6 +2041,79 @@ function AppContent() {
     // Use importRoutes to restore all routes at once
     importRoutes(restoredRoutes, migratedData.climbRequestsByRoute);
   }, [importRoutes, migrateEntryHeightIfNeeded, dtmSource, setNominalFlightHeight]);
+
+  // Recovery: on mount, check for an auto-saved snapshot in IndexedDB
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const saved = await getAutoSaveState();
+        if (!saved || !saved.enabled || !saved.projectSnapshot || cancelled) return;
+        const projectData: ProjectFileData = JSON.parse(saved.projectSnapshot);
+        // Restore settings
+        setNominalFlightHeight(projectData.general.nominalFlightHeight);
+        setSafetySearchRadius(projectData.general.safetyRadius);
+        setSafetyHeight(projectData.general.safetyHeight);
+        setResolutionHeight(projectData.general.outputHeight);
+        setOverlapPercentage(projectData.mission.overlapPercentage);
+        setFovDegrees(projectData.mission.fovDegrees);
+        setSelectedClimbPresetId(projectData.ascendDescend.selectedPresetId);
+        setClimbConfig(projectData.ascendDescend.climbConfig);
+        setShowMetadata(projectData.display.showMetadata ?? true);
+        setShowClimbLabels(projectData.display.showClimbLabels ?? true);
+        setShowNextLineSuggestions(projectData.display.showNextLineSuggestions ?? true);
+        setKmlImports(projectData.kmlImports || []);
+        // Restore DTM
+        if (projectData.dtm) {
+          if (projectData.dtm.sourceType === 'local') {
+            setMissingLocalDtmModal({ isOpen: true, descriptor: projectData.dtm });
+            (window as any).__pendingProjectRestore = projectData;
+          } else if (projectData.dtm.sourceType === 'server') {
+            setServerDtmId(projectData.dtm.dtmServerId || null);
+            setServerDtmMetadata({
+              displayName: projectData.dtm.displayName,
+              sizeBytes: projectData.dtm.sizeBytes,
+              modifiedAt: projectData.dtm.modifiedAt
+            });
+          }
+        }
+        // Restore routes (for non-local DTM or no DTM)
+        if (!projectData.dtm || projectData.dtm.sourceType !== 'local') {
+          await restoreProjectRoutes(projectData);
+        }
+        // Restore auto-save UI state
+        setAutoSaveEnabled(true);
+        setAutoSaveFileName(saved.fileName);
+        // Try to recover file handle for continued writes
+        if (saved.fileHandle) {
+          try {
+            const perm = await (saved.fileHandle as any).queryPermission({ mode: 'readwrite' });
+            if (perm === 'granted') {
+              setAutoSaveFileHandle(saved.fileHandle);
+            } else {
+              // Try to re-request on first user click
+              const reRequest = async () => {
+                try {
+                  const result = await (saved.fileHandle as any).requestPermission({ mode: 'readwrite' });
+                  if (result === 'granted') {
+                    setAutoSaveFileHandle(saved.fileHandle);
+                  }
+                } catch { /* ignore */ }
+                document.removeEventListener('click', reRequest);
+              };
+              document.addEventListener('click', reRequest, { once: true });
+            }
+          } catch {
+            // Handle not recoverable, still have snapshot
+          }
+        }
+      } catch (err) {
+        console.warn('Auto-save recovery failed:', err);
+      }
+    })();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Load Project handler
   const handleLoadProject = useCallback(async () => {
@@ -2207,6 +2392,20 @@ function AppContent() {
               <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
               <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17 21v-8H7v8" />
               <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M7 3v5h8" />
+            </svg>
+          </button>
+          <button
+            onClick={handleToggleAutoSave}
+            className={`btn btn-secondary btn-icon header-action-btn${autoSaveEnabled ? ' auto-save-active' : ''}`}
+            type="button"
+            aria-label="שמירה אוטומטית"
+            title={autoSaveEnabled ? `שמירה אוטומטית פעילה: ${autoSaveFileName}` : 'שמירה אוטומטית'}
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M23 4v6h-6" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M1 20v-6h6" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+              {autoSaveEnabled && <circle cx="12" cy="12" r="3" fill="currentColor" />}
             </svg>
           </button>
           <button

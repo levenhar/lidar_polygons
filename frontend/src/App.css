@@ -110,6 +110,21 @@
   color: #dcfce7;
 }
 
+.auto-save-btn {
+  flex-direction: column;
+  gap: 1px;
+  height: auto;
+  min-height: 36px;
+  padding: 4px 6px;
+}
+
+.auto-save-label {
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 1;
+}
+
 .kml-count-badge {
   position: absolute;
   top: -4px;

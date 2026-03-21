@@ -2317,17 +2317,21 @@ function AppContent() {
           </button>
           <button
             onClick={handleToggleAutoSave}
-            className={`btn btn-secondary btn-icon header-action-btn${autoSaveEnabled ? ' auto-save-active' : ''}`}
+            className={`btn btn-secondary btn-icon header-action-btn auto-save-btn${autoSaveEnabled ? ' auto-save-active' : ''}`}
             type="button"
             aria-label="שמירה אוטומטית"
             title={autoSaveEnabled ? `שמירה אוטומטית פעילה: ${autoSaveFileName}` : 'שמירה אוטומטית'}
           >
             <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M23 4v6h-6" />
-              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M1 20v-6h6" />
-              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-              {autoSaveEnabled && <circle cx="12" cy="12" r="3" fill="currentColor" />}
+              {/* Floppy disk (save icon) */}
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17 21v-8H7v8" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M7 3v5h8" />
+              {/* Green checkmark badge, bottom-right corner */}
+              <circle cx="18.5" cy="18.5" r="4.5" fill="#16a34a" />
+              <path stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M16.2 18.5 L18 20.3 L20.8 16.8" />
             </svg>
+            <span className="auto-save-label">AUTO</span>
           </button>
           <button
             onClick={handleLoadProject}

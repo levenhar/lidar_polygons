@@ -31,7 +31,6 @@ import { debug } from './utils/debug';
 import { importKmlFile } from './utils/importKmlFlow';
 import KmlManagerModal, { KmlImport } from './components/KmlManagerModal';
 import { calculateDistance } from './utils/geometry';
-import { storeAutoSaveState, getAutoSaveState, clearAutoSaveState, updateAutoSaveSnapshot } from './utils/autoSaveStorage';
 import './App.css';
 
 export interface Coordinate {
@@ -1818,7 +1817,6 @@ function AppContent() {
       setAutoSaveEnabled(false);
       setAutoSaveFileHandle(null);
       setAutoSaveFileName('');
-      await clearAutoSaveState();
       return;
     }
     // Turn ON
@@ -1839,7 +1837,6 @@ function AppContent() {
       // Immediate first save
       const json = generateProjectJson();
       await writeToFileHandle(handle, json);
-      await storeAutoSaveState({ enabled: true, fileName: name, fileHandle: handle, projectSnapshot: json, savedAt: new Date().toISOString() });
     } catch (err: any) {
       // User cancelled the picker
       if (err?.name === 'AbortError') return;
@@ -1856,14 +1853,12 @@ function AppContent() {
       try {
         const json = generateProjectJson();
         await writeToFileHandle(autoSaveFileHandle, json);
-        await updateAutoSaveSnapshot(json);
       } catch (err: any) {
         if (err?.name === 'NotAllowedError') {
           console.warn('Auto-save permission lost, disabling');
           setAutoSaveEnabled(false);
           setAutoSaveFileHandle(null);
           setAutoSaveFileName('');
-          await clearAutoSaveState();
         } else {
           console.error('Auto-save failed:', err);
         }
@@ -1897,7 +1892,6 @@ function AppContent() {
         try {
           const json = generateProjectJson();
           await writeToFileHandle(autoSaveFileHandle, json);
-          await updateAutoSaveSnapshot(json);
         } catch (err) {
           console.error('Ctrl+S auto-save write failed:', err);
           handleSaveProject();
@@ -2041,79 +2035,6 @@ function AppContent() {
     // Use importRoutes to restore all routes at once
     importRoutes(restoredRoutes, migratedData.climbRequestsByRoute);
   }, [importRoutes, migrateEntryHeightIfNeeded, dtmSource, setNominalFlightHeight]);
-
-  // Recovery: on mount, check for an auto-saved snapshot in IndexedDB
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const saved = await getAutoSaveState();
-        if (!saved || !saved.enabled || !saved.projectSnapshot || cancelled) return;
-        const projectData: ProjectFileData = JSON.parse(saved.projectSnapshot);
-        // Restore settings
-        setNominalFlightHeight(projectData.general.nominalFlightHeight);
-        setSafetySearchRadius(projectData.general.safetyRadius);
-        setSafetyHeight(projectData.general.safetyHeight);
-        setResolutionHeight(projectData.general.outputHeight);
-        setOverlapPercentage(projectData.mission.overlapPercentage);
-        setFovDegrees(projectData.mission.fovDegrees);
-        setSelectedClimbPresetId(projectData.ascendDescend.selectedPresetId);
-        setClimbConfig(projectData.ascendDescend.climbConfig);
-        setShowMetadata(projectData.display.showMetadata ?? true);
-        setShowClimbLabels(projectData.display.showClimbLabels ?? true);
-        setShowNextLineSuggestions(projectData.display.showNextLineSuggestions ?? true);
-        setKmlImports(projectData.kmlImports || []);
-        // Restore DTM
-        if (projectData.dtm) {
-          if (projectData.dtm.sourceType === 'local') {
-            setMissingLocalDtmModal({ isOpen: true, descriptor: projectData.dtm });
-            (window as any).__pendingProjectRestore = projectData;
-          } else if (projectData.dtm.sourceType === 'server') {
-            setServerDtmId(projectData.dtm.dtmServerId || null);
-            setServerDtmMetadata({
-              displayName: projectData.dtm.displayName,
-              sizeBytes: projectData.dtm.sizeBytes,
-              modifiedAt: projectData.dtm.modifiedAt
-            });
-          }
-        }
-        // Restore routes (for non-local DTM or no DTM)
-        if (!projectData.dtm || projectData.dtm.sourceType !== 'local') {
-          await restoreProjectRoutes(projectData);
-        }
-        // Restore auto-save UI state
-        setAutoSaveEnabled(true);
-        setAutoSaveFileName(saved.fileName);
-        // Try to recover file handle for continued writes
-        if (saved.fileHandle) {
-          try {
-            const perm = await (saved.fileHandle as any).queryPermission({ mode: 'readwrite' });
-            if (perm === 'granted') {
-              setAutoSaveFileHandle(saved.fileHandle);
-            } else {
-              // Try to re-request on first user click
-              const reRequest = async () => {
-                try {
-                  const result = await (saved.fileHandle as any).requestPermission({ mode: 'readwrite' });
-                  if (result === 'granted') {
-                    setAutoSaveFileHandle(saved.fileHandle);
-                  }
-                } catch { /* ignore */ }
-                document.removeEventListener('click', reRequest);
-              };
-              document.addEventListener('click', reRequest, { once: true });
-            }
-          } catch {
-            // Handle not recoverable, still have snapshot
-          }
-        }
-      } catch (err) {
-        console.warn('Auto-save recovery failed:', err);
-      }
-    })();
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // Load Project handler
   const handleLoadProject = useCallback(async () => {

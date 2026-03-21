@@ -7,7 +7,6 @@ export const DB_NAME = 'lidar_mission_planner';
 export const DB_VERSION = 2;
 
 export const STORE_DIRECTORY_HANDLES = 'directory_handles';
-export const STORE_AUTO_SAVE = 'auto_save';
 
 export function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -20,9 +19,6 @@ export function openDB(): Promise<IDBDatabase> {
       const db = (event.target as IDBOpenDBRequest).result;
       if (!db.objectStoreNames.contains(STORE_DIRECTORY_HANDLES)) {
         db.createObjectStore(STORE_DIRECTORY_HANDLES);
-      }
-      if (!db.objectStoreNames.contains(STORE_AUTO_SAVE)) {
-        db.createObjectStore(STORE_AUTO_SAVE);
       }
     };
   });

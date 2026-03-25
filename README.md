@@ -86,19 +86,13 @@ The Python backend reads the same `backend/.env` file (via `python-dotenv`). Key
 
 ## Running Locally
 
-### Option A — All services at once (recommended)
-
-From the repo root:
-
+**First Run / Or After package.json Change**
 ```bash
-npm run dev
+npm run install:all
 ```
 
-This starts the frontend (port 3000) and Node backend (port 5000) concurrently. You still need to start the Python backend separately (see below).
-
-### Option B — Each service individually
-
 **Terminal 1 — Node backend and fronend:**
+This starts the frontend (port 3000) and Node backend (port 5000) concurrently. You still need to start the Python backend separately (see below).
 
 ```bash
 npm run dev

@@ -536,21 +536,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return minElev + resolutionHeight;
     };
 
-    const plannedAltitudes = elevationProfile.map((p) => p.plannedAltitude || (p.elevation + nominalFlightHeight));
-    const baseAltitudes = elevationProfile.map((p) => p.baseAltitude || (p.elevation + nominalFlightHeight));
-
-    // @ts-ignore
-    const getSafetyThreshold = (d: ElevationPoint) => {
-      const maxElev = d.maxElevation !== undefined ? d.maxElevation : d.elevation;
-      return maxElev + safetyHeight;
-    };
-
-    /*
-    const getResolutionThreshold = (d: ElevationPoint) => {
-      const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
-      return minElev + resolutionHeight;
-    };
-
     // Calculate domain including min/max elevations within radius
     const allMinElevations = elevationProfile
       .map(d => d.minElevation)
@@ -3484,8 +3469,32 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             visibility: tooltipPosition ? 'visible' : 'hidden'
           }}
         >
-          <CoordinateTooltip point={hoveredPoint} utm={hoveredUtm} />
+          <CoordinateTooltip point={hoveredPoint} />
         </div>
+      )}
+
+      {saveFileDialog && (
+        <SaveFileDialog
+          isOpen={saveFileDialog.isOpen}
+          defaultFilename={saveFileDialog.defaultFilename}
+          fileExtension={
+            saveFileDialog.mimeType === 'image/png'
+              ? '.png'
+              : saveFileDialog.mimeType === 'text/csv'
+                ? '.csv'
+                : ''
+          }
+          title={
+            saveFileDialog.mimeType === 'image/png'
+              ? 'ייצוא PNG'
+              : saveFileDialog.mimeType === 'text/csv'
+                ? 'ייצוא CSV'
+                : 'שמירת קובץ'
+          }
+          fileContent={saveFileDialog.fileContent}
+          mimeType={saveFileDialog.mimeType}
+          onClose={() => setSaveFileDialog(null)}
+        />
       )}
     </div>
   );

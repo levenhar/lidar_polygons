@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import MapPanel from './components/MapPanel';
 import ElevationProfile from './components/ElevationProfile';
 import ExportSettingsModal from './components/ExportSettingsModal';
@@ -89,30 +89,7 @@ function presetToConfig(preset?: ClimbPreset): ClimbConfig {
   };
 }
 
-const CLIMB_PRESETS = climbPresetData as ClimbPreset[];
-
-const FALLBACK_CLIMB_CONFIG: ClimbConfig = {
-  climbRatio: 4.08,
-  descentRatio: 8.16,
-  allowTurnsDuringClimb: false,
-  linkRatios: false,
-  vertexProximityMeters: 30
-};
-
-function presetToConfig(preset?: ClimbPreset): ClimbConfig {
-  const source = preset ?? FALLBACK_CLIMB_CONFIG;
-  return {
-    climbRatio: source.climbRatio,
-    descentRatio: source.descentRatio,
-    allowTurnsDuringClimb: source.allowTurnsDuringClimb,
-    linkRatios: source.linkRatios,
-    vertexProximityMeters: source.vertexProximityMeters,
-    minClimb: source.minClimb ?? FALLBACK_CLIMB_CONFIG.minClimb,
-    maxClimb: source.maxClimb ?? FALLBACK_CLIMB_CONFIG.maxClimb
-  };
-}
-
-function App() {
+function AppContent() {
   const [dtmSource, setDtmSource] = useState<string | null>(null);
   // @ts-ignore
   const [dtmInfo, setDtmInfo] = useState<DTMInfo | null>(null);
@@ -212,6 +189,9 @@ function App() {
   
   // Initialize with climb requests from localStorage
   const initialClimbRequestsByRoute = React.useMemo(() => loadClimbRequestsFromStorage(), [loadClimbRequestsFromStorage]);
+
+  const globalUndoRedo = useGlobalUndoRedo();
+  const { canUndo, canRedo } = globalUndoRedo;
 
   // @ts-ignore
   const {
@@ -528,7 +508,7 @@ function App() {
 
   // Track last inputs so we can avoid expensive recalculation when only nominal height changes
   const lastProfileParamsRef = React.useRef<{
-    flightPath: Coordinate[];
+    flightPathSignature: string;
     dtmSource: string | null;
     safetySearchRadius: number;
     resolutionSearchRadius: number;
@@ -544,9 +524,12 @@ function App() {
   })();
 
   React.useEffect(() => {
+    const flightPathSignature = flightPath
+      .map((p) => `${p.lng.toFixed(7)},${p.lat.toFixed(7)},${(p.height ?? '').toString()},${p.id ?? ''}`)
+      .join('|');
     const prev = lastProfileParamsRef.current;
     const baseChanged = !prev
-      || prev.flightPath !== flightPath
+      || prev.flightPathSignature !== flightPathSignature
       || prev.dtmSource !== dtmSource
       || prev.safetySearchRadius !== safetySearchRadius
       || prev.resolutionSearchRadius !== resolutionSearchRadius
@@ -559,13 +542,12 @@ function App() {
       profileCalculationTimeoutRef.current = null;
     }
 
-    // Clear any pending debounce timer
-    if (profileCalculationTimeoutRef.current) {
-      clearTimeout(profileCalculationTimeoutRef.current);
-      profileCalculationTimeoutRef.current = null;
-    }
-
     if (baseChanged) {
+      // Clear any pending debounce timer for previous inputs
+      if (profileCalculationTimeoutRef.current) {
+        clearTimeout(profileCalculationTimeoutRef.current);
+        profileCalculationTimeoutRef.current = null;
+      }
       if (flightPath.length === 0) {
         calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, onDefaultEntryHeightCalculated);
       } else if (flightPath.length === 1) {
@@ -580,7 +562,7 @@ function App() {
     }
 
     lastProfileParamsRef.current = {
-      flightPath,
+      flightPathSignature,
       dtmSource,
       safetySearchRadius,
       resolutionSearchRadius,
@@ -724,7 +706,9 @@ function App() {
 
     // Keep the effect's previous-value tracker in sync to avoid scheduling a duplicate debounce run.
     lastProfileParamsRef.current = {
-      flightPath: updatedPath,
+      flightPathSignature: updatedPath
+        .map((p) => `${p.lng.toFixed(7)},${p.lat.toFixed(7)},${(p.height ?? '').toString()},${p.id ?? ''}`)
+        .join('|'),
       dtmSource,
       safetySearchRadius,
       resolutionSearchRadius,
@@ -1314,6 +1298,319 @@ function App() {
     resetToSingleRoute();
   }, [dtmSource, activeClippedId, deleteDtmOnServer, resetToSingleRoute, clearProfile]);
 
+  const handleSaveProject = React.useCallback(() => {
+    try {
+      const projectData: ProjectFileData = exportProject({
+        // DTM
+        dtmSource,
+        dtmInfo,
+        activeClippedId,
+        dtmSourceType,
+        localDtmFile,
+        serverDtmId,
+        serverDtmMetadata,
+        aoiGeometry,
+
+        // Routes
+        routes,
+        activeRouteId,
+        climbRequestsByRoute,
+
+        // Settings
+        general: {
+          nominalFlightHeight,
+          safetyRadius: safetySearchRadius,
+          safetyHeight,
+          outputHeight: resolutionHeight
+        },
+        mission: {
+          overlapPercentage,
+          fovDegrees
+        },
+        ascendDescend: {
+          selectedPresetId: selectedClimbPresetId,
+          climbConfig
+        },
+        display: {
+          dtmPalette: dtmDisplaySettings.palette,
+          dtmInverted: dtmDisplaySettings.inverted,
+          dtmOpacity: dtmDisplaySettings.opacity,
+          showMetadata,
+          showClimbLabels,
+          showNextLineSuggestions
+        },
+
+        // Planning area (AOI) + KML overlays
+        planningArea: aoiGeometry ?? undefined,
+        kmlImports
+      });
+
+      setSaveFileDialog({
+        isOpen: true,
+        type: 'project',
+        defaultFilename: `project_${new Date().toISOString().slice(0, 10)}`,
+        fileContent: JSON.stringify(projectData, null, 2),
+        mimeType: 'application/json'
+      });
+    } catch (error) {
+      debug.error('Failed to export project:', error);
+      setSuccessNotification({
+        isOpen: true,
+        message: error instanceof Error ? error.message : 'Failed to save project'
+      });
+    }
+  }, [
+    dtmSource,
+    dtmInfo,
+    activeClippedId,
+    dtmSourceType,
+    localDtmFile,
+    serverDtmId,
+    serverDtmMetadata,
+    aoiGeometry,
+    routes,
+    activeRouteId,
+    climbRequestsByRoute,
+    nominalFlightHeight,
+    safetySearchRadius,
+    safetyHeight,
+    resolutionHeight,
+    overlapPercentage,
+    fovDegrees,
+    selectedClimbPresetId,
+    climbConfig,
+    dtmDisplaySettings,
+    showMetadata,
+    showClimbLabels,
+    showNextLineSuggestions,
+    kmlImports
+  ]);
+
+  const handleToggleAutoSave = React.useCallback(async () => {
+    if (autoSaveEnabled) {
+      // Mark state as used so `noUnusedLocals` doesn't fail the build.
+      void autoSaveFileHandle;
+      autoSaveInProgressRef.current = false;
+      setAutoSaveEnabled(false);
+      setAutoSaveFileHandle(null);
+      setAutoSaveFileName('');
+      return;
+    }
+
+    if (!('showSaveFilePicker' in window)) {
+      alert('Auto-save requires File System Access API (showSaveFilePicker).');
+      return;
+    }
+
+    try {
+      autoSaveInProgressRef.current = false;
+      const fileHandle = await (window as any).showSaveFilePicker({
+        suggestedName: `auto_save${PROJECT_FILE_EXTENSION}`,
+        types: [
+          {
+            description: 'Project file',
+            accept: {
+              'application/json': [PROJECT_FILE_EXTENSION]
+            }
+          }
+        ]
+      });
+      setAutoSaveFileHandle(fileHandle);
+      setAutoSaveFileName(fileHandle?.name || 'auto_save');
+      setAutoSaveEnabled(true);
+    } catch (error) {
+      // User cancelled or browser blocked the picker
+      debug.error('Auto-save enable cancelled/failed:', error);
+      setAutoSaveEnabled(false);
+      setAutoSaveFileHandle(null);
+      setAutoSaveFileName('');
+    }
+  }, [autoSaveEnabled]);
+
+  const handleMissingLocalDtmSelected = React.useCallback(async (file: File) => {
+    setIsLoadingProject(true);
+    try {
+      const formData = new FormData();
+      formData.append('dtm', file);
+
+      const response = await fetch('/api/upload-dtm', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error(`DTM upload failed (${response.status})`);
+      }
+
+      const data = await response.json();
+      if (!data?.success) {
+        throw new Error(data?.error || 'DTM upload failed');
+      }
+
+      setMissingLocalDtmModal({ isOpen: false, descriptor: null });
+      (window as any).__pendingProjectRestore = undefined;
+      await handleDtmLoad(data.path, data, undefined, {
+        sourceType: 'local',
+        originalFile: file
+      });
+    } catch (error) {
+      debug.error('Failed to restore local DTM:', error);
+      setSuccessNotification({
+        isOpen: true,
+        message: error instanceof Error ? error.message : 'Failed to restore local DTM'
+      });
+    } finally {
+      setIsLoadingProject(false);
+    }
+  }, [handleDtmLoad]);
+
+  const handleLoadProject = React.useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = PROJECT_FILE_ACCEPT;
+
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+
+      setIsLoadingProject(true);
+
+      try {
+        const projectData: ProjectFileData = await readProjectFile(file);
+
+        // Restore non-DTM project state first
+        setSafetyHeight(projectData.general.safetyHeight);
+        setResolutionHeight(projectData.general.outputHeight);
+        setSafetySearchRadius(projectData.general.safetyRadius);
+        setNominalFlightHeight(projectData.general.nominalFlightHeight);
+
+        setOverlapPercentage(projectData.mission.overlapPercentage);
+        setFovDegrees(projectData.mission.fovDegrees);
+
+        setSelectedClimbPresetId(projectData.ascendDescend.selectedPresetId);
+        setClimbConfig(projectData.ascendDescend.climbConfig);
+
+        setShowMetadata(projectData.display.showMetadata ?? true);
+        setShowClimbLabels(projectData.display.showClimbLabels ?? true);
+        setShowNextLineSuggestions(projectData.display.showNextLineSuggestions ?? true);
+        setDtmDisplaySettings({
+          palette: projectData.display.dtmPalette,
+          inverted: projectData.display.dtmInverted,
+          opacity: projectData.display.dtmOpacity
+        });
+
+        setAoiGeometry(projectData.planningArea ?? null);
+        setKmlImports(projectData.kmlImports ?? []);
+
+        // Restore routes & climb requests
+        importRoutes(projectData.routes as unknown as FlightRoute[], projectData.climbRequestsByRoute as any);
+        setActiveRoute(projectData.activeRouteId);
+
+        // Clear any existing DTM so we don't mix sources
+        setDtmSource(null);
+        setDtmInfo(null);
+        setActiveClippedId(null);
+        setDtmSourceType(null);
+        setLocalDtmFile(null);
+        setServerDtmId(null);
+        setServerDtmMetadata(null);
+        setActiveDtmName(null);
+        setStableProfileResult({ points: [], warnings: [] });
+        clearProfile();
+
+        // Restore DTM
+        if (projectData.dtm?.sourceType === 'server') {
+          const dtm = projectData.dtm;
+          if (!dtm?.dtmServerId) throw new Error('Invalid server DTM descriptor');
+
+          const aoi = dtm.aoi || projectData.planningArea;
+          if (!aoi || !aoi.bbox) throw new Error('Missing AOI bbox for server DTM');
+
+          const bbox = aoi.bbox as
+            | [number, number, number, number]
+            | { minLon: number; minLat: number; maxLon: number; maxLat: number };
+
+          const bboxArray: [number, number, number, number] = Array.isArray(bbox)
+            ? bbox
+            : [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat];
+          const aoiPayload = {
+            type: 'bbox',
+            crs: 'EPSG:4326',
+            bbox: bboxArray
+          };
+
+          const clipResponse = await fetch('/api/dtm/clip', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              dtmId: dtm.dtmServerId,
+              aoi: aoiPayload
+            })
+          });
+
+          if (!clipResponse.ok) {
+            throw new Error(`Failed to clip server DTM (${clipResponse.status})`);
+          }
+
+          const clipResult: any = await clipResponse.json();
+
+          // Notify Map/parent state
+          await handleDtmLoad(clipResult.dataUrl, {
+            bounds: {
+              minX: clipResult.raster.bbox[0],
+              minY: clipResult.raster.bbox[1],
+              maxX: clipResult.raster.bbox[2],
+              maxY: clipResult.raster.bbox[3]
+            },
+            resolution: {
+              width: clipResult.raster.width,
+              height: clipResult.raster.height
+            },
+            clippedId: clipResult.clippedId,
+            crs: clipResult.raster.crs
+          }, clipResult.clippedId, {
+            sourceType: 'server',
+            serverId: dtm.dtmServerId,
+            serverMetadata: {
+              displayName: dtm.displayName,
+              sizeBytes: dtm.sizeBytes,
+              modifiedAt: dtm.modifiedAt
+            },
+            aoi: projectData.planningArea ?? undefined
+          });
+        } else if (projectData.dtm?.sourceType === 'local') {
+          setMissingLocalDtmModal({ isOpen: true, descriptor: projectData.dtm as any });
+        }
+
+        setSuccessNotification({ isOpen: true, message: 'Project loaded successfully' });
+      } catch (error) {
+        debug.error('Failed to load project:', error);
+        const message =
+          error instanceof ProjectValidationError ? error.message : (error instanceof Error ? error.message : 'Failed to load project');
+        setSuccessNotification({ isOpen: true, message });
+      } finally {
+        setIsLoadingProject(false);
+      }
+    };
+
+    input.click();
+  }, [
+    PROJECT_FILE_ACCEPT,
+    clearProfile,
+    handleDtmLoad,
+    importRoutes,
+    readProjectFile,
+    setActiveRoute,
+    setClimbConfig,
+    setKmlImports,
+    setShowClimbLabels,
+    setShowMetadata,
+    setShowNextLineSuggestions,
+    setStableProfileResult,
+    setDtmDisplaySettings,
+    setAoiGeometry
+  ]);
+
   // Best-effort cleanup for browser refresh/close navigation events.
   // Uses sendBeacon when possible because async work is limited during unload.
   const triggerPageExitDtmCleanup = useCallback(() => {
@@ -1729,16 +2026,6 @@ function App() {
       setEditQueue((prev) => [...prev, { type: 'update', index, point }]);
     }
   }, [flightPath, checkAnchorPointAndWarn]);
-
-  const handleSelectClimbPreset = useCallback((presetId: string) => {
-    const preset = CLIMB_PRESETS.find((p) => p.id === presetId);
-    if (preset) {
-      setClimbConfig(presetToConfig(preset));
-      setSelectedClimbPresetId(presetId);
-    } else {
-      setSelectedClimbPresetId('custom');
-    }
-  }, []);
 
   const handleSelectClimbPreset = useCallback((presetId: string) => {
     const preset = CLIMB_PRESETS.find((p) => p.id === presetId);

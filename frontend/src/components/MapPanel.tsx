@@ -22,6 +22,7 @@ import './MapPanel.css';
 import { TileLayerOptions } from 'leaflet';
 import { aoiContains, AOIGeometry } from '../utils/aoiContainment';
 import ThreeDView from './ThreeDView';
+import InfoModeTooltip from './InfoModeTooltip';
 
 
 type TileLayerOptionsWithAgent = TileLayerOptions;
@@ -1207,7 +1208,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
   // DTM replacement state
   const [isReplacingDtm, setIsReplacingDtm] = useState(false);
   const [replacementAbortController, setReplacementAbortController] = useState<AbortController | null>(null);
-  const [containmentWarning, setContainmentWarning] = useState<{ isOpen: boolean }>({ isOpen: false });
   
   // Local file picker state
   const [localFileError, setLocalFileError] = useState<string | null>(null);
@@ -2096,7 +2096,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     dragStartRef.current = null;
   }, []);
 
-  // 3D float window drag handlers
   const handleThreeDFloatDragStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -3485,7 +3484,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Check containment
       if (!aoiContains(newAOI, currentAoi)) {
         // Containment failed - show warning and cancel
-        setContainmentWarning({ isOpen: true });
+        alert('אזור העבודה חייב להיות כלול בתוך ה-DTM הנוכחי.');
         setIsReplacingDtm(false);
         // Cancel AOI selection
         setIsAoiSelectionMode(false);
@@ -3772,17 +3771,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return `${meters.toFixed(1)} m`;
   };
 
-  const formatSegmentLength = (meters: number): string => {
-    if (!Number.isFinite(meters)) return '—';
-    if (meters >= 1000) {
-      return `${(meters / 1000).toFixed(2)} km`;
-    }
-    if (meters >= 100) {
-      return `${meters.toFixed(0)} m`;
-    }
-    return `${meters.toFixed(1)} m`;
-  };
-
   // Helper function to check if a point is within DTM bounds
   const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
     if (!dtmBounds || dtmBounds.length !== 4) {
@@ -3880,18 +3868,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
     switchBaseMap(baseMaps[nextIndex].id);
   }, [activeBaseMapId, baseMaps, switchBaseMap]);
 
+  const handleBaseMapButtonClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    handleCycleBaseMap();
+  }, [handleCycleBaseMap]);
+
   const handleCycle3DBaseMap = useCallback(() => {
     if (baseMaps.length < 2 || !threeDActiveBaseMapId) return;
     const currentIndex = baseMaps.findIndex(b => b.id === threeDActiveBaseMapId);
     const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % baseMaps.length : 0;
     setThreeDActiveBaseMapId(baseMaps[nextIndex].id);
   }, [threeDActiveBaseMapId, baseMaps]);
-
-  const handleBaseMapButtonClick = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    handleCycleBaseMap();
-  }, [handleCycleBaseMap]);
 
   // Initialize map
   useEffect(() => {
@@ -4077,37 +4065,39 @@ const MapPanel: React.FC<MapPanelProps> = ({
     });
   }, [mousePos, showMetadata, hoveredElevationPoint, hoverSource]);
 
-  // Calculate tooltip position to keep it on screen
+  // Calculate info mode tooltip position to keep it on screen
   useLayoutEffect(() => {
-    if (!mousePos || !tooltipRef.current || !showMetadata || !hoveredElevationPoint || hoverSource !== 'map') {
-      setTooltipPosition(null);
+    if (!mousePos || !infoModeTooltipRef.current || !isInfoMode || !cursorElevation) {
+      setInfoModeTooltipPosition(null);
       return;
     }
 
     // Use double requestAnimationFrame to ensure the tooltip is fully rendered and measured
     requestAnimationFrame(() => {
-      if (!tooltipRef.current) return;
-      const tooltipRect = tooltipRef.current.getBoundingClientRect();
-      const windowWidth = window.innerWidth;
-      const padding = 8;
-      const offset = 15;
+      requestAnimationFrame(() => {
+        if (!infoModeTooltipRef.current) return;
+        const tooltipRect = infoModeTooltipRef.current.getBoundingClientRect();
+        const windowWidth = window.innerWidth;
+        const padding = 8;
+        const offset = 15;
 
-      let left = mousePos.x + offset;
-      
-      // Check if tooltip would go off the right edge of the screen
-      if (left + tooltipRect.width > windowWidth - padding) {
-        // Position at the start of the window with padding
-        left = padding;
-      }
+        let left = mousePos.x + offset;
 
-      // Also check if it would go off the left edge (shouldn't happen, but just in case)
-      if (left < padding) {
-        left = padding;
-      }
+        // Check if tooltip would go off the right edge of the screen
+        if (left + tooltipRect.width > windowWidth - padding) {
+          // Position on the left side of the cursor instead of the left side of the window
+          left = mousePos.x - tooltipRect.width - offset;
+        }
 
-      setTooltipPosition({ left, top: mousePos.y + offset });
+        // Also check if it would go off the left edge after repositioning
+        if (left < padding) {
+          left = padding;
+        }
+
+        setInfoModeTooltipPosition({ left, top: mousePos.y + offset });
+      });
     });
-  }, [mousePos, showMetadata, hoveredElevationPoint, hoverSource]);
+  }, [mousePos, isInfoMode, cursorElevation]);
 
   // AOI selection mode handlers
   useEffect(() => {
@@ -10463,21 +10453,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
           <CoordinateTooltip point={hoveredElevationPoint} />
         </div>
       )}
-      {isInfoMode && mousePos && cursorElevation && (
-        <div
-          ref={tooltipRef}
-          className="hover-metadata-tooltip"
-          style={{
-            left: tooltipPosition?.left ?? mousePos.x + 15,
-            top: tooltipPosition?.top ?? mousePos.y + 15,
-            visibility: tooltipPosition ? 'visible' : 'hidden'
-          }}
-        >
-          <div className="tooltip-section">
-            <span className="tooltip-label">גובה מפני הים:</span> {cursorElevation.elevation !== null ? `${cursorElevation.elevation.toFixed(1)} מ'` : '—'}
-          </div>
-        </div>
-      )}
+      <InfoModeTooltip
+        isInfoMode={isInfoMode}
+        mousePos={mousePos}
+        cursorElevation={cursorElevation}
+        tooltipRef={infoModeTooltipRef}
+        tooltipPosition={infoModeTooltipPosition}
+      />
 
       {/* Coordinate mode tooltip */}
       {isCoordMode && coordModePos && (() => {
@@ -11287,6 +11269,105 @@ const MapPanel: React.FC<MapPanelProps> = ({
             <div className="loading-spinner" />
             <div className="upload-progress-label">חותך DTM לאזור הנבחר...</div>
           </div>
+        </div>
+      )}
+
+      {/* 3D View Toggle — outside map-container so it stays visible in both modes */}
+      <button
+        type="button"
+        className={`three-d-toggle-btn ${threeDMode !== 'off' ? 'active' : ''} ${is3DFloat ? 'float-mode' : ''}`}
+        onClick={() => setThreeDMode(prev => prev === 'off' ? 'full' : prev === 'full' ? 'float' : 'off')}
+        disabled={!dtmLoaded}
+        title={threeDMode === 'off' ? 'תצוגת תלת-ממד — מסך מלא (Ctrl+3)' : threeDMode === 'full' ? 'תצוגת תלת-ממד — חלון צף (Ctrl+3)' : 'סגור תצוגת תלת-ממד (Ctrl+3)'}
+      >
+        <Icon name="cube" />
+      </button>
+
+      {/* 3D Terrain View — full screen */}
+      {is3DFull && (
+        <ThreeDView
+          rasterData={dtmRasterDataRef.current}
+          baseMaps={baseMaps}
+          activeBaseMapId={threeDActiveBaseMapId}
+          mapToken={mapToken}
+          routes={routes.map(r => ({ id: r.id, name: r.name, points: r.points, color: r.color, visible: r.visible }))}
+          activeRouteId={activeRouteId}
+          elevationProfile={elevationProfile}
+          onBaseMapCycle={handleCycle3DBaseMap}
+          viewshedRaster={viewshedRaster}
+          viewshedVisible={viewshedVisible}
+          viewshedColormap={viewshedColormap}
+          viewshedOpacity={viewshedOpacity}
+          viewshedClassColors={viewshedClassColors}
+          getViewshedClassColor={getViewshedClassColor}
+        />
+      )}
+
+      {/* 3D Terrain View — floating window */}
+      {is3DFloat && (
+        <div
+          ref={threeDFloatRef}
+          className="three-d-float-window"
+          style={{
+            left: threeDFloatPosition?.x ?? (window.innerWidth - 660),
+            top: threeDFloatPosition?.y ?? 60,
+            width: threeDFloatSize.w,
+            height: threeDFloatSize.h,
+            cursor: isDraggingThreeDFloat ? 'grabbing' : 'default',
+          }}
+          onClick={e => e.stopPropagation()}
+        >
+          <div
+            className="three-d-float-window__header"
+            onMouseDown={handleThreeDFloatDragStart}
+            onTouchStart={handleThreeDFloatDragStart}
+          >
+            <span className="three-d-float-window__title">תצוגת תלת-ממד</span>
+            <div className="three-d-float-window__header-actions">
+              <button
+                className="three-d-float-window__expand-btn"
+                onClick={() => setThreeDMode('full')}
+                title="מסך מלא"
+                aria-label="הרחב למסך מלא"
+              >
+                <Icon name="fit" />
+              </button>
+              <button
+                className="three-d-float-window__close-btn"
+                onClick={() => setThreeDMode('off')}
+                title="סגור"
+                aria-label="סגור"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+          </div>
+          <div className="three-d-float-window__content">
+            <ThreeDView
+              rasterData={dtmRasterDataRef.current}
+              baseMaps={baseMaps}
+              activeBaseMapId={threeDActiveBaseMapId}
+              mapToken={mapToken}
+              routes={routes.map(r => ({ id: r.id, name: r.name, points: r.points, color: r.color, visible: r.visible }))}
+              activeRouteId={activeRouteId}
+              elevationProfile={elevationProfile}
+              onBaseMapCycle={handleCycle3DBaseMap}
+              viewshedRaster={viewshedRaster}
+              viewshedVisible={viewshedVisible}
+              viewshedColormap={viewshedColormap}
+              viewshedOpacity={viewshedOpacity}
+              viewshedClassColors={viewshedClassColors}
+              getViewshedClassColor={getViewshedClassColor}
+            />
+            {/* Transparent overlay blocks Three.js canvas pointer events during resize/drag */}
+            {(isResizingThreeDFloat || isDraggingThreeDFloat) && (
+              <div style={{ position: 'absolute', inset: 0, zIndex: 550, cursor: isResizingThreeDFloat ? 'se-resize' : 'grabbing' }} />
+            )}
+          </div>
+          <div
+            className="three-d-float-window__resize-handle"
+            onMouseDown={handleThreeDFloatResizeStart}
+          />
         </div>
       )}
     </div>

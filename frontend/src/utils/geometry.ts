@@ -76,11 +76,12 @@ function normalizeAngle(angle: number): number {
 
 /**
  * Generate a U-turn arc where:
- * - Start point is the current last point.
- * - End point lies on the line perpendicular to the inbound leg, at the requested chord length
- *   (clamped to 2R). This matches the user's sketch: both start/end on the perpendicular line.
+ * - Start point is the current last point (end of the last leg).
+ * - End point lies on the perpendicular to the last leg, at the given chord distance (clamped to 2R).
+ * - Circle center is in the area *after* the line end (forward in direction of travel). Points follow
+ *   the long arc (the other side of the circle) from start to end.
  * - Returns `numPoints` points along the arc (does NOT include the start point).
- * - Side 'R' means the arc turns to the RIGHT of travel; 'L' turns to the LEFT.
+ * - Side 'R' means the end point is to the RIGHT of travel; 'L' to the LEFT.
  */
 export function generateUTurnPoints(
   prev: Coordinate,
@@ -97,54 +98,41 @@ export function generateUTurnPoints(
   // Clamp chord length to maximum of 2R
   const chordLength = Math.min(startEndDistanceMeters, radiusMeters * 2);
 
-  // Bearings for inbound and its right-perpendicular (used to place the end point)
+  // Inbound = direction of travel into the turn (prev -> start)
   const inboundBearing = calculateBearing(prev, start);
   const rightPerpBearing = inboundBearing + Math.PI / 2;
   const leftPerpBearing = inboundBearing - Math.PI / 2;
 
-  // Place end point along the perpendicular line (direction depends on side)
+  // End point on the perpendicular to the last leg, at the given distance
   const perpBearing = side === 'R' ? rightPerpBearing : leftPerpBearing;
   const endPoint = calculateDestination(start, perpBearing, chordLength);
 
-  // Chord midpoint
+  // Chord midpoint (on the perpendicular line)
   const midPoint = calculateDestination(start, perpBearing, chordLength / 2);
 
-  // Circle geometry from chord
+  // Circle geometry: two possible centers (perpendicular to the chord)
   const halfChord = chordLength / 2;
   const height = Math.sqrt(Math.max(0, radiusMeters * radiusMeters - halfChord * halfChord));
+  const chordNormal1 = perpBearing + Math.PI / 2;
+  const chordNormal2 = perpBearing - Math.PI / 2;
+  const center1 = calculateDestination(midPoint, chordNormal1, height);
+  const center2 = calculateDestination(midPoint, chordNormal2, height);
 
-  // Two possible centers: offset from midpoint by ± normal to the chord
-  const chordNormalBearing1 = perpBearing + Math.PI / 2;
-  const chordNormalBearing2 = perpBearing - Math.PI / 2;
-  const center1 = calculateDestination(midPoint, chordNormalBearing1, height);
-  const center2 = calculateDestination(midPoint, chordNormalBearing2, height);
-
-  // Pick center on the intended turning side (dot with right vector)
-  const rightVectorBearing = rightPerpBearing;
-  const bearingStartToC1 = calculateBearing(start, center1);
-  const bearingStartToC2 = calculateBearing(start, center2);
-  const diff1 = Math.abs(normalizeAngle(bearingStartToC1 - rightVectorBearing));
-  const diff2 = Math.abs(normalizeAngle(bearingStartToC2 - rightVectorBearing));
-
-  const center =
-    side === 'R'
-      ? (diff1 <= diff2 ? center1 : center2)
-      : (diff1 >= diff2 ? center1 : center2);
+  // Pick center in the area *after* the line end (forward): bearing from midpoint to center ≈ inbound
+  const bearingMidToC1 = calculateBearing(midPoint, center1);
+  const bearingMidToC2 = calculateBearing(midPoint, center2);
+  const diff1 = Math.abs(normalizeAngle(bearingMidToC1 - inboundBearing));
+  const diff2 = Math.abs(normalizeAngle(bearingMidToC2 - inboundBearing));
+  const center = diff1 <= diff2 ? center1 : center2;
 
   // Bearings from center to start/end
   const startAngle = calculateBearing(center, start);
   const endAngle = calculateBearing(center, endPoint);
 
-  // Determine sweep direction consistent with side (R = CCW long way, L = CW long way)
+  // Use the *long* arc (the other side of the circle) from start to end
   let delta = normalizeAngle(endAngle - startAngle);
-  const direction = side === 'R' ? 1 : -1; // flipped to take the other long direction
-  if (direction === -1 && delta > 0) delta -= Math.PI * 2;
-  if (direction === 1 && delta < 0) delta += Math.PI * 2;
-
-  // Use the long arc (major arc) instead of the short one
-  const theta = Math.abs(delta);
-  if (theta < Math.PI) {
-    delta = direction === -1 ? -(2 * Math.PI - theta) : (2 * Math.PI - theta);
+  if (Math.abs(delta) <= Math.PI) {
+    delta = delta > 0 ? delta - Math.PI * 2 : delta + Math.PI * 2;
   }
 
   const step = delta / numPoints;
@@ -156,6 +144,96 @@ export function generateUTurnPoints(
   }
 
   return pts;
+}
+
+/**
+ * Generate U-turn arc points between two consecutive points (start and end).
+ * The arc has the given radius and goes from start to end along the long arc of the circle.
+ * Returns only the interior points (excluding start and end) for insertion between the two.
+ * - start: first point of the segment
+ * - end: second point of the segment
+ * - radiusMeters: turn radius (must be at least half the chord length)
+ * - numPoints: number of interior points to generate (default 10)
+ * - side: which side of the segment the arc bulges ('R' = right of direction start→end, 'L' = left)
+ * @returns Interior points along the arc, or empty if chord > 2*radius or invalid inputs
+ */
+export function generateUTurnPointsBetween(
+  start: Coordinate,
+  end: Coordinate,
+  radiusMeters: number,
+  numPoints: number = 10,
+  side: UTurnSide = 'R'
+): Coordinate[] {
+  if (numPoints <= 0) return [];
+  if (!(radiusMeters > 0)) return [];
+
+  const chordLength = calculateDistance(start, end);
+  if (chordLength <= 0) return [];
+  if (chordLength > radiusMeters * 2) return []; // No circle through both points with this radius
+
+  const halfChord = chordLength / 2;
+  const height = Math.sqrt(Math.max(0, radiusMeters * radiusMeters - halfChord * halfChord));
+
+  const bearingAB = calculateBearing(start, end);
+  const midPoint = calculateDestination(start, bearingAB, halfChord);
+
+  const rightPerpBearing = bearingAB + Math.PI / 2;
+  const leftPerpBearing = bearingAB - Math.PI / 2;
+  const center = side === 'R'
+    ? calculateDestination(midPoint, rightPerpBearing, height)
+    : calculateDestination(midPoint, leftPerpBearing, height);
+
+  const startAngle = calculateBearing(center, start);
+  const endAngle = calculateBearing(center, end);
+
+  let delta = normalizeAngle(endAngle - startAngle);
+  if (Math.abs(delta) <= Math.PI) {
+    delta = delta > 0 ? delta - Math.PI * 2 : delta + Math.PI * 2;
+  }
+
+  const pts: Coordinate[] = [];
+  for (let i = 1; i <= numPoints; i++) {
+    const t = i / (numPoints + 1);
+    const angle = startAngle + delta * t;
+    pts.push(calculateDestination(center, angle, radiusMeters));
+  }
+  return pts;
+}
+
+/**
+ * Generate U-turn points between start and end that "continue ahead" from the route:
+ * picks the arc side (L or R) so the exit direction from the arc is closest to the
+ * inbound direction. If prev is provided, inbound = bearing(prev, start); otherwise
+ * inbound = bearing(start, end).
+ */
+export function generateUTurnPointsBetweenAhead(
+  start: Coordinate,
+  end: Coordinate,
+  radiusMeters: number,
+  numPoints: number = 10,
+  prev?: Coordinate | null
+): Coordinate[] {
+  const inboundBearing =
+    prev != null ? calculateBearing(prev, start) : calculateBearing(start, end);
+  const ptsL = generateUTurnPointsBetween(start, end, radiusMeters, numPoints, 'L');
+  const ptsR = generateUTurnPointsBetween(start, end, radiusMeters, numPoints, 'R');
+  if (ptsL.length === 0 && ptsR.length === 0) return [];
+  if (ptsL.length === 0) return ptsR;
+  if (ptsR.length === 0) return ptsL;
+  const lastL = ptsL[ptsL.length - 1];
+  const lastR = ptsR[ptsR.length - 1];
+  const bearingOutL = calculateBearing(lastL, end);
+  const bearingOutR = calculateBearing(lastR, end);
+  function norm(a: number): number {
+    let x = a % (2 * Math.PI);
+    if (x <= -Math.PI) x += 2 * Math.PI;
+    if (x > Math.PI) x -= 2 * Math.PI;
+    return x;
+  }
+  const diffL = Math.abs(norm(bearingOutL - inboundBearing));
+  const diffR = Math.abs(norm(bearingOutR - inboundBearing));
+  // Pick the arc in the "other" direction (opposite side from "continue ahead")
+  return diffL <= diffR ? ptsR : ptsL;
 }
 
 /**
@@ -234,4 +312,152 @@ export function findClosestPointOnLine(
   const distance = R * c;
 
   return { t: clampedT, distance };
+}
+
+/**
+ * Sample points uniformly along a line segment
+ * @param start Starting point of the line segment
+ * @param end Ending point of the line segment
+ * @param numSamples Number of sample points to generate (default: 30)
+ * @returns Array of coordinates along the line segment
+ */
+export function samplePointsAlongLine(
+  start: Coordinate,
+  end: Coordinate,
+  numSamples: number = 30
+): Coordinate[] {
+  if (numSamples <= 0) return [];
+  if (numSamples === 1) return [start];
+  
+  const samples: Coordinate[] = [];
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / (numSamples - 1); // 0 to 1
+    samples.push({
+      lng: start.lng + (end.lng - start.lng) * t,
+      lat: start.lat + (end.lat - start.lat) * t
+    });
+  }
+  return samples;
+}
+
+/**
+ * Calculate the intersection point of two infinite lines defined by two points each.
+ * Uses a local tangent plane approximation suitable for small geographic distances.
+ * 
+ * @param line1Start First point of first line
+ * @param line1End Second point of first line
+ * @param line2Start First point of second line
+ * @param line2End Second point of second line
+ * @returns Intersection point, or null if lines are parallel or calculation fails
+ */
+export function calculateLineIntersection(
+  line1Start: Coordinate,
+  line1End: Coordinate,
+  line2Start: Coordinate,
+  line2End: Coordinate
+): Coordinate | null {
+  // Convert to radians for calculations
+  const φ1 = (line1Start.lat * Math.PI) / 180;
+  const λ1 = (line1Start.lng * Math.PI) / 180;
+  const φ2 = (line1End.lat * Math.PI) / 180;
+  const λ2 = (line1End.lng * Math.PI) / 180;
+  const φ3 = (line2Start.lat * Math.PI) / 180;
+  const λ3 = (line2Start.lng * Math.PI) / 180;
+  const φ4 = (line2End.lat * Math.PI) / 180;
+  const λ4 = (line2End.lng * Math.PI) / 180;
+
+  // Calculate direction vectors for both lines
+  const dx1 = λ2 - λ1;
+  const dy1 = φ2 - φ1;
+  const dx2 = λ4 - λ3;
+  const dy2 = φ4 - φ3;
+
+  // Check if lines are parallel (cross product is zero)
+  const cross = dx1 * dy2 - dy1 * dx2;
+  if (Math.abs(cross) < 1e-10) {
+    // Lines are parallel, no intersection
+    return null;
+  }
+
+  // Calculate intersection using parametric form
+  // Line 1: (λ1, φ1) + t * (dx1, dy1)
+  // Line 2: (λ3, φ3) + s * (dx2, dy2)
+  // At intersection: (λ1, φ1) + t * (dx1, dy1) = (λ3, φ3) + s * (dx2, dy2)
+  
+  // Solve for t: t = ((λ3 - λ1) * dy2 - (φ3 - φ1) * dx2) / cross
+  const t = ((λ3 - λ1) * dy2 - (φ3 - φ1) * dx2) / cross;
+
+  // Calculate intersection point using line 1
+  const λIntersect = λ1 + t * dx1;
+  const φIntersect = φ1 + t * dy1;
+
+  return {
+    lng: (λIntersect * 180) / Math.PI,
+    lat: (φIntersect * 180) / Math.PI
+  };
+}
+
+/**
+ * Calculate the spacing distance for next line suggestions based on mission parameters.
+ * This is the shared source-of-truth for spacing calculations used by both:
+ * - Next line suggestion rendering
+ * - Parallel lines tool default spacing
+ * 
+ * @param overlapPercentage Required overlap percentage (0-100)
+ * @param fovDegrees Field of view in degrees
+ * @param avgAGL Average altitude above ground level (AGL) in meters
+ * @returns Spacing distance in meters, or null if calculation is invalid
+ */
+export function calculateNextLineSpacing(
+  overlapPercentage: number,
+  fovDegrees: number,
+  avgAGL: number
+): number | null {
+  const safeOverlap = Math.max(0, Math.min(overlapPercentage, 99.9));
+  const overlapFraction = safeOverlap / 100;
+  const safeFov = Math.max(1, Math.min(fovDegrees, 179.9));
+  const fovRadians = (safeFov * Math.PI) / 180;
+  const spacingFactor = 1 - overlapFraction;
+
+  if (!(spacingFactor > 0) || !(fovRadians > 0) || !(avgAGL > 0)) {
+    return null;
+  }
+
+  // Calculate half-width based on AGL * tan(fov/2)
+  const swathWidth = avgAGL * Math.tan(fovRadians / 2) * 2;
+  const spacing = swathWidth * spacingFactor;
+
+  if (!Number.isFinite(spacing) || spacing <= 0) {
+    return null;
+  }
+
+  return spacing;
+}
+
+/**
+ * Calculate the average spacing distance for parallel line suggestions based on all new line suggestions present on the map.
+ * This averages the spacing values calculated for each segment to provide a consistent default spacing.
+ * 
+ * @param spacingValues Array of spacing values in meters (from calculateNextLineSpacing for each segment)
+ * @returns Average spacing distance in meters, or null if no valid spacing values
+ */
+export function calculateAverageNextLineSpacing(
+  spacingValues: (number | null)[]
+): number | null {
+  const validSpacings = spacingValues.filter(
+    (spacing): spacing is number => spacing !== null && spacing > 0 && Number.isFinite(spacing)
+  );
+
+  if (validSpacings.length === 0) {
+    return null;
+  }
+
+  const sum = validSpacings.reduce((acc, spacing) => acc + spacing, 0);
+  const average = sum / validSpacings.length;
+
+  if (!Number.isFinite(average) || average <= 0) {
+    return null;
+  }
+
+  return average;
 }

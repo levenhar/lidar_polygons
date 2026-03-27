@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "ask": [
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(rm:*)",
+      "Bash(rmdir:*)",
+      "Bash(del:*)",
+      "Bash(rd:*)",
+      "Edit(**/.claude/**)",
+      "Write(**/.claude/**)"
+    ],
+    "allow": [
+      "Bash(*)"
+    ]
+  }
+}

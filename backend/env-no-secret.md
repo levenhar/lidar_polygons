@@ -28,6 +28,11 @@ DTM_DATA_DIR = /path/to/dtm/files
 # Directory for cached clipped DTMs (read-write, server creates/deletes clipped outputs here)
 DTM_CACHE_DIR = /path/to/dtm/cache
 
+# Directory for subsampled display DTMs (read-write).
+# Default (if unset): same as DTM_CACHE_DIR (i.e., saved directly in cache, no "upload" subfolder).
+# Optional: point this somewhere else if you want to separate display artifacts from full-res cache.
+DTM_SUBSAMPLED_CACHE_DIR = /path/to/dtm/cache
+
 # Cache TTL in seconds - how long before stale cached clips are automatically deleted
 # Default: 18000 (5 hours)
 DTM_CACHE_TTL_SECONDS = 18000

@@ -5,9 +5,9 @@ interface ContextMenuProps {
   x: number;
   y: number;
   onClose: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   onEdit?: () => void;
-  onSetHeight: () => void;
+  onAddClimb?: () => void;
 }
 
 const ContextMenu: React.FC<ContextMenuProps> = ({
@@ -16,7 +16,7 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
   onClose,
   onDelete,
   onEdit,
-  onSetHeight
+  onAddClimb
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -62,12 +62,22 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
         top: `${y}px`
       }}
     >
-      <div
-        className="context-menu-item"
-        onClick={() => handleMenuItemClick(onDelete)}
-      >
-        מחק נקודה
-      </div>
+      {onAddClimb && (
+        <div
+          className="context-menu-item"
+          onClick={() => handleMenuItemClick(onAddClimb)}
+        >
+          הוסף נקודת עלייה
+        </div>
+      )}
+      {onDelete && (
+        <div
+          className="context-menu-item"
+          onClick={() => handleMenuItemClick(onDelete)}
+        >
+          מחק נקודה
+        </div>
+      )}
       {onEdit && (
         <div
           className="context-menu-item"
@@ -76,12 +86,6 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
           ערוך / הזז נקודה
         </div>
       )}
-      <div
-        className="context-menu-item"
-        onClick={() => handleMenuItemClick(onSetHeight)}
-      >
-        הגדר גובה טיסה
-      </div>
     </div>
   );
 };

@@ -7,17 +7,15 @@
     "dev:frontend": "cd frontend && npm run dev --host",
     "dev:backend": "cd backend && npm run dev",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
-    "build": "cd frontend && npm run build"
+    "build": "cd frontend && npm run build",
+    "prepare": "husky",
+    "test": "cd frontend && npm test"
   },
-  "keywords": [
-    "lidar",
-    "geospatial",
-    "mission-planning",
-    "dtm"
-  ],
+  "keywords": ["lidar", "geospatial", "mission-planning", "dtm"],
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "husky": "^9.0.11"
   }
 }

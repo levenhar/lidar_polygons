@@ -16,6 +16,12 @@ export interface ClimbPreset extends ClimbConfig {
   description?: string;
 }
 
+export interface ClimbPreset extends ClimbConfig {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface BaseAltitudeSample {
   distance: number;
   baseAltitude: number;
@@ -154,11 +160,14 @@ export function computeClimbProfile(
 
   // Pre-compute vertex distances (pause climb near vertices when disabled)
   const cumulative = cumulativeDistances(pathGeometry);
-  const vertexProximity = vertexProximityMeters || 30; // Default 30m if not provided
+  const vertexProximity = vertexProximityMeters ?? 30; // Default 30m if not provided
 
   // Validate that climb start point is outside vertex proximity zones
-  if (!allowTurnsDuringClimb) {
-    for (const vertexDist of cumulative) {
+  // Always check route endpoints (start and end); check intermediate turns only when turns are disabled
+  const endpointDistances = [cumulative[0], cumulative[cumulative.length - 1]];
+  const verticesToCheckForStart = allowTurnsDuringClimb ? endpointDistances : cumulative;
+  {
+    for (const vertexDist of verticesToCheckForStart) {
       if (Math.abs(startDistance - vertexDist) < vertexProximity) {
         warnings.push(
           `תחילת העלייה (${startDistance.toFixed(1)}מ') נמצאת בטווח של ${vertexProximity}מ' מהקודקוד ב-${vertexDist.toFixed(1)}מ'. ` +

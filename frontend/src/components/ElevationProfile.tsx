@@ -5,11 +5,14 @@ import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import CoordinateTooltip from './CoordinateTooltip';
 import ClimbConstraints1DGraph from './ClimbConstraints1DGraph';
+import SaveFileDialog from './SaveFileDialog';
 import './ElevationProfile.css';
 import './ClimbConstraints1DGraph.css';
 import { ClimbConfig, computeClimbProfile, BaseAltitudeSample, ClimbPreset } from '../utils/climb';
 import { latLngToUTM } from '../utils/coordinates';
 import { computeCumulativeDistances, getNearestConstraints } from '../utils/constraints';
+import { findAnchorPointsForClimb, ClimbRequest } from '../utils/climbAnchors';
+import { clampZoomTransform } from '../utils/elevationProfileZoom';
 
 const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
   const common = {
@@ -40,26 +43,6 @@ const ExportIcon: React.FC<{ type: 'png' | 'csv' }> = ({ type }) => {
       <path {...stroke} d="M9 7h6" />
       <path {...stroke} d="M9 11h6" />
       <path {...stroke} d="M9 15h6" />
-    </svg>
-  );
-};
-
-const ClimbIcon: React.FC = () => {
-  const common = {
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    xmlns: 'http://www.w3.org/2000/svg'
-  };
-  const stroke = {
-    stroke: 'currentColor',
-    strokeWidth: 2,
-    strokeLinecap: 'round' as const,
-    strokeLinejoin: 'round' as const
-  };
-  return (
-    <svg {...common}>
-      <path {...stroke} d="M4 18l6-10 4 7 3-5" />
-      <path {...stroke} d="M17 10h3v-3" />
     </svg>
   );
 };
@@ -150,22 +133,14 @@ const ZoomOutIcon: React.FC = () => {
   );
 };
 
-const toDraft = (config: ClimbConfig) => ({
-  climbRatio: config.climbRatio.toString(),
-  descentRatio: config.descentRatio.toString(),
-  allowTurnsDuringClimb: config.allowTurnsDuringClimb,
-  linkRatios: config.linkRatios,
-  vertexProximityMeters: config.vertexProximityMeters.toString(),
-  minClimb: config.minClimb.toString(),
-  maxClimb: config.maxClimb.toString()
-});
-
 interface ElevationProfileProps {
   elevationProfile: ElevationPoint[];
   loading: boolean;
   nominalFlightHeight: number;
   safetyHeight: number;
+  safetyRadius: number;
   resolutionHeight: number;
+  overlapPercentage: number;
   selectedPoint: Coordinate | null;
   flightPath: Coordinate[];
   onDeletePoint: (index: number) => void;
@@ -174,16 +149,19 @@ interface ElevationProfileProps {
   onEditPointRequest: (index: number) => void;
   onElevationPointHover?: (point: ElevationPoint | null) => void;
   hoveredPoint?: ElevationPoint | null;
-  hoverSource?: 'map' | 'profile' | null;
+  hoverSource?: 'map' | 'profile' | 'overlap' | null;
   climbPresets: ClimbPreset[];
   selectedClimbPresetId: string;
-  onSelectClimbPreset: (presetId: string) => void;
   climbConfig: ClimbConfig;
-  setClimbConfig: React.Dispatch<React.SetStateAction<ClimbConfig>>;
-  climbRequests: { endDistance: number; climbAmount: number }[];
-  setClimbRequests: React.Dispatch<React.SetStateAction<{ endDistance: number; climbAmount: number }[]>>;
+  climbRequests: ClimbRequest[];
+  setClimbRequests: React.Dispatch<React.SetStateAction<ClimbRequest[]>>;
   climbWarnings: string[];
   showMetadata: boolean;
+  activeRouteName?: string;
+  dtmName?: string;
+  profileError?: string | null;
+  pendingMapClimbDistance?: number | null;
+  onMapClimbConsumed?: () => void;
 }
 
 const ElevationProfile: React.FC<ElevationProfileProps> = ({
@@ -191,7 +169,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   loading,
   nominalFlightHeight,
   safetyHeight,
+  safetyRadius,
   resolutionHeight,
+  overlapPercentage,
   selectedPoint,
   flightPath,
   onDeletePoint,
@@ -203,13 +183,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   hoverSource,
   climbPresets,
   selectedClimbPresetId,
-  onSelectClimbPreset,
   climbConfig,
-  setClimbConfig,
   climbRequests,
   setClimbRequests,
   climbWarnings,
-  showMetadata
+  showMetadata,
+  activeRouteName,
+  dtmName,
+  profileError,
+  pendingMapClimbDistance,
+  onMapClimbConsumed
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -218,44 +201,66 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const savedZoomTransformRef = useRef<d3.ZoomTransform | null>(null);
   const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGRectElement, unknown> | null>(null);
   const overlayRef = useRef<d3.Selection<SVGRectElement, unknown, null, undefined> | null>(null);
+  
+  // Track drag state for click vs pan detection
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const panStartTransformRef = useRef<d3.ZoomTransform | null>(null);
+  const isPanningRef = useRef(false); // Track if we're actually panning (after threshold)
+  // Track container width to trigger chart re-render when it changes (for export)
+  const [containerWidth, setContainerWidth] = useState<number>(0);
+  const [containerHeight, setContainerHeight] = useState<number>(400);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; pointIndex: number } | null>(null);
-  const [isClimbConfigOpen, setIsClimbConfigOpen] = useState(false);
   const [isClimbAmountOpen, setIsClimbAmountOpen] = useState(false);
   const [pendingClimbEnd, setPendingClimbEnd] = useState<number | null>(null);
   const [climbAmountInput, setClimbAmountInput] = useState<string>('');
   const [climbAmountError, setClimbAmountError] = useState<string | null>(null);
-  const [climbConfigDraft, setClimbConfigDraft] = useState<{
-    climbRatio: string;
-    descentRatio: string;
-    allowTurnsDuringClimb: boolean;
-    linkRatios: boolean;
-    vertexProximityMeters: string;
-    minClimb: string;
-    maxClimb: string;
-  }>(() => toDraft(climbConfig));
-  const [climbConfigError, setClimbConfigError] = useState<string | null>(null);
   const [climbValidationPopup, setClimbValidationPopup] = useState<string | null>(null);
   const [showDeleteAllConfirmation, setShowDeleteAllConfirmation] = useState(false);
-  const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number } | null>(null);
+  const [climbContextMenu, setClimbContextMenu] = useState<{ x: number; y: number; endDistance: number; climbAmount: number; climbRatio?: number; descentRatio?: number } | null>(null);
   const climbContextMenuRef = useRef<HTMLDivElement | null>(null);
   // Track the climb being edited to exclude it from constraint checks
   const [editingClimb, setEditingClimb] = useState<{ endDistance: number; climbAmount: number } | null>(null);
+  // Per-point ratio overrides for the modal (empty string = use global config)
+  const [customClimbRatio, setCustomClimbRatio] = useState<string>('');
+  const [customDescentRatio, setCustomDescentRatio] = useState<string>('');
 
-  // Log state changes for debugging
-  useEffect(() => {
-    console.log('[STATE] contextMenu changed:', contextMenu ? { x: contextMenu.x, y: contextMenu.y, pointIndex: contextMenu.pointIndex } : null);
-  }, [contextMenu]);
-
-  useEffect(() => {
-    console.log('[STATE] climbContextMenu changed:', climbContextMenu ? { x: climbContextMenu.x, y: climbContextMenu.y, endDistance: climbContextMenu.endDistance, climbAmount: climbContextMenu.climbAmount } : null);
-  }, [climbContextMenu]);
   const [mousePos, setMousePos] = useState<{ x: number, y: number } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number } | null>(null);
-  const hoveredUtm = useMemo(() => {
-    if (!hoveredPoint) return null;
-    return latLngToUTM(hoveredPoint.latitude, hoveredPoint.longitude);
-  }, [hoveredPoint]);
+  const [saveFileDialog, setSaveFileDialog] = useState<{
+    isOpen: boolean;
+    defaultFilename: string;
+    fileContent: string | Blob;
+    mimeType: string;
+  } | null>(null);
+
+  // Open the climb amount modal when triggered from map right-click
+  useEffect(() => {
+    if (pendingMapClimbDistance != null) {
+      onMapClimbConsumed?.();
+
+      const turnVertexValidation = isTooCloseToTurnVertex(pendingMapClimbDistance);
+      if (!turnVertexValidation.isValid) {
+        setClimbValidationPopup(turnVertexValidation.message || 'לא ניתן ליצור נקודת עלייה במיקום זה - קרוב מדי לנקודת פנייה.');
+        return;
+      }
+
+      const forbiddenValidation = isLocationInForbiddenClimbArea(pendingMapClimbDistance);
+      if (!forbiddenValidation.isValid) {
+        setClimbValidationPopup(forbiddenValidation.message || 'לא ניתן ליצור נקודת עלייה במיקום זה.');
+        return;
+      }
+
+      setPendingClimbEnd(pendingMapClimbDistance);
+      setClimbAmountInput('');
+      setClimbAmountError(null);
+      setEditingClimb(null);
+      setCustomClimbRatio('');
+      setCustomDescentRatio('');
+      setIsClimbAmountOpen(true);
+    }
+  }, [pendingMapClimbDistance]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedPreset = useMemo(
     () => climbPresets.find((p) => p.id === selectedClimbPresetId),
@@ -302,11 +307,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         continue;
       }
       
-      const existingRatio = existingClimb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const existingRatio = existingClimb.climbAmount > 0
+        ? (existingClimb.climbRatio ?? climbConfig.climbRatio)
+        : (existingClimb.descentRatio ?? climbConfig.descentRatio);
       const existingRequiredHorizontal = Math.abs(existingClimb.climbAmount) * existingRatio;
       const existingStart = Math.max(0, existingClimb.endDistance - existingRequiredHorizontal);
       const existingEnd = existingClimb.endDistance;
-      
+
       // Calculate forbidden area: climb area + buffer before and after
       const forbiddenStart = existingStart - climbConfig.vertexProximityMeters;
       const forbiddenEnd = existingEnd + climbConfig.vertexProximityMeters;
@@ -326,6 +333,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     if (elevationProfile.length === 0) return 0;
     return elevationProfile[elevationProfile.length - 1].distance;
   }, [elevationProfile]);
+
+  // Effective ratios for the current modal climb point (custom override or global default)
+  const modalClimbRatio = parseFloat(customClimbRatio) > 0 ? parseFloat(customClimbRatio) : climbConfig.climbRatio;
+  const modalDescentRatio = parseFloat(customDescentRatio) > 0 ? parseFloat(customDescentRatio) : climbConfig.descentRatio;
 
   // Calculate max climb/descent values for display
   const maxValues = useMemo(() => {
@@ -355,95 +366,60 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     const dAvail = distanceToLeftConstraint;
     
     // Calculate maximum climb/descent based on available distance to constraints
-    // Always round down (floor) to ensure we don't exceed the limit
-    const maxClimbUp = Math.floor((dAvail / climbConfig.climbRatio) * 10) / 10;
-    const maxDescend = Math.floor((dAvail / climbConfig.descentRatio) * 10) / 10;
-    
+    // Always round down (floor) to ensure we don't exceed the limit, then subtract 0.1 as safety margin
+    const maxClimbUp = Math.floor((dAvail / modalClimbRatio) * 10) / 10 - 0.1;
+    const maxDescend = Math.floor((dAvail / modalDescentRatio) * 10) / 10 - 0.1;
+
     return { maxClimbUp, maxDescend };
-  }, [pendingClimbEnd, totalRouteLength, vertexDistances, climbConfig, climbRequests]);
-
-  const markCustomPreset = useCallback(() => {
-    onSelectClimbPreset('custom');
-  }, [onSelectClimbPreset]);
-
-  const handlePresetChange = useCallback(
-    (presetId: string) => {
-      onSelectClimbPreset(presetId);
-      const preset = climbPresets.find((p) => p.id === presetId);
-      if (preset) {
-        setClimbConfigDraft(toDraft(preset));
-        setClimbConfigError(null);
-      } else {
-        setClimbConfigDraft(toDraft(climbConfig));
-      }
-    },
-    [climbPresets, climbConfig, onSelectClimbPreset]
-  );
-
-  const handleAllowTurnsChange = useCallback(
-    (checked: boolean) => {
-      markCustomPreset();
-      setClimbConfigDraft((prev) => ({ ...prev, allowTurnsDuringClimb: checked }));
-    },
-    [markCustomPreset]
-  );
+  }, [pendingClimbEnd, totalRouteLength, vertexDistances, climbConfig, climbRequests, modalClimbRatio, modalDescentRatio]);
 
   // Calculate tooltip position to keep it on screen
   useLayoutEffect(() => {
-    if (!mousePos || !tooltipRef.current || !showMetadata || !hoveredPoint || hoverSource !== 'profile') {
+    if (!mousePos || !tooltipRef.current || !showMetadata || !hoveredPoint || (hoverSource !== 'profile' && hoverSource !== 'overlap')) {
       setTooltipPosition(null);
       return;
     }
 
-    // Use requestAnimationFrame to ensure the tooltip is rendered and measured
+    // Use double requestAnimationFrame to ensure the tooltip is fully rendered and measured
     requestAnimationFrame(() => {
-      if (!tooltipRef.current) return;
-      const tooltipRect = tooltipRef.current.getBoundingClientRect();
-      const windowWidth = window.innerWidth;
-      const padding = 8;
-      const offset = 15;
+      requestAnimationFrame(() => {
+        if (!tooltipRef.current) return;
+        const tooltipRect = tooltipRef.current.getBoundingClientRect();
+        const windowWidth = window.innerWidth;
+        const padding = 8;
+        const offset = 15;
 
-      let left = mousePos.x + offset;
-      
-      // Check if tooltip would go off the right edge of the screen
-      if (left + tooltipRect.width > windowWidth - padding) {
-        // Position at the start of the window with padding
-        left = padding;
-      }
+        let left = mousePos.x + offset;
+        
+        // Check if tooltip would go off the right edge of the screen
+        if (left + tooltipRect.width > windowWidth - padding) {
+          // Position on the left side of the cursor instead of the left side of the window
+          left = mousePos.x - tooltipRect.width - offset;
+        }
 
-      // Also check if it would go off the left edge (shouldn't happen, but just in case)
-      if (left < padding) {
-        left = padding;
-      }
+        // Also check if it would go off the left edge after repositioning
+        if (left < padding) {
+          left = padding;
+        }
 
-      setTooltipPosition({ left, top: mousePos.y + offset });
+        setTooltipPosition({ left, top: mousePos.y + offset });
+      });
     });
   }, [mousePos, showMetadata, hoveredPoint, hoverSource]);
 
   useEffect(() => {
     if (!climbContextMenu) {
-      console.log('[CLIMB_MENU] useEffect: climbContextMenu is null, not setting up listeners');
       return;
     }
-    console.log('[CLIMB_MENU] useEffect: climbContextMenu is set, setting up global close listeners');
     const handleGlobalClose = (event: MouseEvent) => {
       const target = event.target as Node;
-      const contains = climbContextMenuRef.current?.contains(target);
-      console.log('[CLIMB_MENU] Global close handler triggered', {
-        eventType: event.type,
-        target: (target as any)?.tagName,
-        contains: contains,
-        willClose: !contains
-      });
       if (climbContextMenuRef.current && !climbContextMenuRef.current.contains(target)) {
-        console.log('[CLIMB_MENU] Closing climb context menu (clicked outside)');
         setClimbContextMenu(null);
       }
     };
     document.addEventListener('mousedown', handleGlobalClose);
     document.addEventListener('contextmenu', handleGlobalClose);
     return () => {
-      console.log('[CLIMB_MENU] useEffect cleanup: removing global close listeners');
       document.removeEventListener('mousedown', handleGlobalClose);
       document.removeEventListener('contextmenu', handleGlobalClose);
     };
@@ -461,35 +437,66 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           minDelta = delta;
         }
       }
-      return closest.plannedAltitude ?? (closest.elevation + nominalFlightHeight);
+      // Entry height (nominalFlightHeight) is ASL, so return it directly if no planned altitude
+      return closest.plannedAltitude ?? nominalFlightHeight;
     },
     [elevationProfile, nominalFlightHeight]
   );
 
   const activeClimbStartDistance = null;
 
+  // Update container width state when container resizes (for export functionality)
+  useEffect(() => {
+    if (!containerRef.current) return;
+    
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerWidth(entry.contentRect.width);
+        setContainerHeight(entry.contentRect.height);
+      }
+    });
+
+    resizeObserver.observe(containerRef.current);
+
+    // Set initial values
+    if (containerRef.current) {
+      setContainerWidth(containerRef.current.clientWidth);
+      setContainerHeight(containerRef.current.clientHeight);
+    }
+    
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, []);
+
   useEffect(() => {
     if (!svgRef.current || !containerRef.current || elevationProfile.length === 0 || loading) {
       return;
     }
 
-    console.log(`ElevationProfile: Rendering with ${elevationProfile.length} points, updating min/max and safety/resolution lines`);
+    // Store component-level vertexDistances early to avoid temporal dead zone issues
+    const componentVertexDistances = vertexDistances;
 
     const svg = d3.select(svgRef.current);
-    // Save zoom transform before clearing (use existing transform if available, otherwise use saved one)
+    // Save zoom transform before clearing (preserve zoom state across re-renders)
     const existingOverlay = svg.select('rect[fill="transparent"]').node() as SVGRectElement | null;
-    const existingTransform = existingOverlay ? d3.zoomTransform(existingOverlay) : null;
-    if (existingTransform && (existingTransform.k !== 1 || existingTransform.x !== 0 || existingTransform.y !== 0)) {
-      savedZoomTransformRef.current = existingTransform;
+    if (existingOverlay) {
+      const existingTransform = d3.zoomTransform(existingOverlay);
+      // Only update if it's actually zoomed/translated (not identity)
+      if (existingTransform.k !== 1 || existingTransform.x !== 0 || existingTransform.y !== 0) {
+        savedZoomTransformRef.current = existingTransform;
+      }
     }
+    // If no existing transform, keep the saved one (don't reset to null)
     svg.selectAll('*').remove(); // Clear previous render
 
-    const margin = { top: 20, right: 80, bottom: 110, left: 30 };
+    const margin = { top: 20, right: 80, bottom: 110, left: 80 }; // left fits y-axis ticks + labels (PNG export)
     const legendWidth = 0; // Move legend under the plot
     const width = containerRef.current.clientWidth - margin.left - margin.right - legendWidth;
-    const height = 400 - margin.top - margin.bottom;
+    const height = Math.max(containerHeight, 250) - margin.top - margin.bottom;
 
     // Set SVG dimensions (include space for legend)
+    // Height will be adjusted later if legend needs two rows
     svg.attr('width', width + margin.left + margin.right + legendWidth)
       .attr('height', height + margin.top + margin.bottom);
 
@@ -509,13 +516,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     // Create scales
     const baseXScale = d3.scaleLinear()
       .domain(d3.extent(elevationProfile, d => d.distance) as [number, number])
-      .range([width, 0]);
+      .range([0, width]);
 
     const chartArea: d3.Selection<SVGGElement, unknown, null, undefined> = g.append('g')
       .attr('clip-path', `url(#${clipPathIdRef.current})`);
 
-    const plannedAltitudes = elevationProfile.map((p) => p.plannedAltitude || (p.elevation + nominalFlightHeight));
-    const baseAltitudes = elevationProfile.map((p) => p.baseAltitude || (p.elevation + nominalFlightHeight));
+    // Entry height (nominalFlightHeight) is ASL, so base altitude is nominalFlightHeight directly
+    const plannedAltitudes = elevationProfile.map((p) => p.plannedAltitude ?? nominalFlightHeight);
+    const baseAltitudes = elevationProfile.map((p) => p.baseAltitude ?? nominalFlightHeight);
 
     // @ts-ignore
     const getSafetyThreshold = (d: ElevationPoint) => {
@@ -578,7 +586,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .tickSize(-height)
       .tickFormat(() => '');
 
-    const yAxisGrid = d3.axisRight(currentYScale)
+    const yAxisGrid = d3.axisLeft(currentYScale)
       .ticks(10)
       .tickSize(-width)
       .tickFormat(() => '');
@@ -598,7 +606,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('stroke-width', 1)
       .attr('stroke-dasharray', '2,4')
       .attr('opacity', 0.6)
-      .attr('transform', `translate(${width},0)`)
+      .attr('transform', 'translate(0,0)')
       .lower() // Ensure grid is behind other elements
       .call(yAxisGrid);
 
@@ -613,9 +621,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     let climbEndMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbStartMarkers: d3.Selection<SVGGElement, any, any, any> | null = null;
     let climbLabels: d3.Selection<SVGTextElement, any, any, any> | null = null;
+    // Entry height (nominalFlightHeight) is ASL, so base altitude is nominalFlightHeight directly
     const profileWithPlan = elevationProfile.map((p) => {
-      const planned = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
-      const baseAltitude = p.baseAltitude ?? planned;
+      const planned = p.plannedAltitude ?? nominalFlightHeight;
+      const baseAltitude = p.baseAltitude ?? nominalFlightHeight;
       const climbDelta = p.climbDelta ?? 0;
       return {
         ...p,
@@ -685,7 +694,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .y1(d => currentYScale(getSafetyThreshold(d)))
       .curve(d3.curveMonotoneX);
 
-    resolutionViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+    const resolutionViolationPaths = resolutionViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(resolutionSegments)
       .enter()
       .append('path')
@@ -693,7 +702,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill-opacity', 0.18)
       .attr('d', d => resolutionAreaGenerator(d));
 
-    safetyViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+    const safetyViolationPaths = safetyViolationGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
       .data(safetySegments)
       .enter()
       .append('path')
@@ -772,10 +781,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       d => d.minElevation !== undefined && d.maxElevation !== undefined
     );
 
-    console.log(`ElevationProfile render: ${elevationProfile.length} total points, ${pointsWithMinMax.length} with min/max`);
-
     if (pointsWithMinMax.length > 0) {
-      console.log(`Drawing min/max range bars for ${pointsWithMinMax.length} points`);
 
       /*
       // Draw vertical range bars for min/max elevation - make them more visible
@@ -850,6 +856,28 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('d', d => climbAreaGenerator(d));
     */
 
+    // Climb visualization (shaded area between base and climbed altitude)
+    /*
+    const climbSegments = buildSegments(profileWithPlan, (d) => Math.abs(d.climbDelta) > 0.05);
+    const climbGroup = chartArea.append('g').attr('class', 'climb-areas');
+    const climbAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+      .x(d => currentXScale(d.distance))
+      .y0(d => currentYScale(d.baseAltitude))
+      .y1(d => currentYScale(d.plannedAltitude))
+      .curve(d3.curveMonotoneX);
+    */
+
+    /*
+    climbAreas = climbGroup.selectAll<SVGPathElement, typeof profileWithPlan[0][]>('path')
+      .data(climbSegments)
+      .enter()
+      .append('path')
+      .attr('fill', '#6f42c1')
+      .attr('fill-opacity', 0.18)
+      .attr('stroke', 'none')
+      .attr('d', d => climbAreaGenerator(d));
+    */
+
     // Find original flight path vertices in the elevation profile
     // Match by coordinates (with small tolerance for floating point precision)
     const originalVertices = flightPath.map((vertex: Coordinate, vertexIndex: number) => {
@@ -885,18 +913,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Add right-click handler for ground points
     groundPoints.on('contextmenu', function (event: any, d: { point: ElevationPoint; index: number }) {
-      console.log('[GROUND_POINT] Ground point contextmenu event fired', {
-        pointIndex: d.index,
-        distance: d.point.distance,
-        elevation: d.point.elevation,
-        eventType: event.type
-      });
       event.preventDefault();
       event.stopPropagation();
       // Get the click position in screen coordinates
       const clickX = event.clientX || (event as MouseEvent).clientX;
       const clickY = event.clientY || (event as MouseEvent).clientY;
-      console.log('[GROUND_POINT] Closing climb context menu, opening regular context menu');
       // Close climb context menu if open
       setClimbContextMenu(null);
       setContextMenu({
@@ -904,7 +925,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         y: clickY,
         pointIndex: d.index
       });
-      console.log('[GROUND_POINT] Regular context menu set for point index:', d.index);
     });
 
     const flightPoints = chartArea.selectAll<SVGCircleElement, { point: ElevationPoint; index: number }>('.flight-point')
@@ -920,18 +940,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Add right-click handler for flight points
     flightPoints.on('contextmenu', function (event: any, d: { point: ElevationPoint; index: number }) {
-      console.log('[FLIGHT_POINT] Flight point contextmenu event fired', {
-        pointIndex: d.index,
-        distance: d.point.distance,
-        elevation: d.point.elevation,
-        eventType: event.type
-      });
       event.preventDefault();
       event.stopPropagation();
       // Get the click position in screen coordinates
       const clickX = event.clientX || (event as MouseEvent).clientX;
       const clickY = event.clientY || (event as MouseEvent).clientY;
-      console.log('[FLIGHT_POINT] Closing climb context menu, opening regular context menu');
       // Close climb context menu if open
       setClimbContextMenu(null);
       setContextMenu({
@@ -939,7 +952,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         y: clickY,
         pointIndex: d.index
       });
-      console.log('[FLIGHT_POINT] Regular context menu set for point index:', d.index);
     });
 
     // Add point number labels only for original vertices
@@ -962,12 +974,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .ticks(10)
       .tickFormat(d => `${d} מ'`);
 
-    const yAxis = d3.axisRight(currentYScale)
+    const yAxis = d3.axisLeft(currentYScale)
       .ticks(10)
       .tickFormat(d => `${d} מ'`)
-      .tickPadding(40);
+      .tickPadding(52);
 
     const xAxisGroup = g.append('g')
+      .attr('class', 'x-axis')
       .attr('transform', `translate(0,${height})`)
       .call(xAxis);
 
@@ -976,13 +989,14 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif');
 
     const yAxisGroup = g.append('g')
-      .attr('transform', `translate(${width},0)`)
+      .attr('class', 'y-axis')
+      .attr('transform', 'translate(0,0)')
       .call(yAxis);
 
     yAxisGroup.selectAll('text')
       .style('font-size', '12px')
       .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
-      .attr('dx', '-0.5em');
+      .attr('dx', '0.5em');
 
     // Axis labels (outside axis groups to avoid being cleared on zoom redraw)
     g.append('text')
@@ -995,6 +1009,58 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
       .text('מרחק (מטרים)');
 
+    // Add gray shaded areas around each vertex to show vertex proximity zones
+    if (climbConfig && climbConfig.vertexProximityMeters > 0 && componentVertexDistances.length > 0) {
+      const vertexProximityZones = componentVertexDistances.map(vertexDistance => {
+        const zoneStart = Math.max(0, vertexDistance - climbConfig.vertexProximityMeters);
+        const zoneEnd = Math.min(
+          elevationProfile.length > 0 ? elevationProfile[elevationProfile.length - 1].distance : vertexDistance + climbConfig.vertexProximityMeters,
+          vertexDistance + climbConfig.vertexProximityMeters
+        );
+        return { start: zoneStart, end: zoneEnd };
+      });
+
+      // Merge overlapping zones
+      const mergedZones: { start: number; end: number }[] = [];
+      const sortedZones = [...vertexProximityZones].sort((a, b) => a.start - b.start);
+      
+      for (const zone of sortedZones) {
+        if (mergedZones.length === 0) {
+          mergedZones.push({ ...zone });
+        } else {
+          const lastZone = mergedZones[mergedZones.length - 1];
+          if (zone.start <= lastZone.end) {
+            lastZone.end = Math.max(lastZone.end, zone.end);
+          } else {
+            mergedZones.push({ ...zone });
+          }
+        }
+      }
+
+      // Draw rectangles for each merged zone
+      chartArea.selectAll<SVGRectElement, { start: number; end: number }>('.vertex-proximity-zone')
+        .data(mergedZones)
+        .enter()
+        .append('rect')
+        .attr('class', 'vertex-proximity-zone')
+        .attr('x', d => {
+          const xStart = currentXScale(d.start);
+          const xEnd = currentXScale(d.end);
+          return Math.min(xStart, xEnd);
+        })
+        .attr('y', 0)
+        .attr('width', d => {
+          const xStart = currentXScale(d.start);
+          const xEnd = currentXScale(d.end);
+          return Math.abs(xStart - xEnd);
+        })
+        .attr('height', height)
+        .attr('fill', '#808080')
+        .attr('fill-opacity', 0.2)
+        .attr('stroke', '#808080')
+        .attr('stroke-width', 1)
+        .attr('stroke-opacity', 0.4);
+    }
 
     // Highlight selected point (only for user-imported points, not interpolated ones)
     if (selectedPoint && flightPath.length > 0) {
@@ -1043,7 +1109,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         .attr('stroke-width', 2);
     }
 
-    const endMarkersData = climbRequests.map((c) => ({ endDistance: c.endDistance, climbAmount: c.climbAmount }));
+    const endMarkersData = climbRequests.map((c) => ({ endDistance: c.endDistance, climbAmount: c.climbAmount, climbRatio: c.climbRatio, descentRatio: c.descentRatio }));
 
     climbEndMarkers = chartArea.selectAll<SVGGElement, any>('.climb-end-marker')
       .data(endMarkersData)
@@ -1051,21 +1117,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .append('g')
       .attr('class', 'climb-end-marker')
       .on('contextmenu', (event, d) => {
-        console.log('[CLIMB_MARKER] Direct climb marker contextmenu event fired', {
-          endDistance: d.endDistance,
-          climbAmount: d.climbAmount,
-          eventType: event.type,
-          target: (event.target as any)?.tagName
-        });
         event.preventDefault();
         event.stopPropagation();
         const clickX = (event as MouseEvent).clientX;
         const clickY = (event as MouseEvent).clientY;
-        console.log('[CLIMB_MARKER] Setting climb context menu, closing regular context menu');
         // Close regular context menu if open
         setContextMenu(null);
-        setClimbContextMenu({ x: clickX, y: clickY, endDistance: d.endDistance, climbAmount: d.climbAmount });
-        console.log('[CLIMB_MARKER] Climb context menu set:', { x: clickX, y: clickY, endDistance: d.endDistance, climbAmount: d.climbAmount });
+        setClimbContextMenu({ x: clickX, y: clickY, endDistance: d.endDistance, climbAmount: d.climbAmount, climbRatio: d.climbRatio, descentRatio: d.descentRatio });
       });
 
     climbEndMarkers.append('circle')
@@ -1079,7 +1137,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Add start markers for each climb point
     const startMarkersData = climbRequests.map((c) => {
-      const activeRatio = c.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const activeRatio = c.climbAmount > 0
+        ? (c.climbRatio ?? climbConfig.climbRatio)
+        : (c.descentRatio ?? climbConfig.descentRatio);
       const requiredHorizontal = Math.abs(c.climbAmount) * activeRatio;
       const startDistance = Math.max(0, c.endDistance - requiredHorizontal);
       return { startDistance, endDistance: c.endDistance, climbAmount: c.climbAmount };
@@ -1125,8 +1185,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
     // Add legend under the graph area
     const legendOffset = 80; // Increased spacing
-    const legend = svg.append('g')
-      .attr('transform', `translate(${margin.left}, ${height + margin.top + legendOffset})`);
+    const legend = svg.append('g');
 
     const legendData = [
       { label: 'גובה קרקע', color: '#8B4513', style: 'solid' },
@@ -1157,36 +1216,94 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     totalLegendWidth += spacing * (legendData.length - 1); // Add spacing between items
     tempText.remove();
 
-    // Layout legend items horizontally from right to left
-    let currentX = width - totalLegendWidth; // Start from the right
+    // Check if legend needs to wrap to two rows
+    const availableWidth = width;
+    const rowHeight = 25; // Height of each row including spacing
+    const needsTwoRows = totalLegendWidth > availableWidth * 0.9; // Use 90% of available width as threshold
+    
+    // Adjust SVG height if legend needs two rows
+    if (needsTwoRows) {
+      const additionalHeight = rowHeight;
+      svg.attr('height', height + margin.top + margin.bottom + additionalHeight);
+    }
+    
+    // Calculate layout for one or two rows
+    let row1Items: typeof legendData = [];
+    let row2Items: typeof legendData = [];
+    let row1Width = 0;
+    let row2Width = 0;
+    
+    if (needsTwoRows) {
+      // Split into two rows: first 2 items in row 1, last 2 items in row 2
+      row1Items = legendData.slice(0, 2);
+      row2Items = legendData.slice(2);
+      
+      // Calculate widths for each row
+      row1Items.forEach((_, idx) => {
+        const origIdx = idx;
+        row1Width += itemWidths[origIdx];
+        if (idx < row1Items.length - 1) row1Width += spacing;
+      });
+      
+      row2Items.forEach((_, idx) => {
+        const origIdx = idx + 2;
+        row2Width += itemWidths[origIdx];
+        if (idx < row2Items.length - 1) row2Width += spacing;
+      });
+    } else {
+      // Single row
+      row1Items = legendData;
+      row1Width = totalLegendWidth;
+    }
 
-    legendData.forEach((item, index) => {
-      const legendItem = legend.append('g')
-        .attr('transform', `translate(${currentX}, 0)`);
+    // Align legend to the right side of the chart
+    // Use the wider row width for positioning
+    const maxRowWidth = Math.max(row1Width, row2Width);
+    const legendX = width - maxRowWidth;
 
-      // Line marker on the left
-      legendItem.append('line')
-        .attr('x1', 0)
-        .attr('x2', lineWidth)
-        .attr('y1', 0)
-        .attr('y2', 0)
-        .attr('stroke', item.color)
-        .attr('stroke-width', item.style === 'dashed' ? 3 : 2)
-        .attr('stroke-dasharray', item.style === 'dashed' ? '8,5' : '0');
+    // Update legend group position
+    const legendY = height + margin.top + legendOffset;
+    legend.attr('transform', `translate(${margin.left + legendX}, ${legendY})`);
 
-      // Text label right after the line marker
-      legendItem.append('text')
-        .attr('class', 'legend-text')
-        .attr('x', lineWidth + lineToTextGap)
-        .attr('y', 4)
-        .attr('fill', 'black')
-        .style('font-size', '14px')
-        .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
-        .style('text-anchor', 'end')
-        .text(item.label);
+    // Function to render a row of legend items
+    const renderLegendRow = (items: typeof legendData, startIndex: number, yOffset: number) => {
+      let currentX = 0;
+      
+      items.forEach((item, idx) => {
+        const origIndex = startIndex + idx;
+        const legendItem = legend.append('g')
+          .attr('transform', `translate(${currentX}, ${yOffset})`);
 
-      currentX += itemWidths[index] + spacing;
-    });
+        // Line marker on the left
+        legendItem.append('line')
+          .attr('x1', 0)
+          .attr('x2', lineWidth)
+          .attr('y1', 0)
+          .attr('y2', 0)
+          .attr('stroke', item.color)
+          .attr('stroke-width', item.style === 'dashed' ? 3 : 2)
+          .attr('stroke-dasharray', item.style === 'dashed' ? '8,5' : '0');
+
+        // Text label right after the line marker
+        legendItem.append('text')
+          .attr('class', 'legend-text')
+          .attr('x', lineWidth + lineToTextGap)
+          .attr('y', 4)
+          .attr('fill', 'black')
+          .style('font-size', '14px')
+          .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
+          .style('text-anchor', 'end')
+          .text(item.label);
+
+        currentX += itemWidths[origIndex] + spacing;
+      });
+    };
+
+    // Render legend rows
+    renderLegendRow(row1Items, 0, 0);
+    if (needsTwoRows) {
+      renderLegendRow(row2Items, 2, rowHeight);
+    }
 
     // Interaction overlay captures zoom/pan and hover without showing a visible layer
     const overlay = g.append('rect')
@@ -1197,157 +1314,409 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       .attr('fill', 'transparent')
       .style('cursor', 'crosshair')
       .style('pointer-events', 'all');
-    overlay.lower();
+    function clampTransform(t: d3.ZoomTransform, w: number, h: number): d3.ZoomTransform {
+      const clamped = clampZoomTransform(t.x, t.y, t.k, w, h);
+      return d3.zoomIdentity.translate(clamped.x, clamped.y).scale(clamped.k);
+    }
 
+    // Function to update all elements based on current transform
+    const updateElementsWithTransform = (transform: d3.ZoomTransform) => {
+      const newXScale = transform.rescaleX(baseXScale);
+      const newYScale = transform.rescaleY(baseYScale);
+
+      currentXScale = newXScale;
+      currentYScale = newYScale;
+
+      xAxis.scale(currentXScale);
+      yAxis.scale(currentYScale);
+      xAxisGrid.scale(currentXScale);
+      yAxisGrid.scale(currentYScale);
+
+      xGridGroup.call(xAxisGrid);
+      yGridGroup.call(yAxisGrid);
+      xAxisGroup.call(xAxis);
+      yAxisGroup.call(yAxis);
+      xAxisGroup.selectAll('text')
+        .style('font-size', '12px')
+        .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif');
+      yAxisGroup.selectAll('text')
+        .style('font-size', '12px')
+        .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
+        .attr('dx', '0.5em');
+
+      // Update all paths and elements
+      const updatedGroundAreaGenerator = d3.area<ElevationPoint>()
+        .x(d => currentXScale(d.distance))
+        .y0(height)
+        .y1(d => currentYScale(d.elevation))
+        .curve(d3.curveMonotoneX);
+      groundArea.attr('d', updatedGroundAreaGenerator);
+      
+      const updatedGroundLine = d3.line<ElevationPoint>()
+        .x(d => currentXScale(d.distance))
+        .y(d => currentYScale(d.elevation))
+        .curve(d3.curveMonotoneX);
+      groundPath.attr('d', updatedGroundLine);
+      
+      const updatedPlannedFlightLine = d3.line<typeof profileWithPlan[0]>()
+        .x(d => currentXScale(d.distance))
+        .y(d => currentYScale(d.plannedAltitude))
+        .curve(d3.curveMonotoneX);
+      plannedFlightPathLine.attr('d', updatedPlannedFlightLine);
+      
+      const updatedSafetyLine = d3.line<ElevationPoint>()
+        .x(d => currentXScale(d.distance))
+        .y(d => {
+          const maxElev = d.maxElevation !== undefined ? d.maxElevation : d.elevation;
+          return currentYScale(maxElev + safetyHeight);
+        })
+        .curve(d3.curveMonotoneX);
+      safetyPath.attr('d', updatedSafetyLine);
+      
+      const updatedResolutionLine = d3.line<ElevationPoint>()
+        .x(d => currentXScale(d.distance))
+        .y(d => {
+          const minElev = d.minElevation !== undefined ? d.minElevation : d.elevation;
+          return currentYScale(minElev + resolutionHeight);
+        })
+        .curve(d3.curveMonotoneX);
+      resolutionPath.attr('d', updatedResolutionLine);
+
+      // Update resolution violation fill areas
+      const updatedResolutionAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+        .x(d => currentXScale(d.distance))
+        .y0(d => currentYScale(getResolutionThreshold(d)))
+        .y1(d => currentYScale(d.plannedAltitude))
+        .curve(d3.curveMonotoneX);
+      resolutionViolationPaths.attr('d', d => updatedResolutionAreaGenerator(d));
+
+      // Update safety violation fill areas
+      const updatedSafetyAreaGenerator = d3.area<typeof profileWithPlan[0]>()
+        .x(d => currentXScale(d.distance))
+        .y0(d => currentYScale(d.plannedAltitude))
+        .y1(d => currentYScale(getSafetyThreshold(d)))
+        .curve(d3.curveMonotoneX);
+      safetyViolationPaths.attr('d', d => updatedSafetyAreaGenerator(d));
+
+      groundPoints
+        .attr('cx', d => currentXScale(d.point.distance))
+        .attr('cy', d => currentYScale(d.point.elevation));
+
+      flightPoints
+        .attr('cx', d => currentXScale(d.point.distance))
+        .attr('cy', (d) => currentYScale(getPlannedAltitudeAtDistance(d.point.distance)));
+
+      pointLabels
+        .attr('x', d => currentXScale(d.point.distance))
+        .attr('y', d => currentYScale(d.point.elevation) - 8);
+
+      if (selectedDistanceLine && selectedDistance !== null) {
+        selectedDistanceLine
+          .attr('x1', currentXScale(selectedDistance))
+          .attr('x2', currentXScale(selectedDistance));
+      }
+
+      if (hoveredDistanceLine && hoveredDistance !== null) {
+        hoveredDistanceLine
+          .attr('x1', currentXScale(hoveredDistance))
+          .attr('x2', currentXScale(hoveredDistance));
+      }
+
+      // Update legend position
+      const availableWidth = width;
+      const needsTwoRows = totalLegendWidth > availableWidth * 0.9;
+      let maxRowWidth = totalLegendWidth;
+      
+      if (needsTwoRows) {
+        let row1Width = 0;
+        let row2Width = 0;
+        
+        for (let i = 0; i < 2; i++) {
+          row1Width += itemWidths[i];
+          if (i < 1) row1Width += spacing;
+        }
+        
+        for (let i = 2; i < legendData.length; i++) {
+          row2Width += itemWidths[i];
+          if (i < legendData.length - 1) row2Width += spacing;
+        }
+        
+        maxRowWidth = Math.max(row1Width, row2Width);
+      }
+      
+      const legendX = width - maxRowWidth;
+      legend.attr('transform', `translate(${margin.left + legendX}, ${height + margin.top + legendOffset})`);
+
+      if (hoveredPointMarker && hoveredPoint) {
+        hoveredPointMarker
+          .attr('cx', currentXScale(hoveredPoint.distance))
+          .attr('cy', currentYScale(getPlannedAltitudeAtDistance(hoveredPoint.distance)));
+      }
+
+      climbEndMarkers?.selectAll<SVGCircleElement, any>('circle')
+        .attr('cx', (d: any) => currentXScale(d.endDistance))
+        .attr('cy', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)));
+
+      climbStartMarkers?.selectAll<SVGRectElement, any>('rect')
+        .attr('x', (d: any) => currentXScale(d.startDistance) - 4)
+        .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.startDistance)) - 4);
+
+      climbLabels
+        ?.attr('x', (d: any) => currentXScale(d.endDistance))
+        .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)) - 8);
+
+      // Update gray vertex proximity zones
+      // Recalculate zones and update existing rectangles
+      if (climbConfig && climbConfig.vertexProximityMeters > 0 && componentVertexDistances.length > 0) {
+        const vertexProximityZones = componentVertexDistances.map(vertexDistance => {
+          const zoneStart = Math.max(0, vertexDistance - climbConfig.vertexProximityMeters);
+          const zoneEnd = Math.min(
+            elevationProfile.length > 0 ? elevationProfile[elevationProfile.length - 1].distance : vertexDistance + climbConfig.vertexProximityMeters,
+            vertexDistance + climbConfig.vertexProximityMeters
+          );
+          return { start: zoneStart, end: zoneEnd };
+        });
+
+        // Merge overlapping zones
+        const mergedZones: { start: number; end: number }[] = [];
+        const sortedZones = [...vertexProximityZones].sort((a, b) => a.start - b.start);
+        
+        for (const zone of sortedZones) {
+          if (mergedZones.length === 0) {
+            mergedZones.push({ ...zone });
+          } else {
+            const lastZone = mergedZones[mergedZones.length - 1];
+            if (zone.start <= lastZone.end) {
+              lastZone.end = Math.max(lastZone.end, zone.end);
+            } else {
+              mergedZones.push({ ...zone });
+            }
+          }
+        }
+
+        // Update existing zones with new data and positions
+        chartArea.selectAll<SVGRectElement, { start: number; end: number }>('.vertex-proximity-zone')
+          .data(mergedZones)
+          .attr('x', d => {
+            const xStart = currentXScale(d.start);
+            const xEnd = currentXScale(d.end);
+            return Math.min(xStart, xEnd);
+          })
+          .attr('width', d => {
+            const xStart = currentXScale(d.start);
+            const xEnd = currentXScale(d.end);
+            return Math.abs(xStart - xEnd);
+          });
+      }
+    };
+
+    // Raise overlay to top so it captures all pointer events (wheel, click, hover)
+    // above every drawn chart element (areas, lines, markers, etc.)
+    overlay.raise();
+
+    // Setup zoom behavior - only for wheel zoom, not for panning
     const zoomBehavior = d3.zoom<SVGRectElement, unknown>()
-      .scaleExtent([1, 12])
-      .translateExtent([[0, 0], [width, height]])
+      .scaleExtent([1, 20])
       .extent([[0, 0], [width, height]])
+      .translateExtent([[0, 0], [width, height]])
       .on('zoom', (event) => {
-        // Save the transform so it persists across re-renders
-        savedZoomTransformRef.current = event.transform;
-        const newXScale = event.transform.rescaleX(baseXScale);
-        const newYScale = event.transform.rescaleY(baseYScale);
-
-        currentXScale = newXScale;
-        currentYScale = newYScale;
-
-        xAxis.scale(currentXScale);
-        yAxis.scale(currentYScale);
-        xAxisGrid.scale(currentXScale);
-        yAxisGrid.scale(currentYScale);
-
-        xGridGroup.call(xAxisGrid);
-        yGridGroup.call(yAxisGrid);
-        xAxisGroup.call(xAxis);
-        yAxisGroup.call(yAxis);
-        xAxisGroup.selectAll('text')
-          .style('font-size', '12px')
-          .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif');
-        yAxisGroup.selectAll('text')
-          .style('font-size', '12px')
-          .style('font-family', '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif')
-          .attr('dx', '-0.5em');
-
-        const updatedGroundAreaGenerator = d3.area<ElevationPoint>()
-          .x(d => currentXScale(d.distance))
-          .y0(height)
-          .y1(d => currentYScale(d.elevation))
-          .curve(d3.curveMonotoneX);
-        groundArea.attr('d', updatedGroundAreaGenerator);
-        groundPath.attr('d', groundLine);
-        // baseFlightPathLine.attr('d', baseFlightLine);
-        plannedFlightPathLine.attr('d', plannedFlightLine);
-        safetyPath.attr('d', safetyLine);
-        resolutionPath.attr('d', resolutionLine);
-
-        /*
-        if (resolutionViolationAreas) {
-          const resolutionAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-            .x(d => currentXScale(d.distance))
-            .y0(d => currentYScale(getResolutionThreshold(d)))
-            .y1(d => currentYScale(d.plannedAltitude))
-            .curve(d3.curveMonotoneX);
-          resolutionViolationAreas.attr('d', d => resolutionAreaGenerator(d));
+        // Handle wheel zoom and programmatic transforms (like reset button)
+        const isWheelEvent = event.sourceEvent && event.sourceEvent.type === 'wheel';
+        const isProgrammatic = !event.sourceEvent; // No source event means it's programmatic
+        
+        if (isWheelEvent || isProgrammatic) {
+          // If zoomed out to scale 1 or less, reset to identity (no translation either)
+          if (event.transform.k <= 1) {
+            const identity = d3.zoomIdentity;
+            savedZoomTransformRef.current = identity;
+            updateElementsWithTransform(identity);
+            // Only reset the transform if it's a wheel event (to avoid infinite loop)
+            if (isWheelEvent && (event.transform.k < 1 || event.transform.x !== 0 || event.transform.y !== 0)) {
+              overlay.call(zoomBehavior.transform as any, identity);
+            }
+          } else {
+            // Save the transform so it persists across re-renders
+            const clamped = clampTransform(event.transform, width, height);
+            savedZoomTransformRef.current = clamped;
+            updateElementsWithTransform(clamped);
+          }
         }
- 
-        if (safetyViolationAreas) {
-          const safetyAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-            .x(d => currentXScale(d.distance))
-            .y0(d => currentYScale(d.plannedAltitude))
-            .y1(d => currentYScale(getSafetyThreshold(d)))
-            .curve(d3.curveMonotoneX);
-          safetyViolationAreas.attr('d', d => safetyAreaGenerator(d));
-        }
- 
-        if (climbAreas) {
-          const climbAreaGenerator = d3.area<typeof profileWithPlan[0]>()
-            .x(d => currentXScale(d.distance))
-            .y0(d => currentYScale(d.baseAltitude))
-            .y1(d => currentYScale(d.plannedAltitude))
-            .curve(d3.curveMonotoneX);
-          climbAreas.attr('d', d => climbAreaGenerator(d));
-        }
-        */
-
-        /*
-        if (rangeBars) {
-          rangeBars
-            .attr('x1', d => currentXScale(d.distance))
-            .attr('x2', d => currentXScale(d.distance))
-            .attr('y1', d => currentYScale(d.minElevation!))
-            .attr('y2', d => currentYScale(d.maxElevation!));
-        }
-        if (minMarkers) {
-          minMarkers
-            .attr('cx', d => currentXScale(d.distance))
-            .attr('cy', d => currentYScale(d.minElevation!));
-        }
-        if (maxMarkers) {
-          maxMarkers
-            .attr('cx', d => currentXScale(d.distance))
-            .attr('cy', d => currentYScale(d.maxElevation!));
-        }
-        */
-
-        groundPoints
-          .attr('cx', d => currentXScale(d.point.distance))
-          .attr('cy', d => currentYScale(d.point.elevation));
-
-        flightPoints
-          .attr('cx', d => currentXScale(d.point.distance))
-          .attr('cy', (d) => currentYScale(getPlannedAltitudeAtDistance(d.point.distance)));
-
-        pointLabels
-          .attr('x', d => currentXScale(d.point.distance))
-          .attr('y', d => currentYScale(d.point.elevation) - 8);
-
-        if (selectedDistanceLine && selectedDistance !== null) {
-          selectedDistanceLine
-            .attr('x1', currentXScale(selectedDistance))
-            .attr('x2', currentXScale(selectedDistance));
-        }
-
-        if (hoveredDistanceLine && hoveredDistance !== null) {
-          hoveredDistanceLine
-            .attr('x1', currentXScale(hoveredDistance))
-            .attr('x2', currentXScale(hoveredDistance));
-        }
-
-        if (hoveredPointMarker && hoveredPoint) {
-          hoveredPointMarker
-            .attr('cx', currentXScale(hoveredPoint.distance))
-            .attr('cy', currentYScale(getPlannedAltitudeAtDistance(hoveredPoint.distance)));
-        }
-
-        climbEndMarkers?.selectAll<SVGCircleElement, any>('circle')
-          .attr('cx', (d: any) => currentXScale(d.endDistance))
-          .attr('cy', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)));
-
-        climbStartMarkers?.selectAll<SVGRectElement, any>('rect')
-          .attr('x', (d: any) => currentXScale(d.startDistance) - 4)
-          .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.startDistance)) - 4);
-
-        climbLabels
-          ?.attr('x', (d: any) => currentXScale(d.endDistance))
-          .attr('y', (d: any) => currentYScale(getPlannedAltitudeAtDistance(d.endDistance)) - 8);
+      })
+      // Only allow wheel zoom, disable drag panning from d3.zoom
+      .filter(function(event) {
+        // Only allow wheel events for zooming
+        return event.type === 'wheel';
       });
 
     // Store references for zoom controls
     zoomBehaviorRef.current = zoomBehavior;
     overlayRef.current = overlay;
     
+    // Apply the zoom behavior first
     overlay.call(zoomBehavior as any);
+    
+    // Restore saved zoom transform AFTER applying zoom behavior (to maintain zoom state across re-renders)
+    if (savedZoomTransformRef.current) {
+      // Restore the transform immediately to maintain zoom/pan state
+      overlay.call(zoomBehavior.transform as any, savedZoomTransformRef.current);
+    }
+    
+    // Update cursor based on zoom state
+    const transform = savedZoomTransformRef.current || d3.zoomIdentity;
+    if (transform.k > 1) {
+      overlay.style('cursor', 'grab');
+    }
+    
+    // Custom panning handlers - calculate translation vector from mouse click to mouse location
+    overlay.on('mousedown', function(event: MouseEvent) {
+      // Only allow panning when zoomed in
+      const currentTransform = savedZoomTransformRef.current || d3.zoomIdentity;
+      if (currentTransform.k <= 1) {
+        return; // Don't pan when not zoomed
+      }
+      
+      // Prevent right-click and ctrl+click from panning
+      if (event.button !== 0 || event.ctrlKey) {
+        return;
+      }
+      
+      event.preventDefault();
+      event.stopPropagation();
+      
+      const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+      dragStartRef.current = { x: mouseX, y: mouseY };
+      panStartTransformRef.current = currentTransform;
+      isDraggingRef.current = false;
+      isPanningRef.current = false; // Not panning yet, waiting for drag threshold
+      overlay.style('cursor', 'grab'); // Keep grab cursor until we actually start panning
+    });
+    
+    // Combined mousemove handler for panning and hover
+    overlay.on('mousemove', function(event: MouseEvent) {
+      // Handle panning if mouse is down
+      if (dragStartRef.current && panStartTransformRef.current) {
+        const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+        
+        // Calculate translation vector (delta from start position)
+        const dx = mouseX - dragStartRef.current.x;
+        const dy = mouseY - dragStartRef.current.y;
+        
+        // Check if we've moved beyond the drag threshold (5 pixels)
+        const dragDistance = Math.sqrt(dx * dx + dy * dy);
+        const dragThreshold = 5;
+        
+        if (dragDistance >= dragThreshold) {
+          // Start panning only after threshold is crossed
+          if (!isPanningRef.current) {
+            isPanningRef.current = true;
+            overlay.style('cursor', 'grabbing');
+          }
+          
+          event.preventDefault();
+          isDraggingRef.current = true;
+          
+          // Create new transform by adding translation to the start transform
+          const newTransform = clampTransform(panStartTransformRef.current.translate(dx, dy), width, height);
 
-    const vertexDistances = new Set(originalVertices.map(v => v.point.distance));
+          // Update the transform and render in real-time
+          savedZoomTransformRef.current = newTransform;
+          updateElementsWithTransform(newTransform);
+          return; // Don't process hover when panning
+        }
+        // If below threshold, don't pan yet but also don't process hover
+        return;
+      }
+      
+      // Continue with hover handling if not panning (will be handled by hover handler below)
+    });
+    
+    overlay.on('mouseup', function(event: MouseEvent) {
+      if (!dragStartRef.current || !panStartTransformRef.current) {
+        return;
+      }
+      
+      // Only apply translation if we actually panned (crossed threshold)
+      if (isPanningRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        
+        const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+        
+        // Calculate final translation vector
+        const dx = mouseX - dragStartRef.current.x;
+        const dy = mouseY - dragStartRef.current.y;
+        
+        // Apply final translation
+        const finalTransform = clampTransform(panStartTransformRef.current.translate(dx, dy), width, height);
+        savedZoomTransformRef.current = finalTransform;
+        
+        // Update the d3.zoom behavior's transform so it persists
+        overlay.call(zoomBehavior.transform as any, finalTransform);
+        
+        // Update elements with final transform
+        updateElementsWithTransform(finalTransform);
+      }
+      
+      // Update cursor
+      const currentTransform = savedZoomTransformRef.current || d3.zoomIdentity;
+      if (currentTransform.k > 1) {
+        overlay.style('cursor', 'grab');
+      } else {
+        overlay.style('cursor', 'crosshair');
+      }
+      
+      // Reset drag state after a delay to allow click handler to check it
+      setTimeout(() => {
+        isDraggingRef.current = false;
+        isPanningRef.current = false;
+        dragStartRef.current = null;
+        panStartTransformRef.current = null;
+      }, 10);
+    });
+    
+    overlay.on('mouseleave', function() {
+      // If mouse leaves while dragging, finalize the pan only if we were actually panning
+      if (dragStartRef.current && panStartTransformRef.current && isPanningRef.current) {
+        // Get the current transform (which should already be updated from mousemove)
+        const currentTransform = savedZoomTransformRef.current || d3.zoomIdentity;
+        
+        // Make sure the transform is saved and persisted in d3.zoom
+        savedZoomTransformRef.current = currentTransform;
+        overlay.call(zoomBehavior.transform as any, currentTransform);
+        updateElementsWithTransform(currentTransform);
+      }
+      
+      // Update cursor
+      const currentTransform = savedZoomTransformRef.current || d3.zoomIdentity;
+      if (currentTransform.k > 1) {
+        overlay.style('cursor', 'grab');
+      } else {
+        overlay.style('cursor', 'crosshair');
+      }
+      
+      // Reset drag state
+      isDraggingRef.current = false;
+      isPanningRef.current = false;
+      dragStartRef.current = null;
+      panStartTransformRef.current = null;
+    });
+
+    const vertexDistanceSet = new Set(originalVertices.map(v => v.point.distance));
 
     overlay.on('click', function (event: MouseEvent) {
+      // Only handle click if we didn't drag (to avoid breaking click selection)
+      if (isDraggingRef.current) {
+        isDraggingRef.current = false;
+        dragStartRef.current = null;
+        return;
+      }
+      
       if (profileWithPlan.length === 0) return;
       const [mouseX] = d3.pointer(event, g.node() as SVGGElement);
       let closestPoint: typeof profileWithPlan[0] | null = null;
       let closestDistance = Infinity;
       for (const point of profileWithPlan) {
-        if (Array.from(vertexDistances).some(d => Math.abs(d - point.distance) < 1e-6)) {
+        if (Array.from(vertexDistanceSet).some(d => Math.abs(d - point.distance) < 1e-6)) {
           continue; // skip original user vertices
         }
         const dx = Math.abs(currentXScale(point.distance) - mouseX);
@@ -1388,71 +1757,47 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       setClimbAmountInput('');
       setClimbAmountError(null);
       setEditingClimb(null); // Clear any editing state when creating a new climb
+      setCustomClimbRatio('');
+      setCustomDescentRatio('');
       setIsClimbAmountOpen(true);
     });
 
     // Allow right-click to open the existing point context menu even with the overlay present
     overlay.on('contextmenu', function (event: MouseEvent) {
-      console.log('[OVERLAY] Overlay contextmenu event fired', {
-        clientX: event.clientX,
-        clientY: event.clientY,
-        target: (event.target as any)?.tagName,
-        currentTarget: (event.currentTarget as any)?.tagName
-      });
-      
       // Check if we're clicking on a climb marker first - if so, show climb context menu
       // Use a larger threshold (15px) to ensure we catch clicks on climb markers even if slightly off
       const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
-      console.log('[OVERLAY] Mouse position in SVG coordinates:', { mouseX, mouseY });
       
-      let clickedClimb: { endDistance: number; climbAmount: number } | null = null;
+      let clickedClimb: { endDistance: number; climbAmount: number; climbRatio?: number; descentRatio?: number } | null = null;
 
       // Check for climb end markers with higher priority and larger threshold
-      console.log('[OVERLAY] Checking', climbRequests.length, 'climb requests for proximity');
       for (const climb of climbRequests) {
         const climbX = currentXScale(climb.endDistance);
         const climbY = currentYScale(getPlannedAltitudeAtDistance(climb.endDistance));
         const distToClimb = Math.sqrt(Math.pow(climbX - mouseX, 2) + Math.pow(climbY - mouseY, 2));
-        
-        console.log('[OVERLAY] Climb check:', {
-          endDistance: climb.endDistance,
-          climbAmount: climb.climbAmount,
-          climbX,
-          climbY,
-          distToClimb,
-          threshold: 15,
-          withinThreshold: distToClimb < 15
-        });
-        
+
         // Use 15px threshold to ensure we catch clicks on climb markers
         if (distToClimb < 15) {
-          clickedClimb = { endDistance: climb.endDistance, climbAmount: climb.climbAmount };
-          console.log('[OVERLAY] ✓ Click detected on climb marker:', clickedClimb);
+          clickedClimb = { endDistance: climb.endDistance, climbAmount: climb.climbAmount, climbRatio: climb.climbRatio, descentRatio: climb.descentRatio };
           break;
         }
       }
 
       // If clicking on a climb marker, show the climb context menu and prevent regular menu
       if (clickedClimb) {
-        console.log('[OVERLAY] Processing climb marker click - preventing default and showing climb menu');
         event.preventDefault();
         event.stopPropagation();
         const clickX = event.clientX || (event as MouseEvent).clientX;
         const clickY = event.clientY || (event as MouseEvent).clientY;
         // Close regular context menu if open
-        console.log('[OVERLAY] Closing regular context menu, opening climb context menu');
         setContextMenu(null);
-        setClimbContextMenu({ x: clickX, y: clickY, endDistance: clickedClimb.endDistance, climbAmount: clickedClimb.climbAmount });
-        console.log('[OVERLAY] Climb context menu set, returning early');
+        setClimbContextMenu({ x: clickX, y: clickY, endDistance: clickedClimb.endDistance, climbAmount: clickedClimb.climbAmount, climbRatio: clickedClimb.climbRatio, descentRatio: clickedClimb.descentRatio });
         return; // Don't show regular context menu
-      } else {
-        console.log('[OVERLAY] No climb marker detected, checking for regular points');
       }
 
       // Check if we're clicking on an input point
       let clickedInputPoint: { point: ElevationPoint; index: number; isFlight: boolean } | null = null;
 
-      console.log('[OVERLAY] Checking', originalVertices.length, 'original vertices for proximity');
       if (originalVertices.length > 0) {
         for (const vertex of originalVertices) {
           const pointX = currentXScale(vertex.point.distance);
@@ -1463,25 +1808,11 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           const distToGround = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(groundY - mouseY, 2));
           const distToFlight = Math.sqrt(Math.pow(pointX - mouseX, 2) + Math.pow(flightY - mouseY, 2));
 
-          console.log('[OVERLAY] Vertex check:', {
-            index: vertex.index,
-            distance: vertex.point.distance,
-            pointX,
-            groundY,
-            flightY,
-            distToGround,
-            distToFlight,
-            withinGroundThreshold: distToGround < 10,
-            withinFlightThreshold: distToFlight < 10
-          });
-
           if (distToGround < 10) {
             clickedInputPoint = { point: vertex.point, index: vertex.index, isFlight: false };
-            console.log('[OVERLAY] ✓ Click detected on ground point, index:', vertex.index);
             break;
           } else if (distToFlight < 10) {
             clickedInputPoint = { point: vertex.point, index: vertex.index, isFlight: true };
-            console.log('[OVERLAY] ✓ Click detected on flight point, index:', vertex.index);
             break;
           }
         }
@@ -1489,30 +1820,61 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
       // If clicking on an input point, trigger the context menu for that point
       if (clickedInputPoint) {
-        console.log('[OVERLAY] Processing regular point click - showing regular context menu');
         event.preventDefault();
         event.stopPropagation();
         const clickX = event.clientX || (event as MouseEvent).clientX;
         const clickY = event.clientY || (event as MouseEvent).clientY;
         // Close climb context menu if open
-        console.log('[OVERLAY] Closing climb context menu, opening regular context menu for point index:', clickedInputPoint.index);
         setClimbContextMenu(null);
         setContextMenu({
           x: clickX,
           y: clickY,
           pointIndex: clickedInputPoint.index
         });
-        console.log('[OVERLAY] Regular context menu set');
       } else {
         // If not clicking on an input point, prevent default to avoid browser context menu
-        console.log('[OVERLAY] No point detected, preventing default browser menu');
         event.preventDefault();
       }
     });
 
     // Hover interactions reuse the same overlay
     if (onElevationPointHover) {
+      // Replace the mousemove handler to include both panning and hover
       overlay.on('mousemove', function (event: MouseEvent) {
+        // First, handle panning if mouse is down
+        if (dragStartRef.current && panStartTransformRef.current) {
+          const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
+          
+          // Calculate translation vector (delta from start position)
+          const dx = mouseX - dragStartRef.current.x;
+          const dy = mouseY - dragStartRef.current.y;
+          
+          // Check if we've moved beyond the drag threshold (5 pixels)
+          const dragDistance = Math.sqrt(dx * dx + dy * dy);
+          const dragThreshold = 5;
+          
+          if (dragDistance >= dragThreshold) {
+            // Start panning only after threshold is crossed
+            if (!isPanningRef.current) {
+              isPanningRef.current = true;
+              overlay.style('cursor', 'grabbing');
+            }
+            
+            event.preventDefault();
+            isDraggingRef.current = true;
+            
+            // Create new transform by adding translation to the start transform
+            const newTransform = panStartTransformRef.current.translate(dx, dy);
+            
+            // Update the transform and render in real-time
+            savedZoomTransformRef.current = newTransform;
+            updateElementsWithTransform(newTransform);
+            return; // Don't process hover when panning
+          }
+          // If below threshold, don't pan yet but also don't process hover
+          return;
+        }
+        
         const [mouseX, mouseY] = d3.pointer(event, g.node() as SVGGElement);
 
         // Check if we're near any input point (ground or flight points)
@@ -1630,13 +1992,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       });
     }
 
-    // Restore saved zoom transform after all elements and event handlers are set up
-    if (savedZoomTransformRef.current) {
-      // Use requestAnimationFrame to ensure DOM is fully ready
-      requestAnimationFrame(() => {
-        d3.select(overlay.node() as any).call(zoomBehavior.transform as any, savedZoomTransformRef.current!);
-      });
-    }
+    // Note: Zoom/pan state is managed via viewWindow state, no need to restore d3.zoom transform
 
   }, [
     elevationProfile,
@@ -1651,6 +2007,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     onEditPointRequest,
     onElevationPointHover,
     hoveredPoint,
+    containerWidth, // Include container width to trigger re-render when it changes (for export)
+    containerHeight,
     activeClimbStartDistance,
     getPlannedAltitudeAtDistance,
     isLocationInForbiddenClimbArea,
@@ -1669,15 +2027,23 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return;
     }
     const absClimbAmount = Math.abs(parsed);
-    if (absClimbAmount < climbConfig.minClimb || absClimbAmount > climbConfig.maxClimb) {
+    // minClimb applies to both increases and decreases
+    if (absClimbAmount < climbConfig.minClimb) {
       setClimbAmountError(
-        `ערך העלייה חייב להיות בין ${climbConfig.minClimb} ל-${climbConfig.maxClimb} מטרים (ערך נוכחי: ${absClimbAmount.toFixed(1)} מ').`
+        `ערך העלייה חייב להיות לפחות ${climbConfig.minClimb} מטרים (ערך נוכחי: ${absClimbAmount.toFixed(1)} מ').`
+      );
+      return;
+    }
+    // maxClimb only applies to increases (positive values), not decreases
+    if (parsed > 0 && parsed > climbConfig.maxClimb) {
+      setClimbAmountError(
+        `ערך העלייה חייב להיות לכל היותר ${climbConfig.maxClimb} מטרים (ערך נוכחי: ${parsed.toFixed(1)} מ').`
       );
       return;
     }
     const baseAfterExisting = (() => {
-      const startElevation = elevationProfile[0].elevation;
-      const constantAltitude = startElevation + nominalFlightHeight;
+      // Entry height (nominalFlightHeight) is ASL, so base altitude is nominalFlightHeight directly
+      const constantAltitude = nominalFlightHeight;
       let currentBase: BaseAltitudeSample[] = elevationProfile.map((p) => ({
         distance: p.distance,
         baseAltitude: constantAltitude,
@@ -1694,14 +2060,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         : climbRequests;
       const sorted = [...climbsToProcess].sort((a, b) => a.endDistance - b.endDistance);
       sorted.forEach((c) => {
-        const activeRatio = c.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+        const activeRatio = c.climbAmount > 0
+          ? (c.climbRatio ?? climbConfig.climbRatio)
+          : (c.descentRatio ?? climbConfig.descentRatio);
         const requiredHorizontal = Math.abs(c.climbAmount) * activeRatio;
         const startDistance = Math.max(0, c.endDistance - requiredHorizontal);
         const res = computeClimbProfile(
           startDistance,
           c.climbAmount,
-          climbConfig.climbRatio,
-          climbConfig.descentRatio,
+          c.climbRatio ?? climbConfig.climbRatio,
+          c.descentRatio ?? climbConfig.descentRatio,
           climbConfig.allowTurnsDuringClimb,
           flightPath,
           currentBase,
@@ -1717,14 +2085,16 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       return currentBase;
     })();
 
-    const activeRatio = parsed > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+    const submitClimbRatio = parseFloat(customClimbRatio) > 0 ? parseFloat(customClimbRatio) : climbConfig.climbRatio;
+    const submitDescentRatio = parseFloat(customDescentRatio) > 0 ? parseFloat(customDescentRatio) : climbConfig.descentRatio;
+    const activeRatio = parsed > 0 ? submitClimbRatio : submitDescentRatio;
     const requiredHorizontal = Math.abs(parsed) * activeRatio;
     const startDistance = Math.max(0, pendingClimbEnd - requiredHorizontal);
     const preview = computeClimbProfile(
       startDistance,
       parsed,
-      climbConfig.climbRatio,
-      climbConfig.descentRatio,
+      submitClimbRatio,
+      submitDescentRatio,
       climbConfig.allowTurnsDuringClimb,
       flightPath,
       baseAfterExisting,
@@ -1752,7 +2122,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         continue;
       }
       
-      const existingRatio = existingClimb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const existingRatio = existingClimb.climbAmount > 0
+        ? (existingClimb.climbRatio ?? climbConfig.climbRatio)
+        : (existingClimb.descentRatio ?? climbConfig.descentRatio);
       const existingRequiredHorizontal = Math.abs(existingClimb.climbAmount) * existingRatio;
       const existingStart = Math.max(0, existingClimb.endDistance - existingRequiredHorizontal);
       const existingEnd = existingClimb.endDistance;
@@ -1785,21 +2157,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
       if (minDist < climbConfig.vertexProximityMeters) {
         const msg = intervalsOverlap
-          ? `New climb (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') overlaps with existing climb ` +
-          `(${existingStart.toFixed(1)} מ' - ${existingEnd.toFixed(1)} מ'). Climbs cannot overlap.`
-          : `New climb (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') is too close to existing climb ` +
+          ? `עלייה חדשה (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') חופפת עם עלייה קיימת ` +
+          `(${existingStart.toFixed(1)} מ' - ${existingEnd.toFixed(1)} מ'). אין אפשרות להדבק בין עליות.`
+          : `עלייה חדשה (${newClimbStart.toFixed(1)} מ' - ${newClimbEnd.toFixed(1)} מ') קרובה מדי לעלייה קיימת ` +
           `(${existingStart.toFixed(1)} מ' - ${existingEnd.toFixed(1)} מ'). ` +
-          `Minimum distance required: ${climbConfig.vertexProximityMeters} מ' (current: ${minDist.toFixed(1)} מ').`;
+          `מרחק מינימלי נדרש: ${climbConfig.vertexProximityMeters} מ' (נוכחי: ${minDist.toFixed(1)} מ').`;
         console.log('VALIDATION FAILED:', msg);
         setClimbAmountError(msg);
-        setClimbValidationPopup(msg);
         return;
       }
     }
 
     const notReachable =
-      !climbConfig.allowTurnsDuringClimb &&
-      (Math.abs(preview.appliedClimb - parsed) > 1e-3 || (preview.warnings?.length ?? 0) > 0);
+      Math.abs(preview.appliedClimb - parsed) > 1e-3 ||
+      (!climbConfig.allowTurnsDuringClimb && (preview.warnings?.length ?? 0) > 0);
 
     if (notReachable) {
       console.log('Climb not reachable:', {
@@ -1808,12 +2179,24 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         warnings: preview.warnings,
         notReachable
       });
-      const msg = 'Climb cancelled: turns are disabled and the requested elevation change cannot be reached at this point.';
-      setClimbAmountError('Cannot reach requested climb with turns disabled; adjust amount or enable turns.');
-      setClimbValidationPopup(msg);
+      setClimbAmountError(
+        preview.warnings?.length
+          ? preview.warnings[0]
+          : 'לא ניתן להגיע לעלייה המבוקשת. התאם את הכמות או הפעל פניות בעלייה.'
+      );
       return;
     }
 
+    // Find anchor points for this climb
+    const anchors = findAnchorPointsForClimb(pendingClimbEnd, flightPath);
+    console.log('[CLIMB_CREATE] Creating climb point:', {
+      endDistance: pendingClimbEnd,
+      climbAmount: parsed,
+      anchors,
+      flightPathLength: flightPath.length,
+      flightPathIds: flightPath.map(p => ({ id: p.id, lng: p.lng, lat: p.lat }))
+    });
+    
     setClimbRequests((prev) => {
       // If editing, remove the specific climb being edited; otherwise remove any climb at the same endDistance
       const filtered = editingClimb
@@ -1823,13 +2206,35 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 Math.abs(c.climbAmount - editingClimb.climbAmount) < 0.01)
           )
         : prev.filter((c) => Math.abs(c.endDistance - pendingClimbEnd) > 0.01);
-      return [...filtered, { endDistance: pendingClimbEnd, climbAmount: parsed }].sort((a, b) => a.endDistance - b.endDistance);
+      
+      // Create new climb request with anchor IDs, segment ratio, and optional per-point ratio overrides
+      const newClimb: ClimbRequest = {
+        endDistance: pendingClimbEnd,
+        climbAmount: parsed,
+        ...(anchors && {
+          anchorPointIdA: anchors.anchorPointIdA,
+          anchorPointIdB: anchors.anchorPointIdB,
+          segmentRatio: anchors.segmentRatio
+        }),
+        ...(parseFloat(customClimbRatio) > 0 && { climbRatio: parseFloat(customClimbRatio) }),
+        ...(parseFloat(customDescentRatio) > 0 && { descentRatio: parseFloat(customDescentRatio) })
+      };
+      
+      console.log('[CLIMB_CREATE] New climb created:', {
+        ...newClimb,
+        hasAnchors: !!(newClimb.anchorPointIdA && newClimb.anchorPointIdB),
+        hasRatio: newClimb.segmentRatio !== undefined
+      });
+      
+      return [...filtered, newClimb].sort((a, b) => a.endDistance - b.endDistance);
     });
     setIsClimbAmountOpen(false);
     setPendingClimbEnd(null);
     setClimbAmountError(null);
-    setEditingClimb(null); // Clear editing state after confirming
-  }, [climbAmountInput, pendingClimbEnd, climbRequests, climbConfig, flightPath, elevationProfile, nominalFlightHeight, setClimbRequests, editingClimb]);
+    setEditingClimb(null);
+    setCustomClimbRatio('');
+    setCustomDescentRatio('');
+  }, [climbAmountInput, pendingClimbEnd, climbRequests, climbConfig, flightPath, elevationProfile, nominalFlightHeight, setClimbRequests, editingClimb, customClimbRatio, customDescentRatio]);
 
   const handleRemoveClimb = useCallback(() => {
     setShowDeleteAllConfirmation(true);
@@ -1844,6 +2249,57 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   const handleCancelDeleteAll = useCallback(() => {
     setShowDeleteAllConfirmation(false);
   }, []);
+
+  // Handle Enter in climb amount modal
+  useEffect(() => {
+    if (!isClimbAmountOpen) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleConfirmClimb();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [isClimbAmountOpen, handleConfirmClimb]);
+
+  // Handle Enter in climb validation popup
+  useEffect(() => {
+    if (!climbValidationPopup) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        setClimbValidationPopup(null);
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [climbValidationPopup]);
+
+  // Handle Enter in delete-all confirmation
+  useEffect(() => {
+    if (!showDeleteAllConfirmation) return;
+
+    const handleEnter = (event: KeyboardEvent) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        handleConfirmDeleteAll();
+      }
+    };
+
+    document.addEventListener('keydown', handleEnter);
+    return () => {
+      document.removeEventListener('keydown', handleEnter);
+    };
+  }, [showDeleteAllConfirmation, handleConfirmDeleteAll]);
 
   const handleRemoveSingleClimb = useCallback((endDistance: number, climbAmount: number) => {
     console.log('========================================');
@@ -1982,50 +2438,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
     });
   }, [setClimbRequests]);
 
-  const openClimbConfig = useCallback(() => {
-    setClimbConfigDraft(toDraft(climbConfig));
-    setClimbConfigError(null);
-    setIsClimbConfigOpen(true);
-  }, [climbConfig]);
-
-  const handleSaveClimbConfig = useCallback(() => {
-    const climb = parseFloat(climbConfigDraft.climbRatio);
-    // If linked, use climb ratio for descent as well
-    const descent = climbConfigDraft.linkRatios ? climb : parseFloat(climbConfigDraft.descentRatio);
-    const proximity = parseFloat(climbConfigDraft.vertexProximityMeters);
-    const minClimb = parseFloat(climbConfigDraft.minClimb);
-    const maxClimb = parseFloat(climbConfigDraft.maxClimb);
-
-    if (!Number.isFinite(climb) || climb <= 0 || !Number.isFinite(descent) || descent <= 0) {
-      setClimbConfigError('Ratios must be greater than 0.');
-      return;
-    }
-    if (!Number.isFinite(proximity) || proximity < 0) {
-      setClimbConfigError('Vertex proximity must be >= 0.');
-      return;
-    }
-    if (!Number.isFinite(minClimb) || !Number.isFinite(maxClimb)) {
-      setClimbConfigError('Min and max climb must be valid numbers.');
-      return;
-    }
-    if (minClimb >= maxClimb) {
-      setClimbConfigError('Min climb must be less than max climb.');
-      return;
-    }
-    setClimbConfig({
-      climbRatio: climb,
-      descentRatio: descent,
-      allowTurnsDuringClimb: climbConfigDraft.allowTurnsDuringClimb,
-      linkRatios: climbConfigDraft.linkRatios,
-      vertexProximityMeters: proximity,
-      minClimb: minClimb,
-      maxClimb: maxClimb
-    });
-    onSelectClimbPreset('custom');
-    setIsClimbConfigOpen(false);
-    setClimbConfigError(null);
-  }, [climbConfigDraft, onSelectClimbPreset]);
-
   const resetZoom = useCallback(() => {
     if (!zoomBehaviorRef.current || !overlayRef.current) return;
     const identity = d3.zoomIdentity;
@@ -2058,89 +2470,338 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
   }, []);
 
   const exportPNG = () => {
-    if (!svgRef.current) return;
+    if (!svgRef.current || !containerRef.current) return;
 
-    // Calculate statistics based on flight altitude (planned altitude)
-    let totalAscent = 0;
-    let totalDescent = 0;
-    for (let i = 1; i < elevationProfile.length; i++) {
-      const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? (elevationProfile[i - 1].elevation + nominalFlightHeight);
-      const currAltitude = elevationProfile[i].plannedAltitude ?? (elevationProfile[i].elevation + nominalFlightHeight);
-      const altitudeDiff = currAltitude - prevAltitude;
-      if (altitudeDiff > 0) {
-        totalAscent += altitudeDiff;
-      } else if (altitudeDiff < 0) {
-        totalDescent += Math.abs(altitudeDiff);
-      }
+    // Calculate maximum width for export (window width - minimum map width - padding)
+    // Minimum map width is 300px, add some padding for splitter and margins
+    const minMapWidth = 300;
+    const splitterWidth = 8;
+    const padding = 20;
+    const maxExportWidth = window.innerWidth - minMapWidth - splitterWidth - padding;
+    // Use a reasonable minimum (at least 800px) and maximum (2000px) for export
+    const exportWidth = Math.max(800, Math.min(2000, maxExportWidth));
+    
+    // Reset zoom to full extent for export, then restore after.
+    // We must ALSO apply identity to the D3 overlay node so that
+    // d3.zoomTransform(overlayNode) returns identity during the re-render
+    // triggered by the container resize (otherwise the re-render reads the
+    // old zoomed transform from D3's internal state and re-applies it).
+    const savedTransform = savedZoomTransformRef.current;
+    savedZoomTransformRef.current = d3.zoomIdentity;
+    if (overlayRef.current && zoomBehaviorRef.current) {
+      d3.select(overlayRef.current.node() as any).call(
+        zoomBehaviorRef.current.transform as any,
+        d3.zoomIdentity
+      );
     }
 
-    const minElevation = Math.min(...elevationProfile.map(p => p.elevation));
-    const maxElevation = Math.max(...elevationProfile.map(p => p.elevation));
-    const elevationRange = maxElevation - minElevation;
-    const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
-
-    // Find minimum flight height across all points (considering climb points)
-    const minFlightHeight = Math.min(
-      ...elevationProfile.map(p => {
-        const plannedAlt = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
-        return plannedAlt - p.elevation;
-      })
-    );
-
-    // Find point with minimum elevation
-    const minElevationPoint = elevationProfile.reduce((min, p) => 
-      p.elevation < min.elevation ? p : min
-    );
-    const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? (minElevationPoint.elevation + nominalFlightHeight);
-    const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
-
-    // Change legend text-anchor to 'start' for PNG export
-    const legendTexts = svgRef.current.querySelectorAll('.legend-text');
-    const originalTextAnchors: string[] = [];
-    legendTexts.forEach((text, index) => {
-      const svgText = text as SVGTextElement;
-      originalTextAnchors[index] = svgText.style.textAnchor || 'end';
-      svgText.style.textAnchor = 'start';
+    // Store original container width and style
+    const originalStyleWidth = containerRef.current.style.width;
+    const originalStyleMinWidth = containerRef.current.style.minWidth;
+    
+    // Temporarily set container to maximum width for export
+    containerRef.current.style.width = `${exportWidth}px`;
+    containerRef.current.style.minWidth = `${exportWidth}px`;
+    
+    // Force a reflow to ensure the container resizes
+    containerRef.current.offsetHeight;
+    
+    // Calculate expected dimensions (left margin fits y-axis ticks + labels for PNG export)
+    const margin = { top: 20, right: 80, bottom: 110, left: 80 };
+    const legendWidth = 0;
+    const expectedChartWidth = exportWidth - margin.left - margin.right - legendWidth;
+    const expectedSvgWidth = expectedChartWidth + margin.left + margin.right + legendWidth;
+    
+    // Use ResizeObserver to detect when container actually resizes
+    // Then wait for chart to re-render
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.width >= exportWidth - 5) {
+          // Container has resized, now wait for chart to re-render
+          resizeObserver.disconnect();
+          
+          // Wait for the chart rendering useEffect to run
+          // Use multiple requestAnimationFrame calls and a delay
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              setTimeout(() => {
+                // Verify the chart has actually re-rendered at the new width
+                if (svgRef.current) {
+                  const currentSvgWidth = parseFloat(svgRef.current.getAttribute('width') || '0');
+                  if (Math.abs(currentSvgWidth - expectedSvgWidth) > 10) {
+                    // Chart hasn't re-rendered yet, wait a bit more
+                    setTimeout(() => {
+                      performExport();
+                    }, 300);
+                    return;
+                  }
+                }
+                
+                performExport();
+              }, 200);
+            });
+          });
+          return;
+        }
+      }
     });
+    
+    resizeObserver.observe(containerRef.current);
+    
+    // Fallback: if ResizeObserver doesn't fire within 1 second, proceed anyway
+    setTimeout(() => {
+      resizeObserver.disconnect();
+      performExport();
+    }, 1000);
+    
+    function performExport() {
+        // Calculate statistics based on flight altitude (planned altitude)
+        // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
+        let totalAscent = 0;
+        let totalDescent = 0;
+        for (let i = 1; i < elevationProfile.length; i++) {
+          const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? nominalFlightHeight;
+          const currAltitude = elevationProfile[i].plannedAltitude ?? nominalFlightHeight;
+          const altitudeDiff = currAltitude - prevAltitude;
+          if (altitudeDiff > 0) {
+            totalAscent += altitudeDiff;
+          } else if (altitudeDiff < 0) {
+            totalDescent += Math.abs(altitudeDiff);
+          }
+        }
 
-    const svgData = new XMLSerializer().serializeToString(svgRef.current);
+        const minElevation = Math.min(...elevationProfile.map(p => p.elevation));
+        const maxElevation = Math.max(
+          ...elevationProfile.map(p => p.elevation),
+          ...elevationProfile.map(p => p.maxElevation ?? -Infinity).filter(v => v !== -Infinity)
+        );
+        const elevationRange = maxElevation - minElevation;
+        const totalDistance = elevationProfile[elevationProfile.length - 1]?.distance || 0;
 
-    // Restore original text-anchor for web display
-    legendTexts.forEach((text, index) => {
-      const svgText = text as SVGTextElement;
-      svgText.style.textAnchor = originalTextAnchors[index];
-    });
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const img = new Image();
+        // For each point, calculate height from maximum and height from minimum
+        // Use point.minElevation and point.maxElevation (per-point values) if available, otherwise use point.elevation
+        // This matches the calculation in CoordinateTooltip
+        // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
+        const heightsFromMax = elevationProfile.map(p => {
+          const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
+          // Use point.maxElevation if available, otherwise use point.elevation (matches tooltip logic)
+          const maxElev = p.maxElevation !== undefined ? p.maxElevation : p.elevation;
+          return plannedAlt - maxElev;
+        });
+        const heightsFromMin = elevationProfile.map(p => {
+          const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
+          // Use point.minElevation if available, otherwise use point.elevation (matches tooltip logic)
+          const minElev = p.minElevation !== undefined ? p.minElevation : p.elevation;
+          return plannedAlt - minElev;
+        });
 
-    const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(svgBlob);
+        // Minimum flight height = minimum of all "height from maximum" values
+        const minFlightHeight = Math.min(...heightsFromMax);
 
-    img.onload = () => {
-      // Add extra height for statistics
-      const statsHeight = 100;
-      canvas.width = img.width;
-      canvas.height = img.height + statsHeight;
+        // Maximum flight height = maximum of all "height from minimum" values
+        const maxHeightFromMinPoint = Math.max(...heightsFromMin);
 
-      if (ctx) {
+        // Change legend text-anchor to 'start' for PNG export
+        const legendTexts = svgRef.current!.querySelectorAll('.legend-text');
+        const originalTextAnchors: string[] = [];
+        legendTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          originalTextAnchors[index] = svgText.style.textAnchor || 'end';
+          svgText.style.textAnchor = 'start';
+        });
+
+        // Hide the vertical line for selected point (red dashed line) before export
+        const selectedPointLines = svgRef.current!.querySelectorAll('line[stroke="#ff0000"]');
+        const originalLineOpacities: string[] = [];
+        selectedPointLines.forEach((line, index) => {
+          const svgLine = line as SVGLineElement;
+          originalLineOpacities[index] = svgLine.style.opacity || svgLine.getAttribute('opacity') || '1';
+          svgLine.style.opacity = '0';
+          svgLine.setAttribute('opacity', '0');
+        });
+
+        // Also hide hover line (purple dashed line) if present
+        const hoverLines = svgRef.current!.querySelectorAll('line[stroke="#9B59B6"]');
+        const originalHoverLineOpacities: string[] = [];
+        hoverLines.forEach((line, index) => {
+          const svgLine = line as SVGLineElement;
+          originalHoverLineOpacities[index] = svgLine.style.opacity || svgLine.getAttribute('opacity') || '1';
+          svgLine.style.opacity = '0';
+          svgLine.setAttribute('opacity', '0');
+        });
+
+        // Hide hover point marker (purple circle) if present
+        const hoverMarkers = svgRef.current!.querySelectorAll('circle[fill="#9B59B6"]');
+        const originalHoverMarkerOpacities: string[] = [];
+        hoverMarkers.forEach((marker, index) => {
+          const svgCircle = marker as SVGCircleElement;
+          originalHoverMarkerOpacities[index] = svgCircle.style.opacity || svgCircle.getAttribute('opacity') || '1';
+          svgCircle.style.opacity = '0';
+          svgCircle.setAttribute('opacity', '0');
+        });
+
+        // PNG only: x-axis tick labels RTL
+        const xAxisTexts = svgRef.current!.querySelectorAll('.x-axis text');
+        const originalXAxisDirection: string[] = [];
+        const originalXAxisTextAnchor: string[] = [];
+        xAxisTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          originalXAxisDirection[index] = svgText.style.direction ?? '';
+          originalXAxisTextAnchor[index] = svgText.style.textAnchor ?? '';
+          svgText.style.direction = 'rtl';
+          svgText.style.textAnchor = 'start';
+        });
+
+        // PNG only: bring y-axis tick labels closer to the axis (reduce effective tickPadding)
+        const yAxisTexts = svgRef.current!.querySelectorAll('.y-axis text');
+        const originalYAxisX: string[] = [];
+        const originalYAxisDx: string[] = [];
+        const pngYAxisLabelOffset = 12; // distance from axis in PNG (on-screen uses tickPadding 52)
+        yAxisTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          originalYAxisX[index] = svgText.getAttribute('x') ?? '';
+          originalYAxisDx[index] = svgText.getAttribute('dx') ?? '';
+          svgText.setAttribute('x', String(-pngYAxisLabelOffset));
+          svgText.setAttribute('dx', '0');
+        });
+
+        const svgData = new XMLSerializer().serializeToString(svgRef.current!);
+
+        // Restore y-axis label spacing for web display
+        yAxisTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          if (originalYAxisX[index] !== '') {
+            svgText.setAttribute('x', originalYAxisX[index]);
+          } else {
+            svgText.removeAttribute('x');
+          }
+          if (originalYAxisDx[index] !== '') {
+            svgText.setAttribute('dx', originalYAxisDx[index]);
+          } else {
+            svgText.removeAttribute('dx');
+          }
+        });
+
+        // Restore x-axis direction for web display
+        xAxisTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          svgText.style.direction = originalXAxisDirection[index];
+          svgText.style.textAnchor = originalXAxisTextAnchor[index];
+        });
+
+        // Restore original text-anchor for web display
+        legendTexts.forEach((text, index) => {
+          const svgText = text as SVGTextElement;
+          svgText.style.textAnchor = originalTextAnchors[index];
+        });
+
+        // Restore original line opacity for web display
+        selectedPointLines.forEach((line, index) => {
+          const svgLine = line as SVGLineElement;
+          svgLine.style.opacity = originalLineOpacities[index];
+          if (originalLineOpacities[index] === '1') {
+            svgLine.removeAttribute('opacity');
+          } else {
+            svgLine.setAttribute('opacity', originalLineOpacities[index]);
+          }
+        });
+
+        // Restore hover line opacity for web display
+        hoverLines.forEach((line, index) => {
+          const svgLine = line as SVGLineElement;
+          svgLine.style.opacity = originalHoverLineOpacities[index];
+          if (originalHoverLineOpacities[index] === '1') {
+            svgLine.removeAttribute('opacity');
+          } else {
+            svgLine.setAttribute('opacity', originalHoverLineOpacities[index]);
+          }
+        });
+
+        // Restore hover marker opacity for web display
+        hoverMarkers.forEach((marker, index) => {
+          const svgCircle = marker as SVGCircleElement;
+          svgCircle.style.opacity = originalHoverMarkerOpacities[index];
+          if (originalHoverMarkerOpacities[index] === '1') {
+            svgCircle.removeAttribute('opacity');
+          } else {
+            svgCircle.setAttribute('opacity', originalHoverMarkerOpacities[index]);
+          }
+        });
+        
+        // Restore original container width, style, and zoom state
+        savedZoomTransformRef.current = savedTransform;
+        if (overlayRef.current && zoomBehaviorRef.current && savedTransform) {
+          d3.select(overlayRef.current.node() as any).call(
+            zoomBehaviorRef.current.transform as any,
+            savedTransform
+          );
+        }
+        if (containerRef.current) {
+          containerRef.current.style.width = originalStyleWidth;
+          containerRef.current.style.minWidth = originalStyleMinWidth;
+        }
+        
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+
+        const svgBlob = new Blob([svgData], { type: 'image/svg+xml;charset=utf-8' });
+        const url = URL.createObjectURL(svgBlob);
+
+        img.onload = () => {
+          // Add extra height for statistics and a top metadata strip.
+          const topMetadataHeight = 44;
+          const statsHeight = 140;
+          canvas.width = img.width;
+          canvas.height = topMetadataHeight + img.height + statsHeight;
+
+          if (ctx) {
         // Fill canvas with white background
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
+        // Draw top metadata background
+        ctx.fillStyle = '#f9fafb';
+        ctx.fillRect(0, 0, canvas.width, topMetadataHeight);
+
+        // Draw top metadata border
+        ctx.strokeStyle = '#e5e7eb';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, topMetadataHeight);
+        ctx.lineTo(canvas.width, topMetadataHeight);
+        ctx.stroke();
+
+        const statPadding = 20;
+        const topMetadata = [
+          `שם מסלול: ${activeRouteName || '-'}`,
+          `אחוז חפיפה: ${overlapPercentage.toFixed(1)}%`,
+          `רדיוס בטיחות: ${safetyRadius.toFixed(1)} מ'`,
+          `DTM פעיל: ${dtmName || '-'}`
+        ];
+        ctx.fillStyle = '#374151';
+        ctx.font = 'bold 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.textAlign = 'right';
+        if ('direction' in ctx) {
+          (ctx as any).direction = 'rtl';
+        }
+        ctx.fillText(topMetadata.join('   |   '), canvas.width - statPadding, 28);
+
         // Draw the SVG image
-        ctx.drawImage(img, 0, 0);
+        ctx.drawImage(img, 0, topMetadataHeight);
+
+        const statsTopY = topMetadataHeight + img.height;
 
         // Draw statistics background
         ctx.fillStyle = '#f9fafb';
-        ctx.fillRect(0, img.height, canvas.width, statsHeight);
+        ctx.fillRect(0, statsTopY, canvas.width, statsHeight);
 
         // Draw statistics border
         ctx.strokeStyle = '#e5e7eb';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(0, img.height);
-        ctx.lineTo(canvas.width, img.height);
+        ctx.moveTo(0, statsTopY);
+        ctx.lineTo(canvas.width, statsTopY);
         ctx.stroke();
 
         // Configure text style - use Apple system font and right alignment for RTL
@@ -2153,10 +2814,9 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
         }
 
         // Calculate positions for statistics (right-to-left layout)
-        const statPadding = 20;
         const statSpacing = 120;
-        const labelY = img.height + 30;
-        const valueY = img.height + 55;
+        const labelY = statsTopY + 30;
+        const valueY = statsTopY + 55;
 
         // Draw statistics in RTL order (first item on the right)
         const stats = [
@@ -2166,8 +2826,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           { label: 'מרחק כולל:', value: `${totalDistance.toFixed(1)} מ'` },
           { label: 'עלייה כוללת:', value: `${totalAscent.toFixed(1)} מ'` },
           { label: 'ירידה כוללת:', value: `${totalDescent.toFixed(1)} מ'` },
-          { label: 'גובה טיסה מקסימלי:', value: `${maxHeightFromMinPoint.toFixed(1)} מ'` },
-          { label: 'גובה טיסה מינימלי:', value: `${minFlightHeight.toFixed(1)} מ'` }
+          { label: 'גובה תוצר מקסימלי:', value: `${maxHeightFromMinPoint.toFixed(1)} מ'` },
+          { label: 'גובה בטיחות מינימלי:', value: `${minFlightHeight.toFixed(1)} מ'` }
         ];
 
         let xPos = canvas.width - statPadding;
@@ -2192,46 +2852,63 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
 
           xPos -= statSpacing;
         });
-      }
 
-      canvas.toBlob((blob) => {
-        if (blob) {
-          const url = URL.createObjectURL(blob);
+          }
 
-          // Open image in new tab
-          window.open(url, '_blank');
+          canvas.toBlob((blob) => {
+            if (blob) {
+              // Generate default filename with route name if available
+              const routeName = activeRouteName ? `${activeRouteName}-` : '';
+              const defaultFilename = `${routeName}elevation-profile-${Date.now()}.png`;
+              
+              // Show save dialog
+              setSaveFileDialog({
+                isOpen: true,
+                defaultFilename,
+                fileContent: blob,
+                mimeType: 'image/png'
+              });
+              
+              // Clean up the SVG URL
+              URL.revokeObjectURL(url);
+            }
+          });
+        };
 
-          // Also download the image
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `elevation-profile-${Date.now()}.png`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-
-          // Clean up the URL after a delay to allow the new tab to load
-          setTimeout(() => URL.revokeObjectURL(url), 100);
-        }
-      });
-    };
-
-    img.src = url;
+        img.src = url;
+    }
   };
 
   const exportCSV = () => {
     if (elevationProfile.length === 0) return;
 
-    const headers = ['Distance (מ\')', 'Ground Elevation (מ\')', 'Flight Altitude (מ\')', 'AGL (מ\')', 'Longitude', 'Latitude'];
+    const headers = [
+      'Distance (מ\')',
+      'Ground Elevation (מ\')',
+      'Flight Altitude (מ\')',
+      'AGL (מ\')',
+      'Longitude',
+      'Latitude',
+      'UTM Easting',
+      'UTM Northing',
+      'UTM Zone'
+    ];
+    // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
     const rows = elevationProfile.map((point) => {
-      const flightAltitude = point.plannedAltitude ?? (point.elevation + nominalFlightHeight);
+      const flightAltitude = point.plannedAltitude ?? nominalFlightHeight;
       const agl = flightAltitude - point.elevation;
+      const utm = latLngToUTM(point.latitude, point.longitude);
+      const utmZone = utm ? `${utm.zone}${utm.hemisphere}` : '';
       return [
         point.distance.toFixed(2),
         point.elevation.toFixed(2),
         flightAltitude.toFixed(2),
         agl.toFixed(2),
         point.longitude.toFixed(6),
-        point.latitude.toFixed(6)
+        point.latitude.toFixed(6),
+        utm ? utm.easting.toFixed(3) : '',
+        utm ? utm.northing.toFixed(3) : '',
+        utmZone
       ];
     });
 
@@ -2240,19 +2917,17 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       ...rows.map(row => row.join(','))
     ].join('\n');
 
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `elevation-profile-${Date.now()}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleSetFlightHeight = (pointIndex: number) => {
-    onSetFlightHeight(pointIndex);
+    // Generate default filename with route name if available
+    const routeName = activeRouteName ? `${activeRouteName}-` : '';
+    const defaultFilename = `${routeName}elevation-profile-${Date.now()}.csv`;
+    
+    // Show save dialog
+    setSaveFileDialog({
+      isOpen: true,
+      defaultFilename,
+      fileContent: csvContent,
+      mimeType: 'text/csv'
+    });
   };
 
   // Clear hover state when mouse leaves the entire panel
@@ -2299,40 +2974,10 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             onEditPointRequest(contextMenu.pointIndex);
             setContextMenu(null);
           }}
-          onSetHeight={() => {
-            handleSetFlightHeight(contextMenu.pointIndex);
-            setContextMenu(null);
-          }}
         />
       )}
       <div className="elevation-header">
         <div className="elevation-controls">
-          <div className="control-group">
-            <div className="group-title">נקודות הגבהה</div>
-            <div className="group-buttons">
-              <Tooltip tooltip="הגדרות עלייה">
-                <button
-                  onClick={openClimbConfig}
-                  className="btn btn-secondary btn-icon"
-                  type="button"
-                  aria-label="הגדרות עלייה"
-                >
-                  <ClimbIcon />
-                </button>
-              </Tooltip>
-              <Tooltip tooltip={climbRequests.length ? 'הסר את כל העליות' : 'טרם הוגדרה עלייה'}>
-                <button
-                  onClick={handleRemoveClimb}
-                  disabled={climbRequests.length === 0}
-                  className="btn btn-tertiary btn-icon"
-                  type="button"
-                  aria-label="הסר עליות"
-                >
-                  <TrashIcon />
-                </button>
-              </Tooltip>
-            </div>
-          </div>
           <div className="control-group">
             <div className="group-title">זום</div>
             <div className="group-buttons">
@@ -2375,9 +3020,20 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             </div>
           </div>
           <div className="control-group">
-            <div className="group-title">ייצוא</div>
+            <div className="group-title">נקודות הגבהה </div>
             <div className="group-buttons">
-              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין' : 'ייצא את תרשים הגובה כ-PNG'}>
+              <Tooltip tooltip="הסר את כל נקודות ההגבהה">
+                <button
+                  onClick={handleRemoveClimb}
+                  disabled={climbRequests.length === 0}
+                  className="btn btn-destructive btn-icon"
+                  type="button"
+                  aria-label="הסר עליות"
+                >
+                  <TrashIcon />
+                </button>
+              </Tooltip>
+              <Tooltip tooltip="ייצא את תרשים הגובה כ-PNG">
                 <button
                   onClick={exportPNG}
                   disabled={elevationProfile.length === 0}
@@ -2389,7 +3045,7 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   <span className="sr-only">ייצוא PNG</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={elevationProfile.length === 0 ? 'אין פרופיל לייצוא עדיין' : 'ייצא את נתוני הגובה כ-CSV'}>
+              <Tooltip tooltip="ייצא את נתוני הגובה כ-CSV">
                 <button
                   onClick={exportCSV}
                   disabled={elevationProfile.length === 0}
@@ -2423,20 +3079,32 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             <div className="loading-spinner"></div>
             <div className="loading-text">מחשב פרופיל גובה...</div>
           </div>
+        ) : elevationProfile.length === 0 && profileError ? (
+          <div className="no-data profile-error" role="alert">
+            <div className="profile-error__title">שגיאה ביצירת פרופיל הגובה</div>
+            <div className="profile-error__details">{profileError}</div>
+          </div>
         ) : elevationProfile.length === 0 ? (
           <div className="no-data">
             שרטט מסלול טיסה על המפה כדי לראות את פרופיל הגובה
           </div>
         ) : (
-          <svg ref={svgRef} className="elevation-chart"></svg>
+          <>
+            {activeRouteName && (
+              <div className="elevation-plot-title">
+                מסלול: {activeRouteName}
+              </div>
+            )}
+            <svg ref={svgRef} className="elevation-chart"></svg>
+          </>
         )}
       </div>
       {isClimbAmountOpen && (
         <div className="climb-modal__backdrop" role="dialog" aria-modal="true">
           <div className="climb-modal__card">
             <div className="climb-modal__header">
-              <div className="climb-modal__title">החל עלייה</div>
-              <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); setEditingClimb(null); }}>×</button>
+              <div className="climb-modal__title">{parseFloat(climbAmountInput) < 0 ? 'החל ירידה' : 'החל עלייה'}</div>
+              <button className="climb-modal__close" onClick={() => { setIsClimbAmountOpen(false); setClimbAmountError(null); setPendingClimbEnd(null); setEditingClimb(null); setCustomClimbRatio(''); setCustomDescentRatio(''); }}>×</button>
             </div>
             <div className="climb-modal__body">
               <div className="climb-modal__title-row">
@@ -2450,10 +3118,32 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                 id="climb-amount-input"
                 type="number"
                 step="0.1"
-                min="0"
+                min="-1000"
+                max="1000"
+                required
+                inputMode="decimal"
+                aria-required="true"
                 value={climbAmountInput}
-                onChange={(e) => setClimbAmountInput(e.target.value)}
-                className="climb-modal__input"
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setClimbAmountInput(value);
+                  
+                  // Real-time validation
+                  if (value === '' || value === '-') {
+                    setClimbAmountError(null);
+                    return;
+                  }
+                  
+                  const numValue = parseFloat(value);
+                  if (Number.isNaN(numValue)) {
+                    setClimbAmountError('ערך חייב להיות מספר');
+                  } else if (numValue < -1000 || numValue > 1000) {
+                    setClimbAmountError('שינוי גובה חייב להיות בין -1000 ל-1000 מטרים');
+                  } else {
+                    setClimbAmountError(null);
+                  }
+                }}
+                className={`climb-modal__input ${climbAmountError ? 'error' : ''}`}
               />
               {/* Maximum values display */}
               {pendingClimbEnd !== null && totalRouteLength > 0 && (
@@ -2472,8 +3162,37 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
                   </div>
                 </div>
               )}
+              {/* Per-point ratio overrides */}
+              <div className="climb-modal__ratios">
+                <div className="climb-modal__ratio-row">
+                  <label className="climb-modal__ratio-label" htmlFor="climb-ratio-override">יחס עלייה:</label>
+                  <input
+                    id="climb-ratio-override"
+                    type="number"
+                    step="0.5"
+                    min="0.1"
+                    className="climb-modal__ratio-input"
+                    value={customClimbRatio}
+                    placeholder={climbConfig.climbRatio.toString()}
+                    onChange={(e) => setCustomClimbRatio(e.target.value)}
+                  />
+                </div>
+                <div className="climb-modal__ratio-row">
+                  <label className="climb-modal__ratio-label" htmlFor="descent-ratio-override">יחס ירידה:</label>
+                  <input
+                    id="descent-ratio-override"
+                    type="number"
+                    step="0.5"
+                    min="0.1"
+                    className="climb-modal__ratio-input"
+                    value={customDescentRatio}
+                    placeholder={climbConfig.descentRatio.toString()}
+                    onChange={(e) => setCustomDescentRatio(e.target.value)}
+                  />
+                </div>
+              </div>
               <div className="climb-modal__hint">
-                יחס {parseFloat(climbAmountInput) > 0 ? climbConfig.climbRatio : climbConfig.descentRatio} : 1 (אופקי:אנכי).
+                יחס {parseFloat(climbAmountInput) > 0 ? modalClimbRatio : modalDescentRatio} : 1 (אופקי:אנכי).
                 {climbConfig.allowTurnsDuringClimb ? '  מאפשר עליה דרך פניות.' : '  אין עליה דרך פניות.'}
               </div>
               {climbAmountError && <div className="climb-modal__error">{climbAmountError}</div>}
@@ -2499,8 +3218,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               )}
             </div>
             <div className="climb-modal__actions">
-              <button className="btn btn-tertiary" type="button" onClick={() => { setIsClimbAmountOpen(false); setEditingClimb(null); }}>ביטול</button>
-              <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>החל עלייה</button>
+              <button className="btn btn-tertiary" type="button" onClick={() => { setIsClimbAmountOpen(false); setEditingClimb(null); setCustomClimbRatio(''); setCustomDescentRatio(''); }}>ביטול</button>
+              <button className="btn btn-primary" type="button" onClick={handleConfirmClimb}>{parseFloat(climbAmountInput) < 0 ? 'החל ירידה' : 'החל עלייה'}</button>
             </div>
           </div>
         </div>
@@ -2540,145 +3259,6 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </div>
         </div>
       )}
-      {isClimbConfigOpen && (
-        <div className="climb-modal__backdrop" role="dialog" aria-modal="true">
-          <div className="climb-modal__card">
-            <div className="climb-modal__header">
-              <div className="climb-modal__title">הגדרות עלייה</div>
-              <button className="climb-modal__close" onClick={() => setIsClimbConfigOpen(false)}>×</button>
-            </div>
-            <div className="climb-modal__body">
-              <label className="climb-modal__label" htmlFor="climb-preset-select">תבנית מוגדרת</label>
-              <select
-                id="climb-preset-select"
-                value={selectedClimbPresetId}
-                onChange={(e) => handlePresetChange(e.target.value)}
-                className="climb-modal__input"
-              >
-                <option value="custom">מותאם אישית (ערוך למטה)</option>
-                {climbPresets.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.name}
-                  </option>
-                ))}
-              </select>
-              <div className="climb-modal__hint">
-                {selectedClimbPresetId === 'custom'
-                  ? 'ערוך את השדות למטה כדי להגדיר את התנהגות העלייה שלך.'
-                  : selectedPreset?.description || 'תבנית נטענה מ-climbPresets.json.'}
-              </div>
-              <label className="climb-modal__toggle">
-                <input
-                  type="checkbox"
-                  checked={climbConfigDraft.linkRatios}
-                  onChange={(e) => {
-                    const linked = e.target.checked;
-                    markCustomPreset();
-                    setClimbConfigDraft((prev) => ({
-                      ...prev,
-                      linkRatios: linked,
-                      // When linking, sync descent to current climb ratio immediately
-                      descentRatio: linked ? prev.climbRatio : prev.descentRatio
-                    }));
-                  }}
-                />
-                קשר יחסים (השתמש באותו ערך לעלייה וירידה)
-              </label>
-
-              <label className="climb-modal__label" htmlFor="climb-ratio-input">יחס עלייה (מ' אופקי / 1מ' למעלה)</label>
-              <input
-                id="climb-ratio-input"
-                type="number"
-                step="0.1"
-                min="0.1"
-                value={climbConfigDraft.climbRatio}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({
-                    ...prev,
-                    climbRatio: e.target.value,
-                    // If linked, update descent ratio as well
-                    descentRatio: prev.linkRatios ? e.target.value : prev.descentRatio
-                  }));
-                }}
-                className="climb-modal__input"
-              />
-
-              <label className="climb-modal__label" htmlFor="descent-ratio-input">יחס ירידה (מ' אופקי / 1מ' למטה)</label>
-              <input
-                id="descent-ratio-input"
-                type="number"
-                step="0.1"
-                min="0.1"
-                value={climbConfigDraft.descentRatio}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({ ...prev, descentRatio: e.target.value }));
-                }}
-                className="climb-modal__input"
-                disabled={climbConfigDraft.linkRatios}
-              />
-
-              <label className="climb-modal__label" htmlFor="vertex-proximity-input">קרבת קודקוד (מטרים)</label>
-              <input
-                id="vertex-proximity-input"
-                type="number"
-                step="1"
-                min="0"
-                value={climbConfigDraft.vertexProximityMeters}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({ ...prev, vertexProximityMeters: e.target.value }));
-                }}
-                className="climb-modal__input"
-              />
-
-              <label className="climb-modal__label" htmlFor="min-climb-input">עלייה מינימלית (מטרים)</label>
-              <input
-                id="min-climb-input"
-                type="number"
-                step="1"
-                value={climbConfigDraft.minClimb}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({ ...prev, minClimb: e.target.value }));
-                }}
-                className="climb-modal__input"
-              />
-
-              <label className="climb-modal__label" htmlFor="max-climb-input">עלייה מקסימלית (מטרים)</label>
-              <input
-                id="max-climb-input"
-                type="number"
-                step="1"
-                value={climbConfigDraft.maxClimb}
-                onChange={(e) => {
-                  markCustomPreset();
-                  setClimbConfigDraft((prev) => ({ ...prev, maxClimb: e.target.value }));
-                }}
-                className="climb-modal__input"
-              />
-
-              <label className="climb-modal__toggle">
-                <input
-                  type="checkbox"
-                  checked={climbConfigDraft.allowTurnsDuringClimb}
-                  onChange={(e) => handleAllowTurnsChange(e.target.checked)}
-                />
-                אפשר עלייה דרך פניות (אחרת, העלייה נעצרת עד סוף הפנייה)
-              </label>
-              <div className="climb-modal__hint">
-                שינויים חלים מיד על עליות חדשות. עליות קיימות מחושבות מחדש עם המדיניות החדשה.
-              </div>
-              {climbConfigError && <div className="climb-modal__error">{climbConfigError}</div>}
-            </div>
-            <div className="climb-modal__actions">
-              <button className="btn btn-tertiary" type="button" onClick={() => setIsClimbConfigOpen(false)}>ביטול</button>
-              <button className="btn btn-primary" type="button" onClick={handleSaveClimbConfig}>שמור</button>
-            </div>
-          </div>
-        </div>
-      )}
       {climbContextMenu && (
         <div
           className="climb-context-menu"
@@ -2698,6 +3278,8 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               setPendingClimbEnd(climbContextMenu.endDistance);
               setClimbAmountInput(climbContextMenu.climbAmount.toString());
               setClimbAmountError(null);
+              setCustomClimbRatio(climbContextMenu.climbRatio !== undefined ? climbContextMenu.climbRatio.toString() : '');
+              setCustomDescentRatio(climbContextMenu.descentRatio !== undefined ? climbContextMenu.descentRatio.toString() : '');
               // Track the climb being edited to exclude it from constraint checks
               setEditingClimb({ endDistance: climbContextMenu.endDistance, climbAmount: climbContextMenu.climbAmount });
               setIsClimbAmountOpen(true);
@@ -2771,11 +3353,12 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
       )}
       {elevationProfile.length > 0 && (() => {
         // Calculate ascent and descent based on flight altitude (planned altitude)
+        // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
         let totalAscent = 0;
         let totalDescent = 0;
         for (let i = 1; i < elevationProfile.length; i++) {
-          const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? (elevationProfile[i - 1].elevation + nominalFlightHeight);
-          const currAltitude = elevationProfile[i].plannedAltitude ?? (elevationProfile[i].elevation + nominalFlightHeight);
+          const prevAltitude = elevationProfile[i - 1].plannedAltitude ?? nominalFlightHeight;
+          const currAltitude = elevationProfile[i].plannedAltitude ?? nominalFlightHeight;
           const altitudeDiff = currAltitude - prevAltitude;
           if (altitudeDiff > 0) {
             totalAscent += altitudeDiff;
@@ -2784,20 +3367,28 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           }
         }
 
-        // Find minimum flight height across all points (considering climb points)
-        const minFlightHeight = Math.min(
-          ...elevationProfile.map(p => {
-            const plannedAlt = p.plannedAltitude ?? (p.elevation + nominalFlightHeight);
-            return plannedAlt - p.elevation;
-          })
-        );
+        // For each point, calculate height from maximum and height from minimum
+        // Use point.minElevation and point.maxElevation (per-point values) if available, otherwise use point.elevation
+        // This matches the calculation in CoordinateTooltip
+        // Entry height (nominalFlightHeight) is ASL, so use it directly as fallback
+        const heightsFromMax = elevationProfile.map(p => {
+          const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
+          // Use point.maxElevation if available, otherwise use point.elevation (matches tooltip logic)
+          const maxElev = p.maxElevation !== undefined ? p.maxElevation : p.elevation;
+          return plannedAlt - maxElev;
+        });
+        const heightsFromMin = elevationProfile.map(p => {
+          const plannedAlt = p.plannedAltitude ?? nominalFlightHeight;
+          // Use point.minElevation if available, otherwise use point.elevation (matches tooltip logic)
+          const minElev = p.minElevation !== undefined ? p.minElevation : p.elevation;
+          return plannedAlt - minElev;
+        });
 
-        // Find point with minimum elevation
-        const minElevationPoint = elevationProfile.reduce((min, p) => 
-          p.elevation < min.elevation ? p : min
-        );
-        const minElevationFlightAltitude = minElevationPoint.plannedAltitude ?? (minElevationPoint.elevation + nominalFlightHeight);
-        const maxHeightFromMinPoint = minElevationFlightAltitude - minElevationPoint.elevation;
+        // Minimum flight height = minimum of all "height from maximum" values
+        const minFlightHeight = Math.min(...heightsFromMax);
+
+        // Maximum flight height = maximum of all "height from minimum" values
+        const maxHeightFromMinPoint = Math.max(...heightsFromMin);
 
         return (
           <div className="elevation-stats">
@@ -2839,13 +3430,13 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
               </span>
             </div>
             <div className="stat">
-              <span className="stat-label">גובה טיסה מינימלי :</span>
+              <span className="stat-label">גובה בטיחות מינימלי :</span>
               <span className="stat-value">
                 {minFlightHeight.toFixed(1)} מ'
               </span>
             </div>
             <div className="stat">
-              <span className="stat-label">גובה טיסה מקסימלי :</span>
+              <span className="stat-label">גובה תוצר מקסימלי :</span>
               <span className="stat-value">
                 {maxHeightFromMinPoint.toFixed(1)} מ'
               </span>
@@ -2853,7 +3444,22 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
           </div>
         );
       })()}
-      {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && !contextMenu && !climbContextMenu && (
+      {showMetadata && hoveredPoint && mousePos && (hoverSource === 'profile' || hoverSource === 'overlap') && !contextMenu && !climbContextMenu && (
+        <div
+          ref={tooltipRef}
+          className="hover-metadata-tooltip"
+          style={{
+            left: tooltipPosition?.left ?? mousePos.x + 15,
+            top: tooltipPosition?.top ?? mousePos.y + 15,
+            visibility: tooltipPosition ? 'visible' : 'visible',
+            opacity: tooltipPosition ? 1 : 0,
+            pointerEvents: tooltipPosition ? 'auto' : 'none'
+          }}
+        >
+          <CoordinateTooltip point={hoveredPoint} />
+        </div>
+      )}
+      {showMetadata && hoveredPoint && mousePos && hoverSource === 'profile' && (
         <div
           ref={tooltipRef}
           className="hover-metadata-tooltip"
@@ -2863,8 +3469,32 @@ const ElevationProfile: React.FC<ElevationProfileProps> = ({
             visibility: tooltipPosition ? 'visible' : 'hidden'
           }}
         >
-          <CoordinateTooltip point={hoveredPoint} utm={hoveredUtm} />
+          <CoordinateTooltip point={hoveredPoint} />
         </div>
+      )}
+
+      {saveFileDialog && (
+        <SaveFileDialog
+          isOpen={saveFileDialog.isOpen}
+          defaultFilename={saveFileDialog.defaultFilename}
+          fileExtension={
+            saveFileDialog.mimeType === 'image/png'
+              ? '.png'
+              : saveFileDialog.mimeType === 'text/csv'
+                ? '.csv'
+                : ''
+          }
+          title={
+            saveFileDialog.mimeType === 'image/png'
+              ? 'ייצוא PNG'
+              : saveFileDialog.mimeType === 'text/csv'
+                ? 'ייצוא CSV'
+                : 'שמירת קובץ'
+          }
+          fileContent={saveFileDialog.fileContent}
+          mimeType={saveFileDialog.mimeType}
+          onClose={() => setSaveFileDialog(null)}
+        />
       )}
     </div>
   );

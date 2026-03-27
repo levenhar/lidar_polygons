@@ -1,9 +1,27 @@
 import { useState, useCallback, useRef, useMemo } from 'react';
 
-export function useUndoRedo<T>(initialState: T) {
+export type ActionType = 'map' | 'elevation' | 'combined';
+
+export interface UndoRedoOptions {
+  // Called when a new action is added to history, allowing registration with global manager
+  onActionRegistered?: (
+    previousState: any,
+    newState: any,
+    undo: () => void,
+    redo: () => void
+  ) => void;
+}
+
+export function useUndoRedo<T>(initialState: T, options?: UndoRedoOptions) {
   const [state, setState] = useState<T>(initialState);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const historyRef = useRef<T[]>([initialState]);
+  const stateRef = useRef<T>(initialState);
+  const currentIndexRef = useRef<number>(0);
+  
+  // Flag to track if we're in the middle of an undo/redo operation
+  // This prevents registering the same action twice
+  const isUndoRedoOperationRef = useRef<boolean>(false);
 
   // Compute canUndo and canRedo reactively based on currentIndex
   const canUndo = useMemo(() => currentIndex > 0, [currentIndex]);
@@ -12,15 +30,16 @@ export function useUndoRedo<T>(initialState: T) {
   }, [currentIndex]);
 
   const setStateWithHistory = useCallback((newStateOrUpdater: T | ((prevState: T) => T), addToHistory: boolean = true) => {
-    // Support both direct state and functional updates
-    const newState = typeof newStateOrUpdater === 'function' 
-      ? (newStateOrUpdater as (prevState: T) => T)(state)
+    const previousState = stateRef.current;
+    // Support both direct state and functional updates against latest state snapshot
+    const newState = typeof newStateOrUpdater === 'function'
+      ? (newStateOrUpdater as (prevState: T) => T)(previousState)
       : newStateOrUpdater;
-    
-    if (addToHistory) {
+
+    if (addToHistory && !isUndoRedoOperationRef.current) {
       // Remove any future history if we're not at the end
-      if (currentIndex < historyRef.current.length - 1) {
-        historyRef.current = historyRef.current.slice(0, currentIndex + 1);
+      if (currentIndexRef.current < historyRef.current.length - 1) {
+        historyRef.current = historyRef.current.slice(0, currentIndexRef.current + 1);
       }
       
       // Add new state to history
@@ -34,37 +53,86 @@ export function useUndoRedo<T>(initialState: T) {
         historyRef.current = historyRef.current.slice(itemsToRemove);
         // Adjust currentIndex to account for removed items
         const newIndex = historyRef.current.length - 1;
+        currentIndexRef.current = newIndex;
         setCurrentIndex(newIndex);
       } else {
         // Normal case: just update index to the new state
         const newIndex = historyRef.current.length - 1;
+        currentIndexRef.current = newIndex;
         setCurrentIndex(newIndex);
       }
+      
+      // Notify the global manager about this action
+      if (options?.onActionRegistered) {
+        // Create undo/redo functions that directly manipulate state
+        const undoFn = () => {
+          isUndoRedoOperationRef.current = true;
+          // Move back from the current history cursor and keep refs in sync.
+          const idx = currentIndexRef.current;
+          if (idx > 0) {
+            const prevIdx = idx - 1;
+            const prevState = historyRef.current[prevIdx];
+            currentIndexRef.current = prevIdx;
+            stateRef.current = prevState;
+            setCurrentIndex(prevIdx);
+            setState(prevState);
+          }
+          isUndoRedoOperationRef.current = false;
+        };
+        
+        const redoFn = () => {
+          isUndoRedoOperationRef.current = true;
+          // Move forward from the current history cursor and keep refs in sync.
+          const idx = currentIndexRef.current;
+          if (idx >= 0 && idx < historyRef.current.length - 1) {
+            const nextIdx = idx + 1;
+            const nextState = historyRef.current[nextIdx];
+            currentIndexRef.current = nextIdx;
+            stateRef.current = nextState;
+            setCurrentIndex(nextIdx);
+            setState(nextState);
+          }
+          isUndoRedoOperationRef.current = false;
+        };
+        
+        options.onActionRegistered(previousState, newState, undoFn, redoFn);
+      }
     }
-    
+
+    stateRef.current = newState;
     setState(newState);
-  }, [currentIndex, state]);
+  }, [options]);
 
   const undo = useCallback(() => {
     if (currentIndex > 0) {
+      isUndoRedoOperationRef.current = true;
       const newIndex = currentIndex - 1;
       const previousState = historyRef.current[newIndex];
+      currentIndexRef.current = newIndex;
+      stateRef.current = previousState;
       setCurrentIndex(newIndex);
       setState(previousState);
+      isUndoRedoOperationRef.current = false;
     }
   }, [currentIndex]);
 
   const redo = useCallback(() => {
     if (currentIndex < historyRef.current.length - 1) {
+      isUndoRedoOperationRef.current = true;
       const newIndex = currentIndex + 1;
       const nextState = historyRef.current[newIndex];
+      currentIndexRef.current = newIndex;
+      stateRef.current = nextState;
       setCurrentIndex(newIndex);
       setState(nextState);
+      isUndoRedoOperationRef.current = false;
     }
   }, [currentIndex]);
 
   const resetHistory = useCallback((newState: T) => {
     historyRef.current = [newState];
+    currentIndexRef.current = 0;
+    stateRef.current = newState;
     setCurrentIndex(0);
     setState(newState);
   }, []);

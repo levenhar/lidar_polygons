@@ -1,0 +1,512 @@
+.kml-manager-modal__backdrop {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 1rem;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.kml-manager-modal__card {
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  max-width: 600px;
+  width: 100%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  direction: rtl;
+  overflow: hidden;
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.kml-manager-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.5rem 1.75rem;
+  background: linear-gradient(135deg, #F0F9FF 0%, #E0F2FE 100%);
+  border-bottom: 1px solid #BAE6FD;
+  position: relative;
+}
+
+.kml-manager-modal__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.kml-manager-modal__import-btn {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(125, 211, 252, 0.3);
+  color: #64748b;
+  cursor: pointer;
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.kml-manager-modal__import-btn:hover {
+  background: #ffffff;
+  border-color: #7DD3FC;
+  color: #0369A1;
+  box-shadow: 0 2px 8px rgba(3, 105, 161, 0.15);
+}
+
+.kml-manager-modal__import-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.kml-manager-modal__header::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.3), transparent);
+}
+
+.kml-manager-modal__title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #0369A1;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.kml-manager-modal__title::before {
+  content: '🗺️';
+  font-size: 1.75rem;
+}
+
+.kml-manager-modal__delete-all-btn {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(125, 211, 252, 0.3);
+  color: #64748b;
+  cursor: pointer;
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.kml-manager-modal__delete-all-btn:hover {
+  background: #FEE2E2;
+  border-color: #FCA5A5;
+  color: #DC2626;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.15);
+}
+
+.kml-manager-modal__delete-all-btn .kml-manager-modal__trash-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.kml-manager-modal__close {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(125, 211, 252, 0.3);
+  font-size: 1.5rem;
+  color: #64748b;
+  cursor: pointer;
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  font-weight: 300;
+  line-height: 1;
+}
+
+.kml-manager-modal__close:hover {
+  background: #ffffff;
+  border-color: #7DD3FC;
+  color: #0369A1;
+  transform: rotate(90deg);
+  box-shadow: 0 2px 8px rgba(3, 105, 161, 0.15);
+}
+
+.kml-manager-modal__body {
+  padding: 1.5rem;
+  overflow-y: auto;
+  flex: 1;
+  background: #FAFBFC;
+}
+
+.kml-manager-modal__body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.kml-manager-modal__body::-webkit-scrollbar-track {
+  background: #F1F5F9;
+  border-radius: 4px;
+}
+
+.kml-manager-modal__body::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+
+.kml-manager-modal__body::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+.kml-manager-modal__empty {
+  text-align: center;
+  color: #64748b;
+  padding: 3rem 1.5rem;
+  margin: 0;
+  font-size: 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.kml-manager-modal__empty::before {
+  content: '📁';
+  font-size: 3rem;
+  opacity: 0.5;
+}
+
+.kml-manager-modal__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.kml-manager-modal__item {
+  padding: 0.5rem 0.875rem;
+  background: #ffffff;
+  border: 1.5px solid #E2E8F0;
+  border-radius: 10px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  position: relative;
+  overflow: hidden;
+  user-select: none;
+}
+
+.kml-manager-modal__item-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.kml-manager-modal__item::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(180deg, #7DD3FC, #0284c7);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.kml-manager-modal__item:hover {
+  background: #ffffff;
+  border-color: #BAE6FD;
+  box-shadow: 0 4px 12px rgba(3, 105, 161, 0.1), 0 0 0 1px rgba(125, 211, 252, 0.2);
+  transform: translateY(-2px);
+}
+
+.kml-manager-modal__item:hover::before {
+  opacity: 1;
+}
+
+.kml-manager-modal__item-name {
+  font-weight: 600;
+  color: #0F172A;
+  font-size: 0.875rem;
+  word-break: break-word;
+  line-height: 1.4;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.kml-manager-modal__item-name::before {
+  content: '📄';
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.kml-manager-modal__item-stats-inline {
+  display: flex;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+  margin-right: 0.5rem;
+}
+
+.kml-manager-modal__stat {
+  font-size: 0.6875rem;
+  color: #64748b;
+  background: #F1F5F9;
+  padding: 0.1875rem 0.5rem;
+  border-radius: 4px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.kml-manager-modal__stat::before {
+  content: '•';
+  color: #7DD3FC;
+  font-size: 1.2rem;
+  line-height: 0;
+}
+
+.kml-manager-modal__item-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.kml-manager-modal__controls-group {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+  padding: 0.25rem;
+  background: #F8FAFC;
+  border-radius: 6px;
+  border: 1px solid #E2E8F0;
+  width: 100px;
+  justify-content: center;
+}
+
+.kml-manager-modal__color-picker-wrapper {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.kml-manager-modal__symbol-picker-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.kml-manager-modal__color-label,
+.kml-manager-modal__symbol-label {
+  font-size: 0.8125rem;
+  color: #475569;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.kml-manager-modal__color-input {
+  width: 100%;
+  height: 28px;
+  border: 2px solid #E2E8F0;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+  background: #ffffff;
+  transition: all 0.2s;
+  flex: 1;
+}
+
+.kml-manager-modal__color-input:hover {
+  border-color: #7DD3FC;
+  box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.1);
+  transform: scale(1.05);
+}
+
+.kml-manager-modal__color-input:focus {
+  outline: none;
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15);
+}
+
+.kml-manager-modal__color-input::-webkit-color-swatch-wrapper {
+  padding: 2px;
+  border-radius: 6px;
+}
+
+.kml-manager-modal__color-input::-webkit-color-swatch {
+  border: none;
+  border-radius: 4px;
+}
+
+.kml-manager-modal__symbol-select {
+  padding: 0.375rem 0.25rem;
+  border: 2px solid #E2E8F0;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  background: #ffffff;
+  color: #0F172A;
+  cursor: pointer;
+  min-width: 44px;
+  width: 44px;
+  height: 28px;
+  font-weight: 500;
+  transition: all 0.2s;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2364748b' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.375rem center;
+  padding-right: 1.5rem;
+  text-align: center;
+  line-height: 1;
+}
+
+.kml-manager-modal__symbol-select:hover {
+  border-color: #7DD3FC;
+  box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.1);
+}
+
+.kml-manager-modal__symbol-select:focus {
+  outline: none;
+  border-color: #0284c7;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15);
+}
+
+.kml-manager-modal__visibility-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: 8px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+}
+
+.kml-manager-modal__visibility-btn:hover {
+  background: #F1F5F9;
+  color: #0369A1;
+}
+
+.kml-manager-modal__eye-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.kml-manager-modal__delete-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: 8px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+}
+
+.kml-manager-modal__trash-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.kml-manager-modal__delete-btn:hover {
+  background: #FEE2E2;
+  transform: scale(1.1) rotate(5deg);
+  color: #DC2626;
+}
+
+.kml-manager-modal__delete-btn:hover .kml-manager-modal__trash-icon {
+  color: #DC2626;
+}
+
+.kml-manager-modal__delete-btn:active {
+  transform: scale(0.95);
+}
+
+
+/* Responsive adjustments */
+@media (max-width: 640px) {
+  .kml-manager-modal__card {
+    max-width: 100%;
+    margin: 0.5rem;
+    max-height: 90vh;
+  }
+
+  .kml-manager-modal__item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .kml-manager-modal__item-actions {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .kml-manager-modal__controls-group {
+    flex-direction: column;
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .kml-manager-modal__color-picker-wrapper,
+  .kml-manager-modal__symbol-picker-wrapper {
+    justify-content: space-between;
+    width: 100%;
+  }
+}

@@ -8,15 +8,15 @@ This document explains the complete flow for clipping a DTM (Digital Terrain Mod
 
 **Physical File Location:**
 - **Directory**: `DTM_CACHE_DIR` (configurable via environment variable)
-- **Default Path**: `backend_python/DTM_TIFF/CACHE/`
-- **Full File Path Example**: `backend_python/DTM_TIFF/CACHE/1704123456789-mydtm.tif`
+- **Default Path**: `backend_python/DTM_TIFF/Cache/`
+- **Full File Path Example**: `backend_python/DTM_TIFF/Cache/1704123456789-mydtm.tif`
 - **File Format**: `{timestamp}-{original_dtm_id}.tif`
   - `timestamp`: Milliseconds since epoch (e.g., `1704123456789`)
   - `original_dtm_id`: Source DTM filename without extension
 
 **Configuration:**
 - Set `DTM_CACHE_DIR` environment variable to customize location
-- If not set, defaults to: `{backend_python_directory}/DTM_TIFF/CACHE/`
+- If not set, defaults to: `{backend_python_directory}/DTM_TIFF/Cache/`
 - Code location: `backend_python/main.py` (lines 54-60, 504)
 
 ### Paths Sent from Server to Client
@@ -225,7 +225,7 @@ The Node.js backend acts as a proxy/gateway, forwarding requests to the Python b
      }
      ```
 
-### Step 3: Upload Clipped DTM File
+### Step 3: (Deprecated) Upload Clipped DTM File
 
 **Client → Server:**
 
@@ -233,8 +233,10 @@ The Node.js backend acts as a proxy/gateway, forwarding requests to the Python b
    - **Location**: `frontend/src/components/MapPanel.tsx` (line ~597)
    - **Method**: POST
    - **URL Parameter**: `clippedId` - The ID of the clipped DTM
-   - **Purpose**: Upload the clipped DTM file from Python backend cache to Node.js backend uploads folder
-   - **Note**: This happens automatically after clipping completes
+   - **Purpose**: **Deprecated**. This endpoint is now a **no-op** kept for backward compatibility.
+   - **Note**: Clipping already produces the two artifacts we need:
+     - Full-resolution clipped GeoTIFF in `DTM_CACHE_DIR`
+     - Subsampled GeoTIFF (display only) in `DTM_SUBSAMPLED_CACHE_DIR`
 
 **Server → Server (Internal):**
 
@@ -432,10 +434,10 @@ Storage:
 
 **Physical File Location (Python Backend):**
 - **Directory**: `DTM_CACHE_DIR` (configurable via environment variable)
-- **Default Path**: `backend_python/DTM_TIFF/CACHE/`
+- **Default Path**: `backend_python/DTM_TIFF/Cache/`
 - **Full Path**: Can be set via `DTM_CACHE_DIR` environment variable, or defaults to:
   ```
-  {backend_python_directory}/DTM_TIFF/CACHE/{clipped_id}.tif
+  {backend_python_directory}/DTM_TIFF/Cache/{clipped_id}.tif
   ```
 - **File Naming**: `{timestamp}-{original_dtm_id}.tif`
   - Example: `1704123456789-mydtm.tif`
@@ -489,9 +491,9 @@ After clipping, the Python backend returns JSON with these **relative URL paths*
 ## Notes
 
 - The Node.js backend acts primarily as a proxy/gateway
-- Clipped DTMs are stored in Python backend's `DTM_CACHE_DIR` (default: `backend_python/DTM_TIFF/CACHE/`)
+- Clipped DTMs are stored in Python backend's `DTM_CACHE_DIR` (default: `backend_python/DTM_TIFF/Cache/`)
 - Uploaded DTMs (via direct upload) are stored in Python backend's `UPLOADS_DIR`
-- The upload endpoint for clipped DTMs (`/api/dtm/clipped/{clippedId}/upload`) creates a copy in the uploads folder for legacy compatibility
+- The upload endpoint for clipped DTMs (`/api/dtm/clipped/{clippedId}/upload`) is deprecated and no longer creates additional copies
 - All paths use RESTful conventions
 - The Python backend handles all actual DTM processing (clipping, raster operations, etc.)
 - Client never accesses file system directly - all access is through HTTP API endpoints

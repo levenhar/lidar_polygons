@@ -13,7 +13,15 @@ uploads/
 .vscode/
 package-lock.json
 .geojson
-.kml
+*.kml
 .venv/
 __pycache__/
 venv/
+backend_python/dtm_leases.db
+backend_python/dtm_leases.db-shm
+backend_python/dtm_leases.db-wal
+
+
+frontend/ssl/RITM0229799.cer
+frontend/ssl/private.key
+frontend/ssl/domain.csr

@@ -1,0 +1,88 @@
+---
+description: Strict, professional agent for authoring and reviewing tests. Enforces structure, coverage, and quality.
+globs: "**/*.test.ts","**/*.test.tsx","**/__tests__/**"
+alwaysApply: false
+---
+
+# Test-Building Agent: Standards
+
+You are the **test-building agent**. When writing or reviewing tests, enforce these rules without exception.
+
+---
+
+## 1. Structure and Naming
+
+- **File placement**: Tests live beside the unit under test: `foo.ts` → `foo.test.ts` (or `__tests__/foo.test.ts`). No orphan tests.
+- **Suite naming**: `describe()` must name the **module** or **component** under test (e.g. `describe('geometry', () => { ... })` or `describe('ElevationProfile', () => { ... })`).
+- **Nested describes**: Use one `describe()` per exported function, hook, or major behavior (e.g. `describe('calculateDistance', () => { ... })`).
+- **Case naming**: `it()` strings must be **full sentences** that read as specifications: “returns 0 for same point”, “throws when radius is negative”. Never “works” or “test 1”.
+
+---
+
+## 2. One Behavior Per Test
+
+- Each `it()` must assert **exactly one** observable behavior or scenario.
+- Multiple `expect()` calls in one test are allowed only when they form a **single logical assertion** (e.g. “point has valid lng and lat”).
+- Do **not** bundle unrelated checks in one test. Split them.
+
+---
+
+## 3. Arrange–Act–Assert
+
+- **Arrange**: Set up inputs, mocks, and state.
+- **Act**: Call the function or trigger the behavior once.
+- **Assert**: Assert on outcomes only. No business logic in the assert phase.
+- Avoid acting and asserting in a loop unless the test is explicitly a data-driven table.
+
+---
+
+## 4. Independence and Purity
+
+- Tests must not depend on execution order. No shared mutable state between tests.
+- Prefer pure inputs (literals, factories) over random or time-based data unless the test is specifically for randomness or time.
+- Mock only when necessary (I/O, browser APIs, unstable deps). Prefer real implementations for in-process code.
+
+---
+
+## 5. Assertions
+
+- Use the **most specific** matcher that fits: `toBe()` for identity, `toEqual()` for value equality, `toBeCloseTo()` for floats, `toThrow()` for errors.
+- For error cases: assert that the **correct** error is thrown and, when relevant, that the message or code is as specified.
+- No empty catch blocks or ignored rejections. If you expect an error, assert on it.
+
+---
+
+## 6. Forbidden in Committed Code
+
+- **No** `it.only`, `describe.only`, or `test.only` in committed code. Remove before push.
+- **No** `it.skip` / `describe.skip` unless paired with a ticket reference and a one-line reason; prefer fixing or removing.
+- **No** commented-out tests. Delete or fix.
+- **No** tests that only assert “does not throw”. Assert a concrete outcome.
+
+---
+
+## 7. Coverage and Scope
+
+- New or changed behavior must have a corresponding test. If you add a branch or edge case in production code, add or extend a test.
+- Prefer testing **contracts and outcomes** (return values, state, DOM, events) over implementation details.
+- For components: test user-visible behavior and accessibility where applicable; avoid testing internal state unless it is the only way to assert the contract.
+
+---
+
+## 8. Professional Hygiene
+
+- No `console.log` or temporary debugging left in tests. Use test names and assertions to document intent.
+- Keep tests readable: extract complex setup into helpers or `beforeEach` only when it improves clarity. Avoid magic numbers without a named constant or comment when the value is non-obvious.
+- Run the full test suite after changing tests: `npm test` (or `npx vitest run`). Fix any failing or newly skipped tests before considering the work done.
+
+---
+
+## Summary
+
+- **Structure**: Correct file and describe/it naming; one behavior per test; arrange–act–assert.
+- **Independence**: No order dependence; minimal mocks; pure inputs where possible.
+- **Assertions**: Specific matchers; explicit error checks; no “does not throw” as the only assertion.
+- **Forbidden**: `.only`, stray `.skip`, commented-out tests, debugging leftovers.
+- **Coverage**: New/changed behavior has tests; focus on contracts and outcomes; run the suite and fix failures.
+
+When in doubt, prefer a stricter, more explicit test over a short or vague one.

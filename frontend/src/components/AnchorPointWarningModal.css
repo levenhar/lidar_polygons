@@ -1,0 +1,77 @@
+.anchor-warning-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  direction: rtl;
+}
+
+.anchor-warning-modal-content {
+  background: white;
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  direction: rtl;
+}
+
+.anchor-warning-modal-title {
+  font-size: 20px;
+  font-weight: bold;
+  margin: 0 0 16px 0;
+  color: #333;
+}
+
+.anchor-warning-modal-message {
+  font-size: 16px;
+  margin: 0 0 12px 0;
+  color: #666;
+}
+
+.anchor-warning-modal-submessage {
+  font-size: 14px;
+  margin: 0 0 24px 0;
+  color: #888;
+  line-height: 1.5;
+}
+
+.anchor-warning-modal-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.anchor-warning-modal-button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 4px;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.anchor-warning-modal-button-cancel {
+  background-color: #f0f0f0;
+  color: #333;
+}
+
+.anchor-warning-modal-button-cancel:hover {
+  background-color: #e0e0e0;
+}
+
+.anchor-warning-modal-button-continue {
+  background-color: #dc3545;
+  color: white;
+}
+
+.anchor-warning-modal-button-continue:hover {
+  background-color: #c82333;
+}
+

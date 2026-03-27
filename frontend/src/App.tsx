@@ -2,16 +2,42 @@ import React, { useState, useCallback } from 'react';
 import MapPanel from './components/MapPanel';
 import ElevationProfile from './components/ElevationProfile';
 import ExportSettingsModal from './components/ExportSettingsModal';
-import { useFlightPath } from './hooks/useFlightPath';
+import SettingsModal, { GearIcon } from './components/SettingsModal';
+import AnchorPointWarningModal from './components/AnchorPointWarningModal';
+import ReverseWarningModal from './components/ReverseWarningModal';
+import MissingLocalDTMModal from './components/MissingLocalDTMModal';
+import SaveFileDialog from './components/SaveFileDialog';
+import SuccessNotification from './components/SuccessNotification';
+import { generateUniqueFilenames } from './utils/filenameSanitizer';
+import SplitPane from './components/SplitPane';
+import { useFlightPath, FlightRoute } from './hooks/useFlightPath';
 import { useElevationProfile } from './hooks/useElevationProfile';
 import { ClimbConfig, BaseAltitudeSample, ClimbProfilePoint, ClimbPreset, computeClimbProfile } from './utils/climb';
 import climbPresetData from './config/climbPresets.json';
+import { GlobalUndoRedoProvider, useGlobalUndoRedo } from './contexts/GlobalUndoRedoContext';
+import { findClimbsAnchoredToPoint, ClimbRequest, getClimbPositionFromAnchors, findAnchorPointsForClimb, removeClimbsOnSegment, getEffectiveEndDistance } from './utils/climbAnchors';
+import { computeCumulativeDistances } from './utils/constraints';
+import { 
+  exportProject, 
+  readProjectFile, 
+  PROJECT_FILE_ACCEPT,
+  PROJECT_FILE_EXTENSION,
+  LocalDtmDescriptor,
+  ProjectFileData,
+  ProjectValidationError
+} from './utils/projectSerializer';
+import { generateKMLForRoute } from './utils/kmlGenerator';
+import { debug } from './utils/debug';
+import { importKmlFile } from './utils/importKmlFlow';
+import KmlManagerModal, { KmlImport } from './components/KmlManagerModal';
+import { calculateDistance } from './utils/geometry';
 import './App.css';
 
 export interface Coordinate {
   lng: number;
   lat: number;
-  height?: number; // Optional flight height in meters (AGL - Above Ground Level)
+  height?: number; // Optional flight height in meters (ASL - Above Sea Level)
+  id?: string; // Stable ID for the point (used to anchor climb points)
 }
 
 export interface ElevationPoint {
@@ -19,7 +45,7 @@ export interface ElevationPoint {
   elevation: number;
   longitude: number;
   latitude: number;
-  flightHeight?: number; // Interpolated flight height (AGL) at this point
+  flightHeight?: number; // Interpolated flight height (AGL - computed as plannedAltitude - elevation) at this point
   minElevation?: number; // Minimum elevation in DTM within radius
   maxElevation?: number; // Maximum elevation in DTM within radius
   plannedAltitude?: number;
@@ -63,28 +89,76 @@ function presetToConfig(preset?: ClimbPreset): ClimbConfig {
   };
 }
 
-function App() {
+function AppContent() {
   const [dtmSource, setDtmSource] = useState<string | null>(null);
   // @ts-ignore
   const [dtmInfo, setDtmInfo] = useState<DTMInfo | null>(null);
   const [activeClippedId, setActiveClippedId] = useState<string | null>(null);
-  const [nominalFlightHeight, setNominalFlightHeight] = useState<number>(250);
+  // Track original DTM file/metadata for project save/load
+  const [localDtmFile, setLocalDtmFile] = useState<File | null>(null);
+  const [dtmSourceType, setDtmSourceType] = useState<'local' | 'server' | null>(null);
+  const [serverDtmId, setServerDtmId] = useState<string | null>(null);
+  const [serverDtmMetadata, setServerDtmMetadata] = useState<{ displayName?: string; sizeBytes?: number; modifiedAt?: string } | null>(null);
+  const [activeDtmName, setActiveDtmName] = useState<string | null>(null);
+  const [aoiGeometry, setAoiGeometry] = useState<{ type: 'bbox' | 'polygon' | 'kml'; bbox?: { minLon: number; minLat: number; maxLon: number; maxLat: number }; polygon?: [number, number][] } | null>(null);
+  // Project load state
+  const [missingLocalDtmModal, setMissingLocalDtmModal] = useState<{ isOpen: boolean; descriptor: LocalDtmDescriptor | null }>({ isOpen: false, descriptor: null });
+  const [isLoadingProject, setIsLoadingProject] = useState(false);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
   const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
-  const [resolutionSearchRadius, setResolutionSearchRadius] = useState<number>(50);
+  const resolutionSearchRadius = 50;
   const [overlapPercentage, setOverlapPercentage] = useState<number>(50);
-  const [fovDegrees, setFovDegrees] = useState<number>(100);
+  const [fovDegrees, setFovDegrees] = useState<number>(75);
   const [selectedPoint, setSelectedPoint] = useState<Coordinate | null>(null);
   const [editPointIndex, setEditPointIndex] = useState<number | null>(null);
   const [hoveredElevationPoint, setHoveredElevationPoint] = useState<ElevationPoint | null>(null);
-  const [hoverSource, setHoverSource] = useState<'map' | 'profile' | null>(null);
+  const [hoverSource, setHoverSource] = useState<'map' | 'profile' | 'overlap' | null>(null);
   const [showMetadata, setShowMetadata] = useState(true);
   const [showClimbLabels, setShowClimbLabels] = useState(true);
+  const [showNextLineSuggestions, setShowNextLineSuggestions] = useState<boolean>(() => {
+    // Load from localStorage on mount, default to true
+    try {
+      const stored = localStorage.getItem('showNextLineSuggestions');
+      return stored !== null ? JSON.parse(stored) : true;
+    } catch {
+      return true;
+    }
+  });
+  // DTM display settings (will be passed from MapPanel)
+  const [dtmDisplaySettings, setDtmDisplaySettings] = useState<{
+    palette: 'gray' | 'jet';
+    inverted: boolean;
+    opacity: number;
+  }>({
+    palette: 'gray',
+    inverted: false,
+    opacity: 0.1
+  });
 
   const [selectedClimbPresetId, setSelectedClimbPresetId] = useState<string>(CLIMB_PRESETS[0]?.id ?? 'custom');
   const [climbConfig, setClimbConfig] = useState<ClimbConfig>(presetToConfig(CLIMB_PRESETS[0]));
   const [showExportModal, setShowExportModal] = useState<boolean>(false);
+  const [showSettingsModal, setShowSettingsModal] = useState<boolean>(false);
+  const [flightHeightModal, setFlightHeightModal] = useState<{ isOpen: boolean; pointIndex: number; currentHeight: number } | null>(null);
+  const [saveFileDialog, setSaveFileDialog] = useState<{
+    isOpen: boolean;
+    type: 'kml' | 'project';
+    defaultFilename: string;
+    fileContent: string | Blob;
+    mimeType?: string;
+    onSave?: (filename: string) => void; // Optional legacy callback
+  } | null>(null);
+  const [flightHeightInput, setFlightHeightInput] = useState<string>('');
+  const [flightHeightError, setFlightHeightError] = useState<string | null>(null);
+  const [successNotification, setSuccessNotification] = useState<{
+    isOpen: boolean;
+    message: string;
+  }>({ isOpen: false, message: '' });
+  const [importSummary, setImportSummary] = useState<{ points: number; polygons: number } | null>(null);
+  const [zoomToBounds, setZoomToBounds] = useState<{ minLon: number; minLat: number; maxLon: number; maxLat: number } | null>(null);
+  const [kmlImports, setKmlImports] = useState<KmlImport[]>([]);
+  const [kmlManagerModalOpen, setKmlManagerModalOpen] = useState(false);
   
   // Queue system for height profile edits
   type EditOperation = 
@@ -105,24 +179,30 @@ function App() {
         return JSON.parse(stored) as Record<string, { endDistance: number; climbAmount: number }[]>;
       }
     } catch (error) {
-      console.error('Failed to load climb requests from localStorage:', error);
+      debug.error('Failed to load climb requests from localStorage:', error);
     }
     return {};
   }, []);
   
-  // Track previous geometry per route ID to detect geometry changes for each route independently
-  const prevGeometryByRouteRef = React.useRef<Record<string, { lat: number; lng: number }[]>>({});
   // Track operation type to distinguish inserts from edits/deletes
   const isInsertOperationRef = React.useRef<boolean>(false);
   
   // Initialize with climb requests from localStorage
   const initialClimbRequestsByRoute = React.useMemo(() => loadClimbRequestsFromStorage(), [loadClimbRequestsFromStorage]);
 
+  const globalUndoRedo = useGlobalUndoRedo();
+  const { canUndo, canRedo } = globalUndoRedo;
+
   // @ts-ignore
   const {
     routes,
     activeRouteId,
     flightPath,
+    nominalFlightHeight,
+    setNominalFlightHeight,
+    setRouteNominalFlightHeight,
+    setRouteColor,
+    setRouteLineWidth,
     climbRequestsByRoute,
     addRoute,
     setActiveRoute,
@@ -137,49 +217,248 @@ function App() {
     deletePoint,
     insertPoints,
     setFlightPath,
+    reverseFlightPath,
     resetToSingleRoute,
-    exportKML,
     importKML,
+    importRoutes,
     setClimbRequestsByRoute,
-    undo,
-    redo,
-    canUndo,
-    canRedo
-  } = useFlightPath(initialClimbRequestsByRoute);
+    syncClimbRequestsByRoute,
+    // Local undo/redo are registered with globalUndoRedo and called through it
+    undo: _undo,
+    redo: _redo,
+    canUndo: _canUndo,
+    canRedo: _canRedo
+  } = useFlightPath({
+    initialClimbRequestsByRoute,
+    registerGlobalAction: globalUndoRedo.registerAction
+  });
   
   // Save climb requests to localStorage whenever they change
   React.useEffect(() => {
     try {
       localStorage.setItem('climbRequestsByRoute', JSON.stringify(climbRequestsByRoute));
     } catch (error) {
-      console.error('Failed to save climb requests to localStorage:', error);
+      debug.error('Failed to save climb requests to localStorage:', error);
     }
   }, [climbRequestsByRoute]);
+
+  // Save showNextLineSuggestions to localStorage whenever it changes
+  React.useEffect(() => {
+    try {
+      localStorage.setItem('showNextLineSuggestions', JSON.stringify(showNextLineSuggestions));
+    } catch (error) {
+      debug.error('Failed to save showNextLineSuggestions to localStorage:', error);
+    }
+  }, [showNextLineSuggestions]);
   
   // Wrap insertPoints to mark it as an insert operation
   const insertPointsWrapped = React.useCallback((index: number, points: Coordinate[]) => {
     isInsertOperationRef.current = true;
     insertPoints(index, points);
   }, [insertPoints]);
+
+  // Delete all climb points anchored to the direct segment between two waypoints.
+  // Called when a U-turn arc is inserted between those waypoints, making the segment invalid.
+  const handleDeleteClimbsOnSegment = React.useCallback((pointIdA: string, pointIdB: string) => {
+    setClimbRequestsByRoute((prev) => {
+      const current = prev[activeRouteId] || [];
+      const next = removeClimbsOnSegment(current, pointIdA, pointIdB);
+      if (next.length === current.length) return prev; // nothing changed, avoid re-render
+      return { ...prev, [activeRouteId]: next };
+    });
+  }, [activeRouteId, setClimbRequestsByRoute]);
   
+  // Calculate default entry height: (safetyHeight + outputHeight) / 2 + groundElevation
+  const calculateDefaultEntryHeight = React.useCallback(async (
+    point: Coordinate
+  ): Promise<number | null> => {
+    if (!dtmSource) {
+      return null; // Can't calculate without DTM
+    }
+
+    try {
+      const coordinates = [
+        [point.lng, point.lat],
+        [point.lng, point.lat] // Use same point for second coordinate
+      ];
+
+      const clippedIdMatch = dtmSource.match(/\/api\/dtm\/clipped\/([^/]+)/);
+      const clippedId = clippedIdMatch ? clippedIdMatch[1] : activeClippedId || undefined;
+
+      const response = await fetch('/api/elevation-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          coordinates,
+          dtmPath: dtmSource,
+          safetyRadiusMeters: 50,
+          resolutionRadiusMeters: 50,
+          ...(clippedId && { clippedId })
+        })
+      });
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = await response.json();
+      let groundElevation: number | null = null;
+
+      if (data.profile && Array.isArray(data.profile) && data.profile.length > 0) {
+        groundElevation = data.profile[0].elevation;
+      } else if (data.elevations && Array.isArray(data.elevations) && data.elevations.length > 0) {
+        groundElevation = data.elevations[0];
+      } else if (data.elevation !== undefined) {
+        groundElevation = data.elevation;
+      }
+
+      if (groundElevation === null || isNaN(groundElevation)) {
+        return null;
+      }
+
+      // Calculate default: average of safety and output height + ground elevation
+      const avgHeight = (safetyHeight + resolutionHeight) / 2;
+      const calculatedHeight = avgHeight + groundElevation;
+      // Round to 1 decimal place
+      return Math.round(calculatedHeight * 10) / 10;
+    } catch (error) {
+      debug.error('Failed to calculate default entry height:', error);
+      return null;
+    }
+  }, [dtmSource, activeClippedId, safetyHeight, resolutionHeight]);
+
+  // Track previous first point per route to detect route-specific edits
+  // We store both coordinates and id to distinguish actual edits from reordering (e.g. reverse)
+  const previousRouteFirstPointsRef = React.useRef<Record<string, { lng: number; lat: number; id?: string }>>({});
+
+  // Update entry height per route when that route's first point is added or edited
+  React.useEffect(() => {
+    const previousFirstPoints = previousRouteFirstPointsRef.current;
+    const nextFirstPoints: Record<string, { lng: number; lat: number; id?: string }> = {};
+
+    routes.forEach((route) => {
+      if (route.points.length === 0) {
+        return;
+      }
+
+      const firstPoint = route.points[0];
+      nextFirstPoints[route.id] = { lng: firstPoint.lng, lat: firstPoint.lat, id: firstPoint.id };
+
+      const previousFirstPoint = previousFirstPoints[route.id];
+      const isFirstPointAdded = !previousFirstPoint;
+      // Only treat as "edited" when the same waypoint (same id) moved, not when the
+      // first waypoint changed because the route was reversed or reordered.
+      const sameId = firstPoint.id && previousFirstPoint?.id
+        ? firstPoint.id === previousFirstPoint.id
+        : true; // no id tracking → fall back to old coordinate-change logic
+      const isFirstPointEdited =
+        !!previousFirstPoint &&
+        sameId &&
+        (previousFirstPoint.lng !== firstPoint.lng || previousFirstPoint.lat !== firstPoint.lat);
+
+      // Update entry height when:
+      // 1. First point is added and route entry height is still at default (250), OR
+      // 2. First point is edited (coordinates changed for the same waypoint)
+      // Skip when entrance height came from KML file - do not overwrite imported value
+      if (route.entranceHeightFromFile) return;
+      if (isFirstPointAdded || isFirstPointEdited) {
+        calculateDefaultEntryHeight(firstPoint).then((defaultHeight) => {
+          if (defaultHeight !== null && !isNaN(defaultHeight)) {
+            setRouteNominalFlightHeight(route.id, defaultHeight);
+          }
+        });
+      }
+    });
+
+    previousRouteFirstPointsRef.current = nextFirstPoints;
+  }, [routes, calculateDefaultEntryHeight, setRouteNominalFlightHeight]);
+
   // Wrap addPoint and addPoints to mark them as insert operations
   const addPointWrapped = React.useCallback((point: Coordinate) => {
     isInsertOperationRef.current = true;
     addPoint(point);
   }, [addPoint]);
-  
+
   const addPointsWrapped = React.useCallback((points: Coordinate[]) => {
     isInsertOperationRef.current = true;
     addPoints(points);
   }, [addPoints]);
 
-  // Get climb requests for the active route
+  // Get climb requests for the active route and ensure they have anchor IDs
   const climbRequests = React.useMemo(() => {
-    return climbRequestsByRoute[activeRouteId] || [];
-  }, [climbRequestsByRoute, activeRouteId]);
-  
+    const requests = climbRequestsByRoute[activeRouteId] || [];
+    
+    // Assign anchor IDs to climb points that don't have them (for backward compatibility)
+    if (flightPath.length >= 2 && requests.length > 0) {
+      const updated = requests.map((climb: ClimbRequest) => {
+        // If climb already has anchor IDs, keep it as is
+        if (climb.anchorPointIdA && climb.anchorPointIdB) {
+          return climb;
+        }
+        
+        // Otherwise, try to find and assign anchor IDs and ratio
+        const anchors = findAnchorPointsForClimb(climb.endDistance, flightPath);
+        if (anchors) {
+          return {
+            ...climb,
+            anchorPointIdA: anchors.anchorPointIdA,
+            anchorPointIdB: anchors.anchorPointIdB,
+            segmentRatio: anchors.segmentRatio
+          };
+        }
+        
+        // If we can't find anchors (points don't have IDs), return as is
+        return climb;
+      });
+      
+      return updated;
+    }
+    
+    return requests;
+  }, [climbRequestsByRoute, activeRouteId, flightPath]);
+
+  // Silently sync the stored endDistance of each climb to the anchor-derived effective value
+  // whenever the flight path changes (e.g. after a U-turn insertion). This keeps endDistance
+  // accurate without adding a spurious undo entry, so ElevationProfile can continue to match
+  // climbs by endDistance when the user edits or deletes them.
+  React.useEffect(() => {
+    if (flightPath.length < 2) return;
+    syncClimbRequestsByRoute((prev) => {
+      let changed = false;
+      const updated: Record<string, ClimbRequest[]> = {};
+      for (const [routeId, climbs] of Object.entries(prev)) {
+        // Only sync the active route (we only have the flight path for the active route here)
+        if (routeId !== activeRouteId) {
+          updated[routeId] = climbs;
+          continue;
+        }
+        const nextClimbs = climbs.map((c) => {
+          const effective = getEffectiveEndDistance(c, flightPath);
+          if (Math.abs(effective - c.endDistance) > 0.001) {
+            changed = true;
+            return { ...c, endDistance: effective };
+          }
+          return c;
+        });
+        updated[routeId] = nextClimbs;
+      }
+      return changed ? updated : prev;
+    });
+  }, [flightPath, activeRouteId]); // intentionally omit syncClimbRequestsByRoute (stable ref)
+
+  // Derived climb requests with endDistance recomputed from anchor IDs + segmentRatio.
+  // After the sync effect runs the stored values are already correct; this is kept as a
+  // safety net for the first render after a path change (before the effect fires).
+  const effectiveClimbRequests = React.useMemo(() =>
+    climbRequests.map((c) => ({
+      ...c,
+      endDistance: getEffectiveEndDistance(c, flightPath)
+    })),
+    [climbRequests, flightPath]
+  );
+
   // Set climb requests for the active route (now goes through undo/redo)
-  const setClimbRequests = React.useCallback((updater: React.SetStateAction<{ endDistance: number; climbAmount: number }[]>) => {
+  const setClimbRequests = React.useCallback((updater: React.SetStateAction<ClimbRequest[]>) => {
     setClimbRequestsByRoute((prev) => {
       const current = prev[activeRouteId] || [];
       const next = typeof updater === 'function' ? updater(current) : updater;
@@ -187,11 +466,49 @@ function App() {
     });
   }, [activeRouteId, setClimbRequestsByRoute, flightPath]);
 
-  const { elevationProfile, loading, profileReady, calculateProfile, clearProfile } = useElevationProfile();
+  const handleDeleteAllPoints = React.useCallback(() => {
+    // Clear climb requests first so both start/end climb markers become invalid.
+    setClimbRequestsByRoute((prev) => {
+      return { ...prev, [activeRouteId]: [] };
+    });
+    // Then clear regular route points.
+    setFlightPath([]);
+  }, [activeRouteId, setClimbRequestsByRoute, setFlightPath]);
+  
+  // State for anchor point warning modal
+  const [anchorWarningModal, setAnchorWarningModal] = useState<{
+    isOpen: boolean;
+    affectedClimbsCount: number;
+    pendingAction: (() => void) | null;
+  }>({
+    isOpen: false,
+    affectedClimbsCount: 0,
+    pendingAction: null
+  });
+
+  // State for reverse warning modal
+  const [reverseWarningOpen, setReverseWarningOpen] = useState(false);
+
+  // Auto-save state
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
+  const [autoSaveFileHandle, setAutoSaveFileHandle] = useState<FileSystemFileHandle | null>(null);
+  const [autoSaveFileName, setAutoSaveFileName] = useState('');
+  const autoSaveInProgressRef = React.useRef(false);
+
+  // State for triggering climb creation from the map right-click
+  const [mapClimbTriggerDistance, setMapClimbTriggerDistance] = useState<number | null>(null);
+
+  const { elevationProfile, loading, profileReady, profileError, calculateProfile, clearProfile } = useElevationProfile();
+
+  // When the profile error pop-up is closed, keep showing the error in the profile panel (don't clear it).
+  const [profileErrorModalDismissed, setProfileErrorModalDismissed] = useState(false);
+  React.useEffect(() => {
+    if (profileError) setProfileErrorModalDismissed(false);
+  }, [profileError]);
 
   // Track last inputs so we can avoid expensive recalculation when only nominal height changes
   const lastProfileParamsRef = React.useRef<{
-    flightPath: Coordinate[];
+    flightPathSignature: string;
     dtmSource: string | null;
     safetySearchRadius: number;
     resolutionSearchRadius: number;
@@ -200,190 +517,86 @@ function App() {
 
   // Debounce timer for profile calculation to handle rapid point additions
   const profileCalculationTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
+  const profileCallbackRef = React.useRef<((h: number) => void) | undefined>(undefined);
+  profileCallbackRef.current = (() => {
+    const activeRoute = routes.find((r) => r.id === activeRouteId);
+    return activeRoute?.entranceHeightFromFile ? undefined : setNominalFlightHeight;
+  })();
 
   React.useEffect(() => {
+    const flightPathSignature = flightPath
+      .map((p) => `${p.lng.toFixed(7)},${p.lat.toFixed(7)},${(p.height ?? '').toString()},${p.id ?? ''}`)
+      .join('|');
     const prev = lastProfileParamsRef.current;
     const baseChanged = !prev
-      || prev.flightPath !== flightPath
+      || prev.flightPathSignature !== flightPathSignature
       || prev.dtmSource !== dtmSource
       || prev.safetySearchRadius !== safetySearchRadius
-      || prev.resolutionSearchRadius !== resolutionSearchRadius;
+      || prev.resolutionSearchRadius !== resolutionSearchRadius
+      || prev.nominalFlightHeight !== nominalFlightHeight;
 
-    // Clear any pending debounce timer
-    if (profileCalculationTimeoutRef.current) {
+    const onDefaultEntryHeightCalculated = profileCallbackRef.current;
+
+    if (baseChanged && profileCalculationTimeoutRef.current) {
       clearTimeout(profileCalculationTimeoutRef.current);
       profileCalculationTimeoutRef.current = null;
     }
 
     if (baseChanged) {
+      // Clear any pending debounce timer for previous inputs
+      if (profileCalculationTimeoutRef.current) {
+        clearTimeout(profileCalculationTimeoutRef.current);
+        profileCalculationTimeoutRef.current = null;
+      }
       if (flightPath.length === 0) {
-        // Clear profile immediately when flight path is empty
-        calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
+        calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, onDefaultEntryHeightCalculated);
       } else if (flightPath.length === 1) {
-        // Clear profile immediately when only one point remains
         clearProfile();
       } else if (flightPath.length >= 2 && dtmSource) {
-        // Debounce profile calculation to wait for user to finish adding points
-        // This prevents sending too many requests when points are added quickly
         profileCalculationTimeoutRef.current = setTimeout(() => {
-          calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius);
+          const cb = profileCallbackRef.current;
+          calculateProfile(flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, cb);
           profileCalculationTimeoutRef.current = null;
-        }, 300); // Wait 300ms after the last change
+        }, 300);
       }
     }
-    // Note: When only nominal height changes, fullProfileResultInternal will recalculate
-    // automatically via its useMemo dependency, and the profile lock is unlocked to allow updates
 
     lastProfileParamsRef.current = {
-      flightPath,
+      flightPathSignature,
       dtmSource,
       safetySearchRadius,
       resolutionSearchRadius,
       nominalFlightHeight
     };
 
-    // Cleanup: cancel pending calculation if component unmounts or dependencies change
+    return () => {
+      // Intentionally do NOT clear timeout on deps change - clearing here cancels the pending
+      // profile calc when effect re-runs due to unrelated dep changes (e.g. calculateProfile
+      // getting new ref when nominalFlightHeight updates). Timeout uses latest closure values
+      // via profileCallbackRef.
+    };
+  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, calculateProfile, clearProfile, setNominalFlightHeight]);
+
+  React.useEffect(() => {
     return () => {
       if (profileCalculationTimeoutRef.current) {
         clearTimeout(profileCalculationTimeoutRef.current);
         profileCalculationTimeoutRef.current = null;
       }
     };
-  }, [flightPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, calculateProfile, clearProfile]);
+  }, []);
 
-  // Clear climb requests only for segments that were edited (deleted or moved)
-  // Don't clear climbs when points are inserted (new segments added)
-  React.useEffect(() => {
-    const currentGeometry = flightPath.map((p) => ({ lat: p.lat, lng: p.lng }));
-    const prevGeometry = prevGeometryByRouteRef.current[activeRouteId];
-
-    // If this is an insert operation, don't remove any climbs
-    const isInsert = isInsertOperationRef.current;
-    if (isInsert) {
-      // Reset the flag after checking it
-      isInsertOperationRef.current = false;
-      prevGeometryByRouteRef.current[activeRouteId] = currentGeometry;
-      return;
-    }
-
-    if (prevGeometry && climbRequests.length > 0) {
-      const geometryChanged =
-        prevGeometry.length !== currentGeometry.length ||
-        prevGeometry.some((p, idx) => p.lat !== currentGeometry[idx]?.lat || p.lng !== currentGeometry[idx]?.lng);
-
-      if (geometryChanged) {
-        // Calculate which segments were affected
-        const affectedSegments = new Set<number>();
-        
-        // Helper to compute cumulative distances
-        const computeDistances = (path: Coordinate[]): number[] => {
-          if (path.length === 0) return [];
-          const distances = [0];
-          for (let i = 1; i < path.length; i++) {
-            const R = 6371000; // Earth radius in meters
-            const dLat = ((path[i].lat - path[i - 1].lat) * Math.PI) / 180;
-            const dLon = ((path[i].lng - path[i - 1].lng) * Math.PI) / 180;
-            const a =
-              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-              Math.cos((path[i - 1].lat * Math.PI) / 180) *
-                Math.cos((path[i].lat * Math.PI) / 180) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-            const dist = R * c;
-            distances.push(distances[i - 1] + dist);
-          }
-          return distances;
-        };
-        
-        // Helper to compare coordinates with tolerance
-        const coordsEqual = (a: { lat: number; lng: number }, b: { lat: number; lng: number }): boolean => {
-          return Math.abs(a.lat - b.lat) < 1e-9 && Math.abs(a.lng - b.lng) < 1e-9;
-        };
-        
-        // Determine which segments were affected
-        if (prevGeometry.length !== currentGeometry.length) {
-          // Point was deleted or added - identify which one
-          if (prevGeometry.length > currentGeometry.length) {
-            // Point was deleted - find the deleted index by comparing sequences
-            for (let i = 0; i < prevGeometry.length; i++) {
-              // Check if removing point i would match current geometry
-              let matches = true;
-              for (let j = 0; j < currentGeometry.length; j++) {
-                const prevIdx = j < i ? j : j + 1;
-                if (prevIdx >= prevGeometry.length || !coordsEqual(currentGeometry[j], prevGeometry[prevIdx])) {
-                  matches = false;
-                  break;
-                }
-              }
-              
-              if (matches) {
-                // Point at index i was deleted
-                // Segments i-1 and i are affected (if they exist)
-                if (i > 0 && i - 1 < prevGeometry.length - 1) affectedSegments.add(i - 1);
-                if (i < prevGeometry.length - 1) affectedSegments.add(i);
-                break;
-              }
-            }
-            
-            // If we couldn't identify the deleted point, don't remove any climbs
-            // (be conservative - better to keep climbs than remove incorrectly)
-          }
-        } else {
-          // Same length - points were moved
-          // Find which points changed
-          for (let i = 0; i < prevGeometry.length; i++) {
-            if (!coordsEqual(prevGeometry[i], currentGeometry[i])) {
-              // Point at index i was moved
-              // Segments i-1 and i are affected (if they exist)
-              if (i > 0 && i - 1 < prevGeometry.length - 1) affectedSegments.add(i - 1);
-              if (i < prevGeometry.length - 1) affectedSegments.add(i);
-            }
-          }
-        }
-        
-        // If we have affected segments, remove climbs on those segments
-        if (affectedSegments.size > 0 && flightPath.length >= 2 && prevGeometry.length >= 2) {
-          // Convert geometry to coordinates for distance calculation
-          const prevPath: Coordinate[] = prevGeometry.map(p => ({ lat: p.lat, lng: p.lng }));
-          const prevDistances = computeDistances(prevPath);
-          
-          // Filter out climbs that are on affected segments
-          const climbsToKeep = climbRequests.filter((climb) => {
-            // Find which segment this climb is on in the previous path
-            let segmentIndex = -1;
-            for (let i = 1; i < prevDistances.length; i++) {
-              // Use tolerance for floating point comparison
-              if (climb.endDistance >= prevDistances[i - 1] - 0.1 && 
-                  climb.endDistance <= prevDistances[i] + 0.1) {
-                segmentIndex = i - 1;
-                break;
-              }
-            }
-            
-            // If climb is on an affected segment, remove it
-            return segmentIndex === -1 || !affectedSegments.has(segmentIndex);
-          });
-          
-          if (climbsToKeep.length !== climbRequests.length) {
-            setClimbRequests(climbsToKeep);
-          }
-        } else if (affectedSegments.size === 0 && prevGeometry.length === currentGeometry.length) {
-          // No segments were affected (maybe just metadata change), don't remove climbs
-        }
-      }
-    }
-
-    // Update the stored geometry for this specific route
-    prevGeometryByRouteRef.current[activeRouteId] = currentGeometry;
-  }, [flightPath, activeRouteId, setClimbRequests]);
+  // NOTE: Old logic that removed climbs on segment changes has been removed.
+  // Climb points are now anchored to specific point IDs and are only removed
+  // when their anchor points are edited/deleted (with user confirmation via warning modal).
 
   // Calculate the full profile result
   const fullProfileResultInternal = React.useMemo(() => {
     if (elevationProfile.length === 0) return { points: [], warnings: [] };
 
-    // 1. Calculate base altitude profile (nominal height above first point)
-    const startElevation = elevationProfile[0].elevation;
-    const constantAltitude = startElevation + nominalFlightHeight;
+    // 1. Calculate base altitude profile normalized to 0.
+    // nominalFlightHeight is applied as a cheap O(n) offset in heightAdjustedStableProfile.
+    const constantAltitude = 0;
     const baseAltitudeProfile: BaseAltitudeSample[] = elevationProfile.map((p) => ({
       distance: p.distance,
       baseAltitude: constantAltitude,
@@ -411,22 +624,26 @@ function App() {
       };
     }
 
-    // 3. Process climb requests sequentially
-    const sortedClimbs = [...climbRequests].sort((a, b) => a.endDistance - b.endDistance);
+    // 3. Process climb requests sequentially.
+    // effectiveClimbRequests has endDistance derived from anchor IDs + segmentRatio,
+    // so positions are stable even when points are inserted/removed on the route.
+    const sortedClimbs = [...effectiveClimbRequests].sort((a, b) => a.endDistance - b.endDistance);
     let currentBase = baseAltitudeProfile;
     let currentPlanned = basePlanPoints;
     const allWarnings: string[] = [];
 
     sortedClimbs.forEach((climb, idx) => {
-      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const activeRatio = climb.climbAmount > 0
+        ? (climb.climbRatio ?? climbConfig.climbRatio)
+        : (climb.descentRatio ?? climbConfig.descentRatio);
       const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
       const startDistanceOfClimb = Math.max(0, climb.endDistance - requiredHorizontal);
 
       const res = computeClimbProfile(
         startDistanceOfClimb,
         climb.climbAmount,
-        climbConfig.climbRatio,
-        climbConfig.descentRatio,
+        climb.climbRatio ?? climbConfig.climbRatio,
+        climb.descentRatio ?? climbConfig.descentRatio,
         climbConfig.allowTurnsDuringClimb,
         flightPath,
         currentBase,
@@ -460,11 +677,57 @@ function App() {
       })),
       warnings: allWarnings
     };
-  }, [elevationProfile, nominalFlightHeight, flightPath, climbRequests, climbConfig]);
+  }, [elevationProfile, flightPath, effectiveClimbRequests, climbConfig]);
 
   // Stable profile that only updates when queue is empty AND server confirms it's ready
   const [stableProfileResult, setStableProfileResult] = React.useState(() => fullProfileResultInternal);
   const profileLockedRef = React.useRef(false);
+
+  const handleGroupMoveCommitted = React.useCallback((updatedPath: Coordinate[]) => {
+    // Cancel pending debounced recalculation and run an immediate recalculation for group moves.
+    if (profileCalculationTimeoutRef.current) {
+      clearTimeout(profileCalculationTimeoutRef.current);
+      profileCalculationTimeoutRef.current = null;
+    }
+
+    profileLockedRef.current = false;
+    setStableProfileResult({ points: [], warnings: [] });
+
+    const activeRoute = routes.find((r) => r.id === activeRouteId);
+    const onDefaultEntryHeightCalculated = activeRoute?.entranceHeightFromFile ? undefined : setNominalFlightHeight;
+
+    if (updatedPath.length === 0) {
+      calculateProfile([], dtmSource || '', nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, onDefaultEntryHeightCalculated);
+    } else if (updatedPath.length === 1) {
+      clearProfile();
+    } else if (dtmSource) {
+      calculateProfile(updatedPath, dtmSource, nominalFlightHeight, safetySearchRadius, resolutionSearchRadius, safetyHeight, resolutionHeight, activeClippedId, onDefaultEntryHeightCalculated);
+    }
+
+    // Keep the effect's previous-value tracker in sync to avoid scheduling a duplicate debounce run.
+    lastProfileParamsRef.current = {
+      flightPathSignature: updatedPath
+        .map((p) => `${p.lng.toFixed(7)},${p.lat.toFixed(7)},${(p.height ?? '').toString()},${p.id ?? ''}`)
+        .join('|'),
+      dtmSource,
+      safetySearchRadius,
+      resolutionSearchRadius,
+      nominalFlightHeight
+    };
+  }, [
+    activeClippedId,
+    activeRouteId,
+    calculateProfile,
+    clearProfile,
+    dtmSource,
+    nominalFlightHeight,
+    resolutionHeight,
+    routes,
+    safetyHeight,
+    resolutionSearchRadius,
+    safetySearchRadius,
+    setNominalFlightHeight
+  ]);
   
   // Unlock profile when a new calculation starts
   React.useEffect(() => {
@@ -498,11 +761,6 @@ function App() {
     }
   }, [flightPath.length]);
 
-  // Unlock profile when nominal height changes so it can be recalculated
-  React.useEffect(() => {
-    profileLockedRef.current = false;
-  }, [nominalFlightHeight]);
-
   // Unlock profile when climb requests or climb config changes so it can be recalculated
   React.useEffect(() => {
     profileLockedRef.current = false;
@@ -513,51 +771,147 @@ function App() {
   // 2. Server has confirmed profile is ready (profileReady)
   // 3. Profile is not locked (locked means it's already displayed and should not change)
   React.useEffect(() => {
-    // Only update the stable profile when:
-    // - Queue is completely empty and not processing
-    // - Server has sent ready flag
-    // - Profile is not locked (or we're starting a new calculation)
-    // - Flight path has at least 2 points (empty/1 point cases are handled above)
     if (editQueue.length === 0 && !isProcessingQueue && profileReady && !profileLockedRef.current && flightPath.length >= 2) {
       setStableProfileResult(fullProfileResultInternal);
       profileLockedRef.current = true; // Lock the profile once displayed
     }
   }, [fullProfileResultInternal, editQueue.length, isProcessingQueue, profileReady, flightPath.length]);
 
+  // Apply nominalFlightHeight offset to the stable normalized profile.
+  // This is O(n) and avoids a full profile recomputation when only height changes.
+  const heightAdjustedStableProfile = React.useMemo(() => {
+    if (stableProfileResult.points.length === 0) return stableProfileResult;
+    return {
+      ...stableProfileResult,
+      points: stableProfileResult.points.map((p) => ({
+        ...p,
+        baseAltitude: (p.baseAltitude ?? 0) + nominalFlightHeight,
+        plannedAltitude: p.plannedAltitude !== undefined
+          ? p.plannedAltitude + nominalFlightHeight
+          : undefined,
+        flightHeight: p.plannedAltitude !== undefined
+          ? (p.plannedAltitude + nominalFlightHeight) - p.elevation
+          : p.flightHeight,
+      })),
+    };
+  }, [stableProfileResult, nominalFlightHeight]);
+
   // Use stable profile - this ensures the profile only shows the final version when queue is empty and ready
-  const fullProfileResult = stableProfileResult;
+  const fullProfileResult = heightAdjustedStableProfile;
 
   const climbMarkers = React.useMemo(() => {
     if (!fullProfileResult.points.length || climbRequests.length === 0) return [];
 
     const markers: { lat: number; lng: number; label: string; type: 'start' | 'end' }[] = [];
+    
+    // Helper to convert distance to coordinate
+    const distanceToCoordinate = (distance: number, route: Coordinate[], cumulativeDistances: number[]): Coordinate | null => {
+      if (route.length === 0 || cumulativeDistances.length === 0) return null;
+      if (distance <= 0) return route[0];
+      if (distance >= cumulativeDistances[cumulativeDistances.length - 1]) {
+        return route[route.length - 1];
+      }
 
-    climbRequests.forEach((climb) => {
-      // Calculate start distance
-      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
-      const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
-      const startDistance = Math.max(0, climb.endDistance - requiredHorizontal);
+      // Find the segment containing this distance
+      for (let i = 1; i < cumulativeDistances.length; i++) {
+        if (distance <= cumulativeDistances[i]) {
+          const prevDist = cumulativeDistances[i - 1];
+          const segmentDist = cumulativeDistances[i] - prevDist;
+          const t = segmentDist > 0 ? (distance - prevDist) / segmentDist : 0;
 
-      // Find the closest profile point to the climb start distance
-      let closestStart = fullProfileResult.points[0];
-      let minDeltaStart = Math.abs(closestStart.distance - startDistance);
-      for (const p of fullProfileResult.points) {
-        const delta = Math.abs(p.distance - startDistance);
-        if (delta < minDeltaStart) {
-          minDeltaStart = delta;
-          closestStart = p;
+          const p1 = route[i - 1];
+          const p2 = route[i];
+
+          // Interpolate between points
+          return {
+            lng: p1.lng + (p2.lng - p1.lng) * t,
+            lat: p1.lat + (p2.lat - p1.lat) * t
+          };
         }
       }
 
-      // Find the closest profile point to the climb end distance
-      let closestEnd = fullProfileResult.points[0];
-      let minDeltaEnd = Math.abs(closestEnd.distance - climb.endDistance);
-      for (const p of fullProfileResult.points) {
-        const delta = Math.abs(p.distance - climb.endDistance);
-        if (delta < minDeltaEnd) {
-          minDeltaEnd = delta;
-          closestEnd = p;
+      return route[route.length - 1];
+    };
+
+    effectiveClimbRequests.forEach((climb) => {
+      // climb.endDistance is already the anchor-derived effective distance
+      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
+
+      // Try to get position from anchor points first (for anchored climbs)
+      let endCoord: Coordinate | null = null;
+      if (climb.anchorPointIdA && climb.anchorPointIdB) {
+        endCoord = getClimbPositionFromAnchors(climb, flightPath, climb.endDistance);
+      }
+
+      // Fallback to distance-based calculation if no anchors or anchors not found
+      if (!endCoord) {
+        const cumulativeDistances = computeCumulativeDistances(flightPath);
+        endCoord = distanceToCoordinate(climb.endDistance, flightPath, cumulativeDistances);
+      }
+      
+      if (!endCoord) {
+        return;
+      }
+
+      // For start position, calculate based on segment ratio (not global distance)
+      // This ensures the start position stays fixed relative to the anchor points
+      let startCoord: Coordinate | null = null;
+      if (climb.anchorPointIdA && climb.anchorPointIdB && climb.segmentRatio !== undefined) {
+        // Find anchor points
+        const pointA = flightPath.find(p => p.id === climb.anchorPointIdA);
+        const pointB = flightPath.find(p => p.id === climb.anchorPointIdB);
+        
+        if (pointA && pointB) {
+          // Find segment indices to calculate segment length
+          let segmentStartIdx = -1;
+          let segmentEndIdx = -1;
+          
+          for (let i = 0; i < flightPath.length; i++) {
+            if (flightPath[i].id === climb.anchorPointIdA) segmentStartIdx = i;
+            if (flightPath[i].id === climb.anchorPointIdB) segmentEndIdx = i;
+          }
+          
+          if (segmentStartIdx !== -1 && segmentEndIdx !== -1 && segmentEndIdx === segmentStartIdx + 1) {
+            // Calculate segment length using haversine distance between the two anchor points
+            // This ensures the segment length is always relative to the current anchor positions
+            const EARTH_RADIUS_M = 6371000;
+            const dLat = ((pointB.lat - pointA.lat) * Math.PI) / 180;
+            const dLon = ((pointB.lng - pointA.lng) * Math.PI) / 180;
+            const lat1 = (pointA.lat * Math.PI) / 180;
+            const lat2 = (pointB.lat * Math.PI) / 180;
+            const a =
+              Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.sin(dLon / 2) * Math.sin(dLon / 2) * Math.cos(lat1) * Math.cos(lat2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const segmentLength = EARTH_RADIUS_M * c;
+            
+            if (segmentLength > 0) {
+              // Calculate start ratio: go back requiredHorizontal meters from the end position
+              // The end is at segmentRatio, so we need to calculate how much ratio to go back
+              const ratioToGoBack = requiredHorizontal / segmentLength;
+              const startRatio = Math.max(0, Math.min(1, climb.segmentRatio - ratioToGoBack));
+              
+              startCoord = {
+                lng: pointA.lng + (pointB.lng - pointA.lng) * startRatio,
+                lat: pointA.lat + (pointB.lat - pointA.lat) * startRatio
+              };
+            } else {
+              startCoord = { ...endCoord };
+            }
+          }
         }
+      }
+      
+      // Fallback to distance-based calculation if anchor-based failed
+      if (!startCoord) {
+        const cumulativeDistances = computeCumulativeDistances(flightPath);
+        const startDistance = Math.max(0, climb.endDistance - requiredHorizontal);
+        startCoord = distanceToCoordinate(startDistance, flightPath, cumulativeDistances);
+      }
+
+      if (!startCoord) {
+        return;
       }
 
       const sign = climb.climbAmount >= 0 ? '+' : '';
@@ -565,71 +919,68 @@ function App() {
 
       // Add start marker
       markers.push({
-        lat: closestStart.latitude,
-        lng: closestStart.longitude,
+        lat: startCoord.lat,
+        lng: startCoord.lng,
         label: '',
         type: 'start'
       });
 
       // Add end marker
       markers.push({
-        lat: closestEnd.latitude,
-        lng: closestEnd.longitude,
+        lat: endCoord.lat,
+        lng: endCoord.lng,
         label: label,
         type: 'end'
       });
     });
 
     return markers;
-  }, [climbRequests, fullProfileResult.points, climbConfig]);
+  }, [effectiveClimbRequests, fullProfileResult.points, climbConfig, flightPath]);
 
-  const deleteDtmOnServer = useCallback(async (pathToDelete?: string, clippedIdToDelete?: string, keepalive: boolean = false) => {
+  const deleteDtmOnServer = useCallback(async (
+    pathToDelete?: string,
+    clippedIdToDelete?: string,
+    keepalive: boolean = false,
+    forceDelete: boolean = false
+  ) => {
     const targetPath = pathToDelete || dtmSource;
     const targetClippedId = clippedIdToDelete || activeClippedId;
 
     // If we have a clipped ID, delete that first
     if (targetClippedId) {
       try {
-        console.log(`Attempting to delete clipped DTM: ${targetClippedId}`);
-        const response = await fetch(`/api/dtm/clipped/${targetClippedId}`, {
+        const response = await fetch(`/api/dtm/clipped/${targetClippedId}?force=${forceDelete}`, {
           method: 'DELETE',
           keepalive
         });
         
         if (!response.ok) {
           const errorText = await response.text();
-          console.error(`Failed to delete clipped DTM: ${targetClippedId} - ${response.status} ${response.statusText}`, errorText);
-        } else {
-          const result = await response.json().catch(() => ({}));
-          console.log(`Successfully deleted clipped DTM: ${targetClippedId}`, result);
+          debug.error(`Failed to delete clipped DTM: ${targetClippedId} - ${response.status} ${response.statusText}`, errorText);
         }
       } catch (error) {
-        console.error('Failed to delete clipped DTM on server:', error);
+        debug.error('Failed to delete clipped DTM on server:', error);
       }
     }
 
     // Also cleanup legacy uploaded files if applicable
     if (targetPath && !targetPath.includes('/api/dtm/clipped/')) {
       try {
-        console.log(`Attempting to delete legacy DTM: ${targetPath}`);
         const response = await fetch('/api/dtm/cleanup', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ path: targetPath }),
+          body: JSON.stringify({ path: targetPath, force: forceDelete }),
           keepalive
         });
         
         if (!response.ok) {
           const errorText = await response.text();
-          console.error(`Failed to delete legacy DTM: ${targetPath} - ${response.status} ${response.statusText}`, errorText);
-        } else {
-          const result = await response.json().catch(() => ({}));
-          console.log(`Successfully deleted legacy DTM: ${targetPath}`, result);
+          debug.error(`Failed to delete legacy DTM: ${targetPath} - ${response.status} ${response.statusText}`, errorText);
         }
       } catch (error) {
-        console.error('Failed to delete DTM on server:', error);
+        debug.error('Failed to delete DTM on server:', error);
       }
     }
   }, [dtmSource, activeClippedId]);
@@ -679,32 +1030,208 @@ function App() {
           flightHeight: interpolatedFlightHeight
         });
       } else {
-        // Fallback: find the closest point in full profile by coordinates
-        let closest = fullProfileResult.points[0];
-        let minSqDist = Math.pow(closest.longitude - point.lng, 2) + Math.pow(closest.latitude - point.lat, 2);
-
-        for (const p of fullProfileResult.points) {
-          const sqDist = Math.pow(p.longitude - point.lng, 2) + Math.pow(p.latitude - point.lat, 2);
-          if (sqDist < minSqDist) {
-            minSqDist = sqDist;
-            closest = p;
+        // When hovering over a vertex, calculate distance along current flightPath
+        // This ensures correct connection after route rotation
+        if (flightPath.length >= 2) {
+          // Find which vertex in flightPath matches the hovered point
+          let vertexIndex = -1;
+          let minDist = Infinity;
+          
+          for (let i = 0; i < flightPath.length; i++) {
+            const dist = Math.pow(flightPath[i].lng - point.lng, 2) + Math.pow(flightPath[i].lat - point.lat, 2);
+            if (dist < minDist) {
+              minDist = dist;
+              vertexIndex = i;
+            }
           }
+
+          // Calculate cumulative distance to this vertex
+          let vertexDistance = 0;
+          if (vertexIndex > 0) {
+            for (let i = 1; i <= vertexIndex; i++) {
+              vertexDistance += calculateDistance(flightPath[i - 1], flightPath[i]);
+            }
+          }
+
+          // Find the points in full profile to interpolate between using the calculated distance
+          let leftIdx = 0;
+          let rightIdx = fullProfileResult.points.length - 1;
+
+          // Find the segment containing this distance
+          for (let i = 0; i < fullProfileResult.points.length - 1; i++) {
+            if (vertexDistance >= fullProfileResult.points[i].distance && vertexDistance <= fullProfileResult.points[i + 1].distance) {
+              leftIdx = i;
+              rightIdx = i + 1;
+              break;
+            }
+          }
+
+          const p1 = fullProfileResult.points[leftIdx];
+          const p2 = fullProfileResult.points[rightIdx];
+          const distRange = p2.distance - p1.distance;
+          const t = distRange > 0 ? (vertexDistance - p1.distance) / distRange : 0;
+
+          const interpolatedElevation = p1.elevation + (p2.elevation - p1.elevation) * t;
+          const interpolatedMin = (p1.minElevation !== undefined && p2.minElevation !== undefined)
+            ? p1.minElevation + (p2.minElevation - p1.minElevation) * t : undefined;
+          const interpolatedMax = (p1.maxElevation !== undefined && p2.maxElevation !== undefined)
+            ? p1.maxElevation + (p2.maxElevation - p1.maxElevation) * t : undefined;
+
+          const interpolatedPlanned = (p1.plannedAltitude !== undefined && p2.plannedAltitude !== undefined)
+            ? p1.plannedAltitude + (p2.plannedAltitude - p1.plannedAltitude) * t : undefined;
+
+          const interpolatedFlightHeight = (interpolatedPlanned !== undefined)
+            ? interpolatedPlanned - interpolatedElevation : undefined;
+
+          setHoveredElevationPoint({
+            distance: vertexDistance,
+            elevation: interpolatedElevation,
+            longitude: point.lng,
+            latitude: point.lat,
+            minElevation: interpolatedMin,
+            maxElevation: interpolatedMax,
+            plannedAltitude: interpolatedPlanned,
+            flightHeight: interpolatedFlightHeight
+          });
+        } else {
+          // Fallback: find the closest point in full profile by coordinates (if flightPath is too short)
+          let closest = fullProfileResult.points[0];
+          let minSqDist = Math.pow(closest.longitude - point.lng, 2) + Math.pow(closest.latitude - point.lat, 2);
+
+          for (const p of fullProfileResult.points) {
+            const sqDist = Math.pow(p.longitude - point.lng, 2) + Math.pow(p.latitude - point.lat, 2);
+            if (sqDist < minSqDist) {
+              minSqDist = sqDist;
+              closest = p;
+            }
+          }
+          setHoveredElevationPoint(closest);
         }
-        setHoveredElevationPoint(closest);
       }
       setHoverSource('map');
     } else {
       setHoveredElevationPoint(null);
       setHoverSource(null);
     }
-  }, [fullProfileResult.points]);
+  }, [fullProfileResult.points, flightPath]);
 
   const handleElevationPointHover = useCallback((point: ElevationPoint | null) => {
-    setHoveredElevationPoint(point);
-    setHoverSource(point ? 'profile' : null);
-  }, []);
+    if (!point) {
+      setHoveredElevationPoint(null);
+      setHoverSource(null);
+      return;
+    }
 
-  const handleDtmLoad = useCallback((source: string, info?: any, clippedId?: string) => {
+    // Recalculate coordinates based on current flightPath using distance
+    // This ensures the hover marker shows the correct point after route rotation
+    if (flightPath.length >= 2) {
+      // Calculate cumulative distances along the current flight path
+      const cumulativeDistances: number[] = [0];
+      let totalDist = 0;
+      for (let i = 1; i < flightPath.length; i++) {
+        const segDist = calculateDistance(flightPath[i - 1], flightPath[i]);
+        totalDist += segDist;
+        cumulativeDistances.push(totalDist);
+      }
+
+      // Find the segment and position where the distance matches
+      const targetDistance = point.distance;
+      let found = false;
+
+      for (let i = 0; i < cumulativeDistances.length - 1; i++) {
+        const segStartDist = cumulativeDistances[i];
+        const segEndDist = cumulativeDistances[i + 1];
+
+        if (targetDistance >= segStartDist && targetDistance <= segEndDist) {
+          // Interpolate position within this segment
+          const segLength = segEndDist - segStartDist;
+          const t = segLength > 0 ? (targetDistance - segStartDist) / segLength : 0;
+
+          const start = flightPath[i];
+          const end = flightPath[i + 1];
+          const newLat = start.lat + (end.lat - start.lat) * t;
+          const newLng = start.lng + (end.lng - start.lng) * t;
+
+          // Update the point with new coordinates while preserving other properties
+          setHoveredElevationPoint({
+            ...point,
+            latitude: newLat,
+            longitude: newLng
+          });
+          setHoverSource('profile');
+          found = true;
+          break;
+        }
+      }
+
+      // If distance is beyond the path, use the last point
+      if (!found && flightPath.length > 0) {
+        const lastPoint = flightPath[flightPath.length - 1];
+        setHoveredElevationPoint({
+          ...point,
+          latitude: lastPoint.lat,
+          longitude: lastPoint.lng
+        });
+        setHoverSource('profile');
+      }
+    } else {
+      // Fallback: use original coordinates if flight path is too short
+      setHoveredElevationPoint(point);
+      setHoverSource('profile');
+    }
+  }, [flightPath]);
+
+  const handleOverlapGraphPointHover = useCallback((point: ElevationPoint | null) => {
+    if (!point) {
+      setHoveredElevationPoint(null);
+      setHoverSource(null);
+      return;
+    }
+    if (flightPath.length >= 2) {
+      const cumulativeDistances: number[] = [0];
+      let totalDist = 0;
+      for (let i = 1; i < flightPath.length; i++) {
+        const segDist = calculateDistance(flightPath[i - 1], flightPath[i]);
+        totalDist += segDist;
+        cumulativeDistances.push(totalDist);
+      }
+      const targetDistance = point.distance;
+      let found = false;
+      for (let i = 0; i < cumulativeDistances.length - 1; i++) {
+        const segStartDist = cumulativeDistances[i];
+        const segEndDist = cumulativeDistances[i + 1];
+        if (targetDistance >= segStartDist && targetDistance <= segEndDist) {
+          const segLength = segEndDist - segStartDist;
+          const t = segLength > 0 ? (targetDistance - segStartDist) / segLength : 0;
+          const start = flightPath[i];
+          const end = flightPath[i + 1];
+          const newLat = start.lat + (end.lat - start.lat) * t;
+          const newLng = start.lng + (end.lng - start.lng) * t;
+          setHoveredElevationPoint({ ...point, latitude: newLat, longitude: newLng });
+          setHoverSource('overlap');
+          found = true;
+          break;
+        }
+      }
+      if (!found && flightPath.length > 0) {
+        const lastPoint = flightPath[flightPath.length - 1];
+        setHoveredElevationPoint({ ...point, latitude: lastPoint.lat, longitude: lastPoint.lng });
+        setHoverSource('overlap');
+      }
+    } else {
+      setHoveredElevationPoint(point);
+      setHoverSource('overlap');
+    }
+  }, [flightPath]);
+
+  const handleDtmLoad = useCallback((source: string, info?: any, clippedId?: string, options?: {
+    sourceType?: 'local' | 'server';
+    originalFile?: File;
+    serverId?: string;
+    serverMetadata?: { displayName?: string; sizeBytes?: number; modifiedAt?: string };
+    aoi?: { type: 'bbox' | 'polygon' | 'kml'; bbox?: { minLon: number; minLat: number; maxLon: number; maxLat: number }; polygon?: [number, number][] };
+  }) => {
+    const { sourceType, originalFile, serverId, serverMetadata, aoi } = options || {};
     // If loading a new DTM and we have an existing clippedId, delete the old one first
     if (activeClippedId && clippedId && activeClippedId !== clippedId) {
       deleteDtmOnServer(undefined, activeClippedId);
@@ -721,12 +1248,32 @@ function App() {
         clippedId: clippedId || info.clippedId
       });
     }
+    
+    // Track source type and metadata for project save/load
+    if (sourceType) {
+      setDtmSourceType(sourceType);
+      if (sourceType === 'local' && originalFile) {
+        setLocalDtmFile(originalFile);
+        setServerDtmId(null);
+        setServerDtmMetadata(null);
+        setActiveDtmName(originalFile.name);
+      } else if (sourceType === 'server' && serverId) {
+        setServerDtmId(serverId);
+        setServerDtmMetadata(serverMetadata || null);
+        setLocalDtmFile(null);
+        setActiveDtmName(serverMetadata?.displayName || null);
+      }
+    }
+
+    if (aoi) {
+      setAoiGeometry(aoi);
+    }
   }, [activeClippedId, deleteDtmOnServer]);
 
   const handleDtmUnload = useCallback(() => {
     // Show warning confirmation dialog
     const confirmed = window.confirm(
-      'האם אתה בטוח שברצונך לפרוק את ה-DTM?\n\nפעולה זו תמחק את כל הנקודות והמסלולים ותנקה את פרופיל הגובה.\n\nלא ניתן לבטל פעולה זו.'
+      'האם אתה בטוח שברצונך להסיר את ה-DTM?\n\nפעולה זו תמחק את כל הנקודות והמסלולים ותנקה את פרופיל הגובה.\n\nלא ניתן לבטל פעולה זו.'
     );
     
     if (!confirmed) {
@@ -734,13 +1281,14 @@ function App() {
     }
 
     if (dtmSource || activeClippedId) {
-      deleteDtmOnServer(dtmSource || undefined, activeClippedId || undefined).catch((error) => {
-        console.error('Failed to clean up DTM cache:', error);
+      deleteDtmOnServer(dtmSource || undefined, activeClippedId || undefined, false, true).catch((error) => {
+        debug.error('Failed to clean up DTM cache:', error);
       });
     }
     setDtmSource(null);
     setDtmInfo(null);
     setActiveClippedId(null);
+    setActiveDtmName(null);
     // Clear elevation profile when unloading DTM
     clearProfile();
     // Clear stable profile result
@@ -750,86 +1298,372 @@ function App() {
     resetToSingleRoute();
   }, [dtmSource, activeClippedId, deleteDtmOnServer, resetToSingleRoute, clearProfile]);
 
-  // Warn users that refreshing will clear points and unload the DTM; only clean up on confirmed unload.
-  React.useEffect(() => {
-    const cleanupDtm = () => {
-      // Cleanup clipped DTM if exists - use direct DELETE endpoint
-      if (activeClippedId) {
-        try {
-          // Use fetch with keepalive for reliable cleanup on page unload
-          // sendBeacon only supports POST, so we use fetch with keepalive for DELETE
-          fetch(`/api/dtm/clipped/${activeClippedId}`, {
-            method: 'DELETE',
-            keepalive: true
-          }).catch(() => {
-            // Ignore errors during cleanup - page might be unloading
-          });
-        } catch (error) {
-          // Ignore errors during cleanup
-        }
+  const handleSaveProject = React.useCallback(() => {
+    try {
+      const projectData: ProjectFileData = exportProject({
+        // DTM
+        dtmSource,
+        dtmInfo,
+        activeClippedId,
+        dtmSourceType,
+        localDtmFile,
+        serverDtmId,
+        serverDtmMetadata,
+        aoiGeometry,
+
+        // Routes
+        routes,
+        activeRouteId,
+        climbRequestsByRoute,
+
+        // Settings
+        general: {
+          nominalFlightHeight,
+          safetyRadius: safetySearchRadius,
+          safetyHeight,
+          outputHeight: resolutionHeight
+        },
+        mission: {
+          overlapPercentage,
+          fovDegrees
+        },
+        ascendDescend: {
+          selectedPresetId: selectedClimbPresetId,
+          climbConfig
+        },
+        display: {
+          dtmPalette: dtmDisplaySettings.palette,
+          dtmInverted: dtmDisplaySettings.inverted,
+          dtmOpacity: dtmDisplaySettings.opacity,
+          showMetadata,
+          showClimbLabels,
+          showNextLineSuggestions
+        },
+
+        // Planning area (AOI) + KML overlays
+        planningArea: aoiGeometry ?? undefined,
+        kmlImports
+      });
+
+      setSaveFileDialog({
+        isOpen: true,
+        type: 'project',
+        defaultFilename: `project_${new Date().toISOString().slice(0, 10)}`,
+        fileContent: JSON.stringify(projectData, null, 2),
+        mimeType: 'application/json'
+      });
+    } catch (error) {
+      debug.error('Failed to export project:', error);
+      setSuccessNotification({
+        isOpen: true,
+        message: error instanceof Error ? error.message : 'Failed to save project'
+      });
+    }
+  }, [
+    dtmSource,
+    dtmInfo,
+    activeClippedId,
+    dtmSourceType,
+    localDtmFile,
+    serverDtmId,
+    serverDtmMetadata,
+    aoiGeometry,
+    routes,
+    activeRouteId,
+    climbRequestsByRoute,
+    nominalFlightHeight,
+    safetySearchRadius,
+    safetyHeight,
+    resolutionHeight,
+    overlapPercentage,
+    fovDegrees,
+    selectedClimbPresetId,
+    climbConfig,
+    dtmDisplaySettings,
+    showMetadata,
+    showClimbLabels,
+    showNextLineSuggestions,
+    kmlImports
+  ]);
+
+  const handleToggleAutoSave = React.useCallback(async () => {
+    if (autoSaveEnabled) {
+      // Mark state as used so `noUnusedLocals` doesn't fail the build.
+      void autoSaveFileHandle;
+      autoSaveInProgressRef.current = false;
+      setAutoSaveEnabled(false);
+      setAutoSaveFileHandle(null);
+      setAutoSaveFileName('');
+      return;
+    }
+
+    if (!('showSaveFilePicker' in window)) {
+      alert('Auto-save requires File System Access API (showSaveFilePicker).');
+      return;
+    }
+
+    try {
+      autoSaveInProgressRef.current = false;
+      const fileHandle = await (window as any).showSaveFilePicker({
+        suggestedName: `auto_save${PROJECT_FILE_EXTENSION}`,
+        types: [
+          {
+            description: 'Project file',
+            accept: {
+              'application/json': [PROJECT_FILE_EXTENSION]
+            }
+          }
+        ]
+      });
+      setAutoSaveFileHandle(fileHandle);
+      setAutoSaveFileName(fileHandle?.name || 'auto_save');
+      setAutoSaveEnabled(true);
+    } catch (error) {
+      // User cancelled or browser blocked the picker
+      debug.error('Auto-save enable cancelled/failed:', error);
+      setAutoSaveEnabled(false);
+      setAutoSaveFileHandle(null);
+      setAutoSaveFileName('');
+    }
+  }, [autoSaveEnabled]);
+
+  const handleMissingLocalDtmSelected = React.useCallback(async (file: File) => {
+    setIsLoadingProject(true);
+    try {
+      const formData = new FormData();
+      formData.append('dtm', file);
+
+      const response = await fetch('/api/upload-dtm', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error(`DTM upload failed (${response.status})`);
       }
-      
-      // Cleanup legacy uploaded DTM if applicable
-      if (dtmSource && !dtmSource.includes('/api/dtm/clipped/')) {
-        try {
-          const payload = JSON.stringify({ path: dtmSource });
-          // Use sendBeacon for POST requests (more reliable during page unload)
-          const blob = new Blob([payload], { type: 'application/json' });
-          navigator.sendBeacon('/api/dtm/cleanup', blob);
-          
-          // Also try fetch with keepalive as fallback
-          fetch('/api/dtm/cleanup', {
+
+      const data = await response.json();
+      if (!data?.success) {
+        throw new Error(data?.error || 'DTM upload failed');
+      }
+
+      setMissingLocalDtmModal({ isOpen: false, descriptor: null });
+      (window as any).__pendingProjectRestore = undefined;
+      await handleDtmLoad(data.path, data, undefined, {
+        sourceType: 'local',
+        originalFile: file
+      });
+    } catch (error) {
+      debug.error('Failed to restore local DTM:', error);
+      setSuccessNotification({
+        isOpen: true,
+        message: error instanceof Error ? error.message : 'Failed to restore local DTM'
+      });
+    } finally {
+      setIsLoadingProject(false);
+    }
+  }, [handleDtmLoad]);
+
+  const handleLoadProject = React.useCallback(() => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = PROJECT_FILE_ACCEPT;
+
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+
+      setIsLoadingProject(true);
+
+      try {
+        const projectData: ProjectFileData = await readProjectFile(file);
+
+        // Restore non-DTM project state first
+        setSafetyHeight(projectData.general.safetyHeight);
+        setResolutionHeight(projectData.general.outputHeight);
+        setSafetySearchRadius(projectData.general.safetyRadius);
+        setNominalFlightHeight(projectData.general.nominalFlightHeight);
+
+        setOverlapPercentage(projectData.mission.overlapPercentage);
+        setFovDegrees(projectData.mission.fovDegrees);
+
+        setSelectedClimbPresetId(projectData.ascendDescend.selectedPresetId);
+        setClimbConfig(projectData.ascendDescend.climbConfig);
+
+        setShowMetadata(projectData.display.showMetadata ?? true);
+        setShowClimbLabels(projectData.display.showClimbLabels ?? true);
+        setShowNextLineSuggestions(projectData.display.showNextLineSuggestions ?? true);
+        setDtmDisplaySettings({
+          palette: projectData.display.dtmPalette,
+          inverted: projectData.display.dtmInverted,
+          opacity: projectData.display.dtmOpacity
+        });
+
+        setAoiGeometry(projectData.planningArea ?? null);
+        setKmlImports(projectData.kmlImports ?? []);
+
+        // Restore routes & climb requests
+        importRoutes(projectData.routes as unknown as FlightRoute[], projectData.climbRequestsByRoute as any);
+        setActiveRoute(projectData.activeRouteId);
+
+        // Clear any existing DTM so we don't mix sources
+        setDtmSource(null);
+        setDtmInfo(null);
+        setActiveClippedId(null);
+        setDtmSourceType(null);
+        setLocalDtmFile(null);
+        setServerDtmId(null);
+        setServerDtmMetadata(null);
+        setActiveDtmName(null);
+        setStableProfileResult({ points: [], warnings: [] });
+        clearProfile();
+
+        // Restore DTM
+        if (projectData.dtm?.sourceType === 'server') {
+          const dtm = projectData.dtm;
+          if (!dtm?.dtmServerId) throw new Error('Invalid server DTM descriptor');
+
+          const aoi = dtm.aoi || projectData.planningArea;
+          if (!aoi || !aoi.bbox) throw new Error('Missing AOI bbox for server DTM');
+
+          const bbox = aoi.bbox as
+            | [number, number, number, number]
+            | { minLon: number; minLat: number; maxLon: number; maxLat: number };
+
+          const bboxArray: [number, number, number, number] = Array.isArray(bbox)
+            ? bbox
+            : [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat];
+          const aoiPayload = {
+            type: 'bbox',
+            crs: 'EPSG:4326',
+            bbox: bboxArray
+          };
+
+          const clipResponse = await fetch('/api/dtm/clip', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: payload,
-            keepalive: true
-          }).catch(() => {
-            // Ignore errors during cleanup
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              dtmId: dtm.dtmServerId,
+              aoi: aoiPayload
+            })
           });
-        } catch (error) {
-          // Ignore errors during cleanup
+
+          if (!clipResponse.ok) {
+            throw new Error(`Failed to clip server DTM (${clipResponse.status})`);
+          }
+
+          const clipResult: any = await clipResponse.json();
+
+          // Notify Map/parent state
+          await handleDtmLoad(clipResult.dataUrl, {
+            bounds: {
+              minX: clipResult.raster.bbox[0],
+              minY: clipResult.raster.bbox[1],
+              maxX: clipResult.raster.bbox[2],
+              maxY: clipResult.raster.bbox[3]
+            },
+            resolution: {
+              width: clipResult.raster.width,
+              height: clipResult.raster.height
+            },
+            clippedId: clipResult.clippedId,
+            crs: clipResult.raster.crs
+          }, clipResult.clippedId, {
+            sourceType: 'server',
+            serverId: dtm.dtmServerId,
+            serverMetadata: {
+              displayName: dtm.displayName,
+              sizeBytes: dtm.sizeBytes,
+              modifiedAt: dtm.modifiedAt
+            },
+            aoi: projectData.planningArea ?? undefined
+          });
+        } else if (projectData.dtm?.sourceType === 'local') {
+          setMissingLocalDtmModal({ isOpen: true, descriptor: projectData.dtm as any });
         }
+
+        setSuccessNotification({ isOpen: true, message: 'Project loaded successfully' });
+      } catch (error) {
+        debug.error('Failed to load project:', error);
+        const message =
+          error instanceof ProjectValidationError ? error.message : (error instanceof Error ? error.message : 'Failed to load project');
+        setSuccessNotification({ isOpen: true, message });
+      } finally {
+        setIsLoadingProject(false);
       }
     };
 
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!dtmSource && !activeClippedId && flightPath.length === 0) return;
+    input.click();
+  }, [
+    PROJECT_FILE_ACCEPT,
+    clearProfile,
+    handleDtmLoad,
+    importRoutes,
+    readProjectFile,
+    setActiveRoute,
+    setClimbConfig,
+    setKmlImports,
+    setShowClimbLabels,
+    setShowMetadata,
+    setShowNextLineSuggestions,
+    setStableProfileResult,
+    setDtmDisplaySettings,
+    setAoiGeometry
+  ]);
 
-      // Trigger cleanup before unload
-      cleanupDtm();
+  // Best-effort cleanup for browser refresh/close navigation events.
+  // Uses sendBeacon when possible because async work is limited during unload.
+  const triggerPageExitDtmCleanup = useCallback(() => {
+    const targetPath = dtmSource || undefined;
+    const targetClippedId = activeClippedId || undefined;
+    if (!targetPath && !targetClippedId) return;
 
-      const warning = 'רענון ימחק את כל הנקודות ויפרוק את ה‑DTM. להמשיך?';
-      event.preventDefault();
-      event.returnValue = warning;
-      return warning;
+    const payload = {
+      path: targetPath,
+      clippedId: targetClippedId,
+      force: true
     };
 
-    const handlePageHide = (event: PageTransitionEvent) => {
-      // Only cleanup if page is not being cached (e.g., back/forward navigation)
-      if (!event.persisted) {
-        cleanupDtm();
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+        const body = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+        const queued = navigator.sendBeacon('/api/dtm/cleanup', body);
+        if (queued) return;
       }
+    } catch (error) {
+      debug.error('Failed to queue DTM cleanup with sendBeacon:', error);
+    }
+
+    fetch('/api/dtm/cleanup', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload),
+      keepalive: true
+    }).catch((error) => {
+      debug.error('Failed to clean up DTM on page exit:', error);
+    });
+  }, [dtmSource, activeClippedId]);
+
+  // Ensure DTM cleanup is attempted on refresh/close/tab close.
+  React.useEffect(() => {
+    let cleanupTriggered = false;
+
+    const handlePageExit = () => {
+      if (cleanupTriggered) return;
+      cleanupTriggered = true;
+      triggerPageExitDtmCleanup();
     };
 
-    const handleVisibilityChange = () => {
-      // Cleanup when page becomes hidden (user switching tabs, closing window, etc.)
-      if (document.visibilityState === 'hidden') {
-        cleanupDtm();
-      }
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    window.addEventListener('pagehide', handlePageHide);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('beforeunload', handlePageExit);
+    window.addEventListener('pagehide', handlePageExit);
     
     return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      window.removeEventListener('pagehide', handlePageHide);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('beforeunload', handlePageExit);
+      window.removeEventListener('pagehide', handlePageExit);
     };
-  }, [dtmSource, activeClippedId, flightPath.length]);
+  }, [triggerPageExitDtmCleanup]);
 
   // Process the edit queue
   const processEditQueue = React.useCallback(() => {
@@ -941,55 +1775,257 @@ function App() {
     };
   }, [editQueue, isProcessingQueue, processEditQueue]);
 
-  // Wrapped undo/redo that processes queue first
+  // Register queue processing callback with global undo/redo manager
+  // This ensures pending edit operations are processed before any undo/redo
+  React.useEffect(() => {
+    globalUndoRedo.setBeforeUndoRedoCallback(processEditQueueImmediately);
+    return () => {
+      globalUndoRedo.setBeforeUndoRedoCallback(null);
+    };
+  }, [globalUndoRedo, processEditQueueImmediately]);
+
+  // Wrapped undo/redo for button clicks - uses global manager directly
+  // Queue processing is handled by the beforeUndoRedo callback
   const handleUndo = React.useCallback(() => {
-    // Process any pending queue first, then undo
-    processEditQueueImmediately();
-    // Use setTimeout to ensure queue processing completes before undo
-    setTimeout(() => {
-      undo();
-    }, 100);
-  }, [processEditQueueImmediately, undo]);
+    globalUndoRedo.undo();
+  }, [globalUndoRedo]);
 
   const handleRedo = React.useCallback(() => {
-    // Process any pending queue first, then redo
-    processEditQueueImmediately();
-    // Use setTimeout to ensure queue processing completes before redo
-    setTimeout(() => {
-      redo();
-    }, 100);
-  }, [processEditQueueImmediately, redo]);
+    globalUndoRedo.redo();
+  }, [globalUndoRedo]);
+
+  const handleReverseFlightPath = React.useCallback(() => {
+    const activeClimbs = climbRequestsByRoute[activeRouteId] ?? [];
+    if (activeClimbs.length > 0) {
+      setReverseWarningOpen(true);
+    } else {
+      reverseFlightPath();
+    }
+  }, [climbRequestsByRoute, activeRouteId, reverseFlightPath]);
+
+  const handleImportKml = React.useCallback(() => {
+    importKmlFile({
+      onKmlImported: (kmlImport) => {
+        // Add to KML imports array with timestamp
+        // Polygons are just visual overlays, not AOI
+        setKmlImports(prev => [...prev, {
+          ...kmlImport,
+          importedAt: Date.now()
+        }]);
+      },
+      onError: (error: string) => {
+        setSuccessNotification({ isOpen: true, message: error });
+      },
+      onSuccess: (message: string) => {
+        setSuccessNotification({ isOpen: true, message });
+      },
+      onShowSummary: (summary: { points: number; polygons: number }) => {
+        setImportSummary(summary);
+        // Show summary briefly, then clear
+        setTimeout(() => setImportSummary(null), 2000);
+      },
+      onZoomToBounds: (bounds: { minLon: number; minLat: number; maxLon: number; maxLat: number }) => {
+        setZoomToBounds(bounds);
+        // Clear after zoom (so it doesn't re-zoom on every render)
+        setTimeout(() => setZoomToBounds(null), 100);
+      }
+    });
+  }, []);
+
+  const handleDeleteKml = React.useCallback((id: string) => {
+    setKmlImports(prev => prev.filter(kml => kml.id !== id));
+  }, []);
+
+  const handleDeleteAllKml = React.useCallback(() => {
+    setKmlImports([]);
+  }, []);
+
+  const handleKmlColorChange = React.useCallback((id: string, color: string) => {
+    setKmlImports(prev => prev.map(kml => kml.id === id ? { ...kml, color } : kml));
+  }, []);
+
+  const handleKmlSymbolChange = React.useCallback((id: string, symbol: import('./components/KmlManagerModal').PointSymbol) => {
+    setKmlImports(prev => prev.map(kml => kml.id === id ? { ...kml, symbol } : kml));
+  }, []);
+
+  const handleKmlVisibilityToggle = React.useCallback((id: string) => {
+    setKmlImports(prev => prev.map(kml => kml.id === id ? { ...kml, visible: !kml.visible } : kml));
+  }, []);
+
+  const handleZoomToKml = React.useCallback((id: string) => {
+    const kml = kmlImports.find(k => k.id === id);
+    if (!kml) return;
+
+    // Calculate bounds from points and polygons
+    const allCoords: Array<{ lat: number; lng: number }> = [];
+    
+    // Add all point coordinates
+    kml.points.forEach(point => {
+      allCoords.push({ lat: point.lat, lng: point.lng });
+    });
+    
+    // Add all polygon coordinates
+    kml.polygons.forEach(polygon => {
+      polygon.coordinates.forEach(([lon, lat]) => {
+        allCoords.push({ lat, lng: lon });
+      });
+    });
+
+    if (allCoords.length === 0) return;
+
+    // Calculate bounds
+    const lats = allCoords.map(c => c.lat);
+    const lngs = allCoords.map(c => c.lng);
+    const bounds = {
+      minLat: Math.min(...lats),
+      maxLat: Math.max(...lats),
+      minLon: Math.min(...lngs),
+      maxLon: Math.max(...lngs)
+    };
+
+    // Zoom to bounds
+    setZoomToBounds(bounds);
+    setTimeout(() => setZoomToBounds(null), 100);
+  }, [kmlImports]);
 
   const handleSetFlightHeight = useCallback((pointIndex: number) => {
     if (pointIndex < 0 || pointIndex >= flightPath.length) return;
     const currentPoint = flightPath[pointIndex];
     const currentHeight = currentPoint.height ?? nominalFlightHeight;
-    const heightInput = prompt(`הזן גובה טיסה (AGL במטרים) עבור נקודה ${pointIndex + 1}:`, currentHeight.toString());
-
-    if (heightInput !== null) {
-      const height = parseFloat(heightInput);
-      if (!isNaN(height) && height >= 0) {
-        // Queue the operation instead of executing immediately
-        setEditQueue((prev) => [...prev, { type: 'setFlightHeight', index: pointIndex, height }]);
-      } else {
-        alert('הגובה חייב להיות חיובי.');
-      }
-    }
+    setFlightHeightModal({ isOpen: true, pointIndex, currentHeight });
+    setFlightHeightInput(currentHeight.toString());
+    setFlightHeightError(null);
   }, [flightPath, nominalFlightHeight]);
+
+  const handleFlightHeightSubmit = useCallback(() => {
+    if (!flightHeightModal) return;
+    
+    const height = parseFloat(flightHeightInput);
+    if (isNaN(height) || height < 0 || height > 10000) {
+      setFlightHeightError('הגובה חייב להיות מספר בין 0 ל-10000 מטרים');
+      return;
+    }
+    
+    // Queue the operation instead of executing immediately
+    setEditQueue((prev) => [...prev, { type: 'setFlightHeight', index: flightHeightModal.pointIndex, height }]);
+    setFlightHeightModal(null);
+    setFlightHeightInput('');
+    setFlightHeightError(null);
+  }, [flightHeightModal, flightHeightInput]);
+
+  const handleFlightHeightCancel = useCallback(() => {
+    setFlightHeightModal(null);
+    setFlightHeightInput('');
+    setFlightHeightError(null);
+  }, []);
 
   const handleEditPointRequest = useCallback((pointIndex: number) => {
     // Queue the operation instead of executing immediately
     setEditQueue((prev) => [...prev, { type: 'editPointRequest', index: pointIndex }]);
   }, []);
 
+  // Check if a point is an anchor for any climb points
+  const checkAnchorPointAndWarn = useCallback((
+    pointId: string | undefined,
+    action: () => void
+  ): boolean => {
+    console.log('[CHECK_ANCHOR] Checking point:', {
+      pointId,
+      climbRequestsCount: climbRequests.length,
+      climbRequests: climbRequests.map(c => ({
+        endDistance: c.endDistance,
+        anchorPointIdA: c.anchorPointIdA,
+        anchorPointIdB: c.anchorPointIdB
+      }))
+    });
+
+    if (!pointId) {
+      // If point has no ID, proceed (old points without IDs)
+      console.log('[CHECK_ANCHOR] Point has no ID, proceeding');
+      action();
+      return true;
+    }
+    
+    const affectedClimbs = findClimbsAnchoredToPoint(pointId, climbRequests);
+    
+    console.log('[CHECK_ANCHOR] Affected climbs:', {
+      pointId,
+      affectedCount: affectedClimbs.length,
+      affectedClimbs: affectedClimbs.map(c => ({
+        endDistance: c.endDistance,
+        climbAmount: c.climbAmount,
+        anchorPointIdA: c.anchorPointIdA,
+        anchorPointIdB: c.anchorPointIdB
+      }))
+    });
+    
+    if (affectedClimbs.length > 0) {
+      // Show warning modal
+      console.log('[CHECK_ANCHOR] Showing warning modal for', affectedClimbs.length, 'climb(s)');
+      setAnchorWarningModal({
+        isOpen: true,
+        affectedClimbsCount: affectedClimbs.length,
+        pendingAction: () => {
+          console.log('[CHECK_ANCHOR] User confirmed, deleting affected climbs and executing action');
+          // Delete affected climb points and then execute the action
+          setClimbRequests((prev) => {
+            const affectedIds = new Set(affectedClimbs.map(c => 
+              `${c.endDistance}-${c.climbAmount}`
+            ));
+            const filtered = prev.filter(c => 
+              !affectedIds.has(`${c.endDistance}-${c.climbAmount}`)
+            );
+            console.log('[CHECK_ANCHOR] Deleted climbs, remaining:', filtered.length);
+            return filtered;
+          });
+          action();
+        }
+      });
+      return false; // Action deferred
+    }
+    
+    // No affected climbs, proceed immediately
+    console.log('[CHECK_ANCHOR] No affected climbs, proceeding immediately');
+    action();
+    return true;
+  }, [climbRequests, setClimbRequests]);
+
   // Wrapped edit operations that queue instead of executing immediately
   const handleDeletePoint = useCallback((index: number) => {
+    const point = flightPath[index];
+    if (!point?.id) {
+      // Old point without ID, proceed normally
     setEditQueue((prev) => [...prev, { type: 'delete', index }]);
-  }, []);
+      return;
+    }
+    
+    checkAnchorPointAndWarn(point.id, () => {
+      setEditQueue((prev) => [...prev, { type: 'delete', index }]);
+    });
+  }, [flightPath, checkAnchorPointAndWarn]);
 
   const handleUpdatePoint = useCallback((index: number, point: Coordinate) => {
+    const oldPoint = flightPath[index];
+    if (!oldPoint?.id) {
+      // Old point without ID, proceed normally
     setEditQueue((prev) => [...prev, { type: 'update', index, point }]);
-  }, []);
+      return;
+    }
+    
+    // Check if position actually changed
+    const positionChanged = 
+      Math.abs(point.lng - oldPoint.lng) > 1e-9 || 
+      Math.abs(point.lat - oldPoint.lat) > 1e-9;
+    
+    if (positionChanged) {
+      checkAnchorPointAndWarn(oldPoint.id, () => {
+        setEditQueue((prev) => [...prev, { type: 'update', index, point }]);
+      });
+    } else {
+      // Position didn't change, just update metadata (e.g., height)
+      setEditQueue((prev) => [...prev, { type: 'update', index, point }]);
+    }
+  }, [flightPath, checkAnchorPointAndWarn]);
 
   const handleSelectClimbPreset = useCallback((presetId: string) => {
     const preset = CLIMB_PRESETS.find((p) => p.id === presetId);
@@ -1036,252 +2072,565 @@ function App() {
             <img src="/favicon.png" alt="Logo" className="app-logo" />
             <h1>מתכנן משימות LiDAR</h1>
           </div>
-          <div className="header-parameters">
-            <div className="header-group">
-              <div className="group-title">פרמטרי טיסה</div>
-              <div className="group-inputs">
-                <label>
-                  <span className="input-label">גובה נומינלי (מ'):</span>
-                  <input
-                    type="number"
-                    value={nominalFlightHeight}
-                    onChange={(e) => setNominalFlightHeight(Number(e.target.value))}
-                    min="0"
-                    step="10"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">גובה בטיחות (מ'):</span>
-                  <input
-                    type="number"
-                    value={safetyHeight}
-                    onChange={(e) => setSafetyHeight(Number(e.target.value))}
-                    min="0"
-                    step="10"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">גובה רזולוציה (מ'):</span>
-                  <input
-                    type="number"
-                    value={resolutionHeight}
-                    onChange={(e) => setResolutionHeight(Number(e.target.value))}
-                    min="0"
-                    step="10"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">רדיוס בטיחות (מ'):</span>
-                  <input
-                    type="number"
-                    value={safetySearchRadius}
-                    onChange={(e) => setSafetySearchRadius(Number(e.target.value))}
-                    min="1"
-                    step="5"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">רדיוס רזולוציה (מ'):</span>
-                  <input
-                    type="number"
-                    value={resolutionSearchRadius}
-                    onChange={(e) => setResolutionSearchRadius(Number(e.target.value))}
-                    min="1"
-                    step="5"
-                    className="modern-input"
-                  />
-                </label>
-              </div>
-            </div>
-            <div className="header-group">
-              <div className="group-title">פרמטרי משימה</div>
-              <div className="group-inputs">
-                <label>
-                  <span className="input-label">חפיפה (%):</span>
-                  <input
-                    type="number"
-                    value={overlapPercentage}
-                    onChange={(e) => setOverlapPercentage(Number(e.target.value))}
-                    min="0"
-                    max="99.9"
-                    step="1"
-                    className="modern-input"
-                  />
-                </label>
-                <label>
-                  <span className="input-label">שדה ראייה (°):</span>
-                  <input
-                    type="number"
-                    value={fovDegrees}
-                    onChange={(e) => setFovDegrees(Number(e.target.value))}
-                    min="1"
-                    max="179"
-                    step="1"
-                    className="modern-input"
-                  />
-                </label>
-              </div>
-            </div>
-          </div>
         </div>
-        <div className="header-controls">
-          <div className="header-group">
-            <div className="group-title">ייצוא מסלולים</div>
-            <div className="group-columns export-controls-row">
-              <button
-                onClick={() => {
-                  const routesWithPoints = routes.filter(route => route.points.length >= 2);
-                  if (routesWithPoints.length > 1) {
-                    setShowExportModal(true);
-                  } else {
-                    // Get elevation at first point (index 0) from elevation profile
-                    const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
-                    exportKML(climbRequests, climbRequestsByRoute, undefined, nominalFlightHeight, firstTurnPointElevation);
-                  }
-                }}
-                className={`btn btn-secondary btn-icon ${flightPath.length < 2 ? 'disabled' : ''}`}
-                disabled={flightPath.length < 2}
-                style={{
-                  ...(flightPath.length < 2 ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
-                  fontSize: '1rem',
-                  fontWeight: 400,
-                  fontFamily: 'inherit'
-                }}
-                title={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
-                data-tooltip={flightPath.length < 2 ? 'שרטט לפחות 2 נקודות כדי לייצא מסלול' : 'ייצוא מסלול טיסה'}
-              >
-                <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M10 12.5L6 8.5H9V2H11V8.5H14L10 12.5ZM5 15H15V13H17V15C17 16.1 16.1 17 15 17H5C3.9 17 3 16.1 3 15V13H5V15Z" fill="currentColor"/>
-                </svg>
-              </button>
-              <input
-                type="file"
-                accept=".kml"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (file) {
-                    const result = await importKML(file, dtmSource);
-                    // Update nominal flight height if found in KML
-                    if (result?.nominalFlightHeight !== undefined) {
-                      setNominalFlightHeight(result.nominalFlightHeight);
-                    }
-                    // Note: climbRequestsByRoute is now set inside importKML's setState to avoid race conditions
-                    // No need to call setClimbRequestsByRoute here anymore
-                    // Reset input so same file can be imported again
-                    e.target.value = '';
-                  }
-                }}
-                style={{ display: 'none' }}
-                id="import-kml"
-                disabled={!dtmSource}
-              />
-              <label
-                htmlFor="import-kml"
-                className={`btn btn-secondary btn-icon ${!dtmSource ? 'disabled' : ''}`}
-                style={{
-                  ...(!dtmSource ? { opacity: 0.5, cursor: 'not-allowed', pointerEvents: 'none' } : {}),
-                  fontSize: '1rem',
-                  fontWeight: 400,
-                  fontFamily: 'inherit'
-                }}
-                title={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
-                data-tooltip={!dtmSource ? 'טען DTM לפני העלאת מסלול' : 'העלאת מסלול טיסה'}
-              >
-                <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M10 7.5L14 11.5H11V18H9V11.5H6L10 7.5ZM5 5H15V7H17V5C17 3.9 16.1 3 15 3H5C3.9 3 3 3.9 3 5V7H5V5Z" fill="currentColor"/>
-                </svg>
-              </label>
-            </div>
-          </div>
+        <div className="header-actions">
+          <button
+            onClick={handleUndo}
+            disabled={!globalUndoRedo.canUndo}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="בטל"
+            title="בטל פעולה אחרונה (Ctrl+Z)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 14l-4-4 4-4" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M5 10h8a6 6 0 0 1 6 6v2" />
+            </svg>
+          </button>
+          <button
+            onClick={handleRedo}
+            disabled={!globalUndoRedo.canRedo}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="בצע שוב"
+            title="בצע שוב (Ctrl+Y או Ctrl+Shift+Z)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M15 6l4 4-4 4" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M19 10h-8a6 6 0 0 0-6 6v2" />
+            </svg>
+          </button>
+          <button
+            onClick={handleSaveProject}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="שמור פרויקט"
+            title="שמור פרויקט (Ctrl+S)"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17 21v-8H7v8" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M7 3v5h8" />
+            </svg>
+          </button>
+          <button
+            onClick={handleToggleAutoSave}
+            className={`btn btn-secondary btn-icon header-action-btn auto-save-btn${autoSaveEnabled ? ' auto-save-active' : ''}`}
+            type="button"
+            aria-label="שמירה אוטומטית"
+            title={autoSaveEnabled ? `שמירה אוטומטית פעילה: ${autoSaveFileName}` : 'שמירה אוטומטית'}
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              {/* Floppy disk (save icon) */}
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17 21v-8H7v8" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M7 3v5h8" />
+              {/* Green checkmark badge, bottom-right corner */}
+              <circle cx="18.5" cy="18.5" r="4.5" fill="#16a34a" />
+              <path stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M16.2 18.5 L18 20.3 L20.8 16.8" />
+            </svg>
+            <span className="auto-save-label">AUTO</span>
+          </button>
+          <button
+            onClick={handleLoadProject}
+            disabled={isLoadingProject}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="טען פרויקט"
+            title="טען פרויקט"
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17 8l-5-5-5 5" />
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 3v12" />
+            </svg>
+          </button>
+          <button
+            onClick={() => setKmlManagerModalOpen(true)}
+            className="btn btn-secondary btn-icon header-action-btn"
+            type="button"
+            aria-label="נהל קבצי KML"
+            title={`נהל קבצי KML${kmlImports.length > 0 ? ` (${kmlImports.length})` : ''}`}
+          >
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z" />
+            </svg>
+            {kmlImports.length > 0 && (
+              <span className="kml-count-badge">{kmlImports.length}</span>
+            )}
+          </button>
+          <button
+            onClick={() => setShowSettingsModal(true)}
+            className="btn btn-secondary btn-icon settings-header-btn"
+            type="button"
+            aria-label="הגדרות"
+            title="הגדרות"
+          >
+            <GearIcon />
+          </button>
         </div>
       </div>
       <div className="app-panels">
-        <MapPanel
-          dtmSource={dtmSource}
-          clippedId={activeClippedId}
-          routes={routes}
-          activeRouteId={activeRouteId}
-          flightPath={flightPath}
-          onPathPointHover={handlePathPointHover}
-          onPathChange={setFlightPath}
-          onAddPoint={addPointWrapped}
-          onAddPoints={addPointsWrapped}
-          onInsertPoints={insertPointsWrapped}
-          onUpdatePoint={handleUpdatePoint}
-          onDeletePoint={handleDeletePoint}
-          onAddRoute={addRoute}
-          onActiveRouteChange={setActiveRoute}
-          onRenameRoute={renameRoute}
-          onToggleRouteVisibility={toggleRouteVisibility}
-          onDeleteRoute={(routeId) => {
-            deleteRoute(routeId);
-            // Climb requests are now automatically removed in deleteRoute via undo/redo
-          }}
-          onShowAllRoutes={showAllRoutes}
-          onHideNonActiveRoutes={hideNonActiveRoutes}
-          onResetToSingleRoute={resetToSingleRoute}
-          onDtmLoad={handleDtmLoad}
-          onDtmUnload={handleDtmUnload}
-          climbMarkers={climbMarkers}
-          showClimbLabels={showClimbLabels}
-          onShowClimbLabelsChange={setShowClimbLabels}
-          nominalFlightHeight={nominalFlightHeight}
-          overlapPercentage={overlapPercentage}
-          fovDegrees={fovDegrees}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          canUndo={canUndo}
-          canRedo={canRedo}
-          editPointIndex={editPointIndex}
-          onEditPointIndexChange={setEditPointIndex}
-          hoveredElevationPoint={hoveredElevationPoint}
-          hoverSource={hoverSource}
-          showMetadata={showMetadata}
-          onShowMetadataChange={setShowMetadata}
-          climbRequests={climbRequests}
-        />
-        <ElevationProfile
-          elevationProfile={fullProfileResult.points}
-          loading={flightPath.length >= 2 && dtmSource !== null && (loading || isProcessingQueue || editQueue.length > 0 || !profileReady)}
-          nominalFlightHeight={nominalFlightHeight}
-          safetyHeight={safetyHeight}
-          resolutionHeight={resolutionHeight}
-          selectedPoint={selectedPoint}
-          flightPath={flightPath}
-          onDeletePoint={handleDeletePoint}
-          onUpdatePoint={handleUpdatePoint}
-          onSetFlightHeight={handleSetFlightHeight}
-          onEditPointRequest={handleEditPointRequest}
-          onElevationPointHover={handleElevationPointHover}
-          hoveredPoint={hoveredElevationPoint}
-          hoverSource={hoverSource}
-          climbPresets={CLIMB_PRESETS}
-          selectedClimbPresetId={selectedClimbPresetId}
-          onSelectClimbPreset={handleSelectClimbPreset}
-          climbConfig={climbConfig}
-          setClimbConfig={setClimbConfig}
-          climbRequests={climbRequests}
-          setClimbRequests={setClimbRequests}
-          climbWarnings={fullProfileResult.warnings}
-          showMetadata={showMetadata}
-        />
+        <SplitPane
+          direction="horizontal"
+          initialRatio={0.6}
+          minSizeFirst="300px"
+          minSizeSecond="400px"
+          storageKey="mapElevationSplit"
+          className="app-split-pane"
+        >
+          <MapPanel
+            dtmSource={dtmSource}
+            clippedId={activeClippedId}
+            routes={routes}
+            activeRouteId={activeRouteId}
+            flightPath={flightPath}
+            onPathPointHover={handlePathPointHover}
+            onPathChange={setFlightPath}
+            onGroupMoveCommitted={handleGroupMoveCommitted}
+            onDeleteAllPoints={handleDeleteAllPoints}
+            onReverseFlightPath={handleReverseFlightPath}
+            onAddPoint={addPointWrapped}
+            onAddPoints={addPointsWrapped}
+            onInsertPoints={insertPointsWrapped}
+            onDeleteClimbsOnSegment={handleDeleteClimbsOnSegment}
+            onUpdatePoint={handleUpdatePoint}
+            onDeletePoint={handleDeletePoint}
+            onAddRoute={addRoute}
+            onActiveRouteChange={setActiveRoute}
+            onRenameRoute={renameRoute}
+            onRouteNominalFlightHeightChange={setRouteNominalFlightHeight}
+            onRouteColorChange={setRouteColor}
+            onRouteLineWidthChange={setRouteLineWidth}
+            onToggleRouteVisibility={toggleRouteVisibility}
+            onDeleteRoute={(routeId) => {
+              deleteRoute(routeId);
+              // Climb requests are now automatically removed in deleteRoute via undo/redo
+            }}
+            onShowAllRoutes={showAllRoutes}
+            onHideNonActiveRoutes={hideNonActiveRoutes}
+            onResetToSingleRoute={resetToSingleRoute}
+            onDtmLoad={handleDtmLoad}
+            onDtmUnload={handleDtmUnload}
+            onDisplaySettingsChange={setDtmDisplaySettings}
+            initialDisplaySettings={dtmDisplaySettings}
+            currentAoi={aoiGeometry}
+            dtmSourceType={dtmSourceType}
+            zoomToBounds={zoomToBounds}
+            climbMarkers={climbMarkers}
+            showClimbLabels={showClimbLabels}
+            onShowClimbLabelsChange={setShowClimbLabels}
+            kmlImports={kmlImports}
+            nominalFlightHeight={nominalFlightHeight}
+            safetyRadius={safetySearchRadius}
+            safetyHeight={safetyHeight}
+            overlapPercentage={overlapPercentage}
+            fovDegrees={fovDegrees}
+            resolutionHeight={resolutionHeight}
+            onUndo={handleUndo}
+            canUndo={globalUndoRedo.canUndo}
+            editPointIndex={editPointIndex}
+            onEditPointIndexChange={setEditPointIndex}
+            hoveredElevationPoint={hoveredElevationPoint}
+            hoverSource={hoverSource}
+            onOverlapGraphPointHover={handleOverlapGraphPointHover}
+            showMetadata={showMetadata}
+            onShowMetadataChange={setShowMetadata}
+            showNextLineSuggestions={showNextLineSuggestions}
+            onShowNextLineSuggestionsChange={setShowNextLineSuggestions}
+            climbRequests={effectiveClimbRequests}
+            elevationProfile={fullProfileResult.points}
+            climbConfig={climbConfig}
+            onExportClick={() => {
+              const routesWithPoints = routes.filter(route => route.points.length >= 2);
+              if (routesWithPoints.length > 1) {
+                setShowExportModal(true);
+              } else {
+                // Single route - generate KML content and show save dialog
+                const activeRoute = routes.find(r => r.id === activeRouteId);
+                if (!activeRoute || activeRoute.points.length < 2) {
+                  alert('Nothing to export. Add at least 2 points.');
+                  return;
+                }
+                
+                const routeClimbRequests = climbRequestsByRoute 
+                  ? (climbRequestsByRoute[activeRoute.id] || [])
+                  : (climbRequests && activeRoute.id === activeRouteId ? climbRequests : []);
+                
+                const kmlContent = generateKMLForRoute(activeRoute, routeClimbRequests, activeRoute.nominalFlightHeight);
+                const defaultFilename = `${activeRoute.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
+                
+                setSaveFileDialog({
+                  isOpen: true,
+                  type: 'kml',
+                  defaultFilename,
+                  fileContent: kmlContent,
+                  mimeType: 'application/vnd.google-earth.kml+xml'
+                });
+              }
+            }}
+            onImportKML={async (file: File) => {
+              await importKML(file, dtmSource);
+            }}
+            canExport={flightPath.length >= 2}
+            onRequestClimbAtDistance={(d) => setMapClimbTriggerDistance(d)}
+          />
+          <ElevationProfile
+            elevationProfile={fullProfileResult.points}
+            loading={flightPath.length >= 2 && dtmSource !== null && (loading || isProcessingQueue || editQueue.length > 0 || !profileReady)}
+            nominalFlightHeight={nominalFlightHeight}
+            safetyHeight={safetyHeight}
+            safetyRadius={safetySearchRadius}
+            resolutionHeight={resolutionHeight}
+            overlapPercentage={overlapPercentage}
+            selectedPoint={selectedPoint}
+            flightPath={flightPath}
+            onDeletePoint={handleDeletePoint}
+            onUpdatePoint={handleUpdatePoint}
+            onSetFlightHeight={handleSetFlightHeight}
+            onEditPointRequest={handleEditPointRequest}
+            onElevationPointHover={handleElevationPointHover}
+            hoveredPoint={hoveredElevationPoint}
+            hoverSource={hoverSource}
+            climbPresets={CLIMB_PRESETS}
+            selectedClimbPresetId={selectedClimbPresetId}
+            climbConfig={climbConfig}
+            climbRequests={effectiveClimbRequests}
+            setClimbRequests={setClimbRequests}
+            climbWarnings={fullProfileResult.warnings}
+            showMetadata={showMetadata}
+            activeRouteName={routes.find(r => r.id === activeRouteId)?.name}
+            dtmName={activeDtmName || undefined}
+            profileError={profileError}
+            pendingMapClimbDistance={mapClimbTriggerDistance}
+            onMapClimbConsumed={() => setMapClimbTriggerDistance(null)}
+          />
+        </SplitPane>
       </div>
+      {profileError !== null && !profileErrorModalDismissed && (
+        <div className="quick-modal__backdrop" role="dialog" aria-modal="true" aria-labelledby="profile-error-title" onClick={() => setProfileErrorModalDismissed(true)}>
+          <div className="quick-modal__card" onClick={(e) => e.stopPropagation()}>
+            <div className="quick-modal__header">
+              <div className="quick-modal__title" id="profile-error-title">שגיאה ביצירת פרופיל הגובה</div>
+              <button
+                type="button"
+                className="quick-modal__close"
+                onClick={() => setProfileErrorModalDismissed(true)}
+                aria-label="סגור"
+              >
+                ×
+              </button>
+            </div>
+            <div className="quick-modal__body">
+              <p className="quick-modal__error">לא ניתן ליצור את פרופיל הגובה. פרטים בהמשך.</p>
+            </div>
+            <div className="quick-modal__actions">
+              <button type="button" className="btn btn-primary" onClick={() => setProfileErrorModalDismissed(true)}>
+                סגור
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <ExportSettingsModal
         isOpen={showExportModal}
         routes={routes}
         activeRouteId={activeRouteId}
         onClose={() => setShowExportModal(false)}
-        onExport={(selectedRouteIds) => {
-          // Get elevation at first point (index 0) from elevation profile
-          const firstTurnPointElevation = elevationProfile.length > 0 ? elevationProfile[0]?.elevation : undefined;
-          exportKML(climbRequests, climbRequestsByRoute, selectedRouteIds, nominalFlightHeight, firstTurnPointElevation);
+        onExport={async (selectedRouteIds) => {
+          // Filter routes that have at least 2 points
+          const routesToExport = routes.filter(r => 
+            selectedRouteIds.includes(r.id) && r.points.length >= 2
+          );
+          
+          if (routesToExport.length === 0) {
+            alert('No routes with at least 2 points selected.');
+            return;
+          }
+          
+          // Close the export modal first
+          setShowExportModal(false);
+          
+          // If only one route, show save dialog with name and location
+          if (routesToExport.length === 1) {
+            const route = routesToExport[0];
+            const routeClimbRequests = climbRequestsByRoute 
+              ? (climbRequestsByRoute[route.id] || [])
+              : (climbRequests && route.id === activeRouteId ? climbRequests : []);
+            
+            const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
+            const defaultFilename = `${route.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
+            
+            setSaveFileDialog({
+              isOpen: true,
+              type: 'kml',
+              defaultFilename,
+              fileContent: kmlContent,
+              mimeType: 'application/vnd.google-earth.kml+xml'
+            });
+            return;
+          }
+          
+          // Multiple routes: export as a single ZIP file
+          try {
+            // Generate KML content for all routes
+            const routesWithKml = routesToExport.map(route => {
+              const routeClimbRequests = climbRequestsByRoute 
+                ? (climbRequestsByRoute[route.id] || [])
+                : (climbRequests && route.id === activeRouteId ? climbRequests : []);
+              
+              const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
+              return { route, kmlContent };
+            });
+
+            // Generate unique, sanitized filenames for each route
+            const routeNames = routesWithKml.map((r: { route: FlightRoute; kmlContent: string }) => r.route.name);
+            const baseNames = generateUniqueFilenames(routeNames);
+            const files = routesWithKml.map((r: { route: FlightRoute; kmlContent: string }, i: number) => ({
+              filename: `${baseNames[i]}.kml`,
+              content: r.kmlContent
+            }));
+
+            // Create ZIP blob
+            const { createKmlZip } = await import('./utils/kmlZip');
+            const zipBlob = await createKmlZip(files);
+
+            // Show save dialog for ZIP file (user chooses name and location)
+            const defaultZipName = `routes_${new Date().toISOString().split('T')[0]}.zip`;
+            setSaveFileDialog({
+              isOpen: true,
+              type: 'kml', // Use 'kml' type for styling, but it's actually a ZIP
+              defaultFilename: defaultZipName,
+              fileContent: zipBlob,
+              mimeType: 'application/zip'
+            });
+          } catch (error: any) {
+            console.error('Error creating ZIP:', error);
+            alert(`שגיאה ביצוא המסלולים: ${error.message || 'שגיאה לא ידועה'}`);
+          }
+        }}
+      />
+      <SettingsModal
+        isOpen={showSettingsModal}
+        onClose={() => setShowSettingsModal(false)}
+        safetyRadius={safetySearchRadius}
+        setSafetyRadius={setSafetySearchRadius}
+        safetyHeight={safetyHeight}
+        setSafetyHeight={setSafetyHeight}
+        outputHeight={resolutionHeight}
+        setOutputHeight={setResolutionHeight}
+        overlapPercentage={overlapPercentage}
+        setOverlapPercentage={setOverlapPercentage}
+        fovDegrees={fovDegrees}
+        setFovDegrees={setFovDegrees}
+        climbPresets={CLIMB_PRESETS}
+        selectedClimbPresetId={selectedClimbPresetId}
+        onSelectClimbPreset={handleSelectClimbPreset}
+        climbConfig={climbConfig}
+        setClimbConfig={setClimbConfig}
+      />
+      <AnchorPointWarningModal
+        isOpen={anchorWarningModal.isOpen}
+        affectedClimbsCount={anchorWarningModal.affectedClimbsCount}
+        onCancel={() => {
+          setAnchorWarningModal({
+            isOpen: false,
+            affectedClimbsCount: 0,
+            pendingAction: null
+          });
+        }}
+        onContinue={() => {
+          if (anchorWarningModal.pendingAction) {
+            anchorWarningModal.pendingAction();
+          }
+          setAnchorWarningModal({
+            isOpen: false,
+            affectedClimbsCount: 0,
+            pendingAction: null
+          });
+        }}
+      />
+      {flightHeightModal && flightHeightModal.isOpen && (
+        <div className="quick-modal__backdrop" role="dialog" aria-modal="true" onClick={handleFlightHeightCancel}>
+          <div className="quick-modal__card" onClick={(e) => e.stopPropagation()}>
+            <div className="quick-modal__header">
+              <div className="quick-modal__title">הזן גובה טיסה (AGL במטרים) עבור נקודה {flightHeightModal.pointIndex + 1}</div>
+              <button
+                type="button"
+                className="quick-modal__close"
+                onClick={handleFlightHeightCancel}
+                aria-label="סגור"
+              >
+                ×
+              </button>
+            </div>
+            <div className="quick-modal__body">
+              <label className="quick-modal__label" htmlFor="flight-height-input">גובה (מ')</label>
+              <input
+                id="flight-height-input"
+                type="number"
+                min="0"
+                max="10000"
+                step="0.1"
+                required
+                inputMode="decimal"
+                aria-required="true"
+                value={flightHeightInput}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  setFlightHeightInput(value);
+                  
+                  // Real-time validation
+                  if (value === '') {
+                    setFlightHeightError(null);
+                    return;
+                  }
+                  
+                  const numValue = parseFloat(value);
+                  if (Number.isNaN(numValue)) {
+                    setFlightHeightError('ערך חייב להיות מספר');
+                  } else if (numValue < 0) {
+                    setFlightHeightError('גובה חייב להיות מספר חיובי');
+                  } else if (numValue > 10000) {
+                    setFlightHeightError('גובה לא יכול להיות גדול מ-10000 מטרים');
+                  } else {
+                    setFlightHeightError(null);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleFlightHeightSubmit();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    handleFlightHeightCancel();
+                  }
+                }}
+                className={`quick-modal__input ${flightHeightError ? 'error' : ''}`}
+                autoFocus
+              />
+              {flightHeightError && (
+                <div className="quick-modal__error" role="alert">{flightHeightError}</div>
+              )}
+            </div>
+            <div className="quick-modal__actions">
+              <button type="button" className="btn btn-tertiary" onClick={handleFlightHeightCancel}>
+                ביטול
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleFlightHeightSubmit}>
+                החל
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {missingLocalDtmModal.isOpen && missingLocalDtmModal.descriptor && (
+        <MissingLocalDTMModal
+          isOpen={missingLocalDtmModal.isOpen}
+          descriptor={missingLocalDtmModal.descriptor}
+          onFileSelected={handleMissingLocalDtmSelected}
+          onCancel={() => {
+            setMissingLocalDtmModal({ isOpen: false, descriptor: null });
+            (window as any).__pendingProjectRestore = undefined;
+          }}
+        />
+      )}
+      {saveFileDialog && (
+        <SaveFileDialog
+          isOpen={saveFileDialog.isOpen}
+          defaultFilename={saveFileDialog.defaultFilename}
+          fileExtension={
+            saveFileDialog.mimeType === 'application/zip' 
+              ? '.zip' 
+              : saveFileDialog.type === 'kml' 
+                ? '.kml' 
+                : PROJECT_FILE_EXTENSION
+          }
+          title={
+            saveFileDialog.mimeType === 'application/zip'
+              ? 'שמור קובץ ZIP'
+              : saveFileDialog.type === 'kml' 
+                ? 'שמור קובץ KML' 
+                : 'שמור פרויקט'
+          }
+          description={
+            saveFileDialog.mimeType === 'application/zip'
+              ? 'הזן שם קובץ לשמירת כל המסלולים בקובץ ZIP'
+              : saveFileDialog.type === 'kml' 
+                ? 'הזן שם קובץ לשמירת מסלול הטיסה' 
+                : 'הזן שם קובץ לשמירת הפרויקט'
+          }
+          fileContent={saveFileDialog.fileContent}
+          mimeType={saveFileDialog.mimeType}
+          onClose={() => setSaveFileDialog(null)}
+          onSave={async (filename: string) => {
+            // If it's a ZIP file, show success notification after save
+            if (saveFileDialog.mimeType === 'application/zip') {
+              setSuccessNotification({
+                isOpen: true,
+                message: `נשמרו כל המסלולים בקובץ ZIP`
+              });
+            }
+            // Call legacy callback if provided
+            if (saveFileDialog.onSave) {
+              saveFileDialog.onSave(filename);
+            }
+          }}
+        />
+      )}
+      <KmlManagerModal
+        isOpen={kmlManagerModalOpen}
+        kmlImports={kmlImports}
+        onDelete={handleDeleteKml}
+        onColorChange={handleKmlColorChange}
+        onSymbolChange={handleKmlSymbolChange}
+        onVisibilityToggle={handleKmlVisibilityToggle}
+        onZoomToKml={handleZoomToKml}
+        onDeleteAll={handleDeleteAllKml}
+        onImport={handleImportKml}
+        onClose={() => setKmlManagerModalOpen(false)}
+      />
+      {importSummary && (
+        <div style={{
+          position: 'fixed',
+          top: '20px',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          background: '#3b82f6',
+          color: 'white',
+          padding: '12px 24px',
+          borderRadius: '8px',
+          boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)',
+          zIndex: 10001,
+          direction: 'rtl'
+        }}>
+          זוהו: {importSummary.points} נקודות, {importSummary.polygons} מצולעים. מייבא...
+        </div>
+      )}
+      <SuccessNotification
+        isOpen={successNotification.isOpen}
+        message={successNotification.message}
+        onClose={() => setSuccessNotification({ isOpen: false, message: '' })}
+        autoCloseDelay={3000}
+      />
+      <ReverseWarningModal
+        isOpen={reverseWarningOpen}
+        onCancel={() => setReverseWarningOpen(false)}
+        onContinue={() => {
+          setReverseWarningOpen(false);
+          reverseFlightPath();
         }}
       />
     </div>
+  );
+}
+
+// Main App component that wraps AppContent with GlobalUndoRedoProvider
+function App() {
+  return (
+    <GlobalUndoRedoProvider>
+      <AppContent />
+    </GlobalUndoRedoProvider>
   );
 }
 

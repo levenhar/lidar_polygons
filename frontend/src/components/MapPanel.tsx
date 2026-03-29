@@ -9841,7 +9841,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
               type="button"
               className="routes-panel-toggle"
               onClick={() => setIsRoutesPanelOpen((prev) => !prev)}
-              aria-label={isRoutesPanelOpen ? 'סגירת לוח המסלולים' : 'פתיחת לוח המסלולים'}
+              disabled={dtmLoaderOpen || dtmLoadState !== 'READY'}
+              aria-label={dtmLoaderOpen ? 'לוח המסלולים מושבת בזמן טעינת DTM' : (dtmLoadState !== 'READY' ? 'לוח המסלולים מושבת עד שה-DTM יהיה מוכן' : (isRoutesPanelOpen ? 'סגירת לוח המסלולים' : 'פתיחת לוח המסלולים'))}
             >
               <span className="group-title">מסלולים</span>
               <span className={`header-chevron ${isRoutesPanelOpen ? 'open' : ''}`}>
@@ -10197,7 +10198,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
             ref={displaySettingsButtonRef}
             className={`display-settings-trigger ${displaySettingsOpen ? 'active' : ''}`}
             onClick={() => setDisplaySettingsOpen(!displaySettingsOpen)}
-            aria-label="Display settings"
+            disabled={dtmLoaderOpen || dtmLoadState !== 'READY'}
+            aria-label={dtmLoaderOpen ? 'הגדרות תצוגה מושבתות בזמן טעינת DTM' : (dtmLoadState !== 'READY' ? 'הגדרות תצוגה מושבתות עד שה-DTM יהיה מוכן' : 'Display settings')}
             aria-expanded={displaySettingsOpen}
             aria-haspopup="true"
           >

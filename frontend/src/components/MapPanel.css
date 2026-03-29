@@ -292,6 +292,16 @@
   outline: none;
 }
 
+.routes-panel-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.routes-panel-toggle:disabled .group-title {
+  color: #999;
+}
+
 .routes-panel.closed {
   width: auto;
   padding: 0.5rem 0.75rem;

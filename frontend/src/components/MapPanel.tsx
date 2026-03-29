@@ -9841,7 +9841,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
               type="button"
               className="routes-panel-toggle"
               onClick={() => setIsRoutesPanelOpen((prev) => !prev)}
-              aria-label={isRoutesPanelOpen ? 'סגירת לוח המסלולים' : 'פתיחת לוח המסלולים'}
+              disabled={dtmLoaderOpen || dtmLoadState !== 'READY'}
+              aria-label={dtmLoaderOpen ? 'לוח המסלולים מושבת בזמן טעינת DTM' : (dtmLoadState !== 'READY' ? 'לוח המסלולים מושבת עד שה-DTM יהיה מוכן' : (isRoutesPanelOpen ? 'סגירת לוח המסלולים' : 'פתיחת לוח המסלולים'))}
             >
               <span className="group-title">מסלולים</span>
               <span className={`header-chevron ${isRoutesPanelOpen ? 'open' : ''}`}>

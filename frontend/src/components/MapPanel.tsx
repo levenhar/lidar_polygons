@@ -10198,7 +10198,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
             ref={displaySettingsButtonRef}
             className={`display-settings-trigger ${displaySettingsOpen ? 'active' : ''}`}
             onClick={() => setDisplaySettingsOpen(!displaySettingsOpen)}
-            aria-label="Display settings"
+            disabled={dtmLoaderOpen || dtmLoadState !== 'READY'}
+            aria-label={dtmLoaderOpen ? 'הגדרות תצוגה מושבתות בזמן טעינת DTM' : (dtmLoadState !== 'READY' ? 'הגדרות תצוגה מושבתות עד שה-DTM יהיה מוכן' : 'Display settings')}
             aria-expanded={displaySettingsOpen}
             aria-haspopup="true"
           >

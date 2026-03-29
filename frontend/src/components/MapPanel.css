@@ -2453,6 +2453,16 @@
   color: #ffffff;
 }
 
+.display-settings-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.display-settings-trigger:disabled svg {
+  opacity: 0.6;
+}
+
 .display-settings-trigger svg {
   width: 18px;
   height: 18px;

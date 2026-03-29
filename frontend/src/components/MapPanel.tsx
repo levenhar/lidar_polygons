@@ -1034,6 +1034,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const lastRightClickTimeRef = useRef<number>(0);
   // Multi-select state
   const [selectedPointIndices, setSelectedPointIndices] = useState<Set<number>>(new Set());
+  const [rangeSelectionAnchor, setRangeSelectionAnchor] = useState<number | null>(null);
   const dragStartPositionsRef = useRef<Map<number, Coordinate>>(new Map());
   const isGroupDraggingRef = useRef<boolean>(false);
   const isMarkerDragActiveRef = useRef<boolean>(false);
@@ -4557,6 +4558,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // BUT: In parallel line mode, don't clear point selection (different selection system)
       if (selectedPointIndices.size > 0 && !justFinishedDraggingRef.current && !isParallelLineMode) {
         setSelectedPointIndices(new Set());
+        setRangeSelectionAnchor(null);
         return;
       }
 
@@ -4603,6 +4605,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (!isDrawing && dtmLoaded) {
           setIsDrawing(true);
           setIsRotateMode(false);
+          setRangeSelectionAnchor(null);
         }
         lastRightClickTimeRef.current = 0; // Reset to prevent triple-click from triggering again
         return;
@@ -4622,12 +4625,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (isDrawing) {
         e.originalEvent.preventDefault();
         setIsDrawing(false);
+        setRangeSelectionAnchor(null);
       }
       
       // Exit rotate mode on right-click
       if (isRotateMode) {
         e.originalEvent.preventDefault();
         setIsRotateMode(false);
+        setRangeSelectionAnchor(null);
       }
     };
 
@@ -4677,6 +4682,27 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return next;
     });
   }, []);
+
+  const selectRange = useCallback((anchorIndex: number, targetIndex: number) => {
+    if (anchorIndex < 0 || targetIndex < 0 || anchorIndex >= flightPath.length || targetIndex >= flightPath.length) {
+      return;
+    }
+
+    const minIndex = Math.min(anchorIndex, targetIndex);
+    const maxIndex = Math.max(anchorIndex, targetIndex);
+    
+    setSelectedPointIndices((prev) => {
+      const next = new Set(prev);
+      // Add all points in the range to the selection
+      for (let i = minIndex; i <= maxIndex; i++) {
+        next.add(i);
+      }
+      return next;
+    });
+    
+    // Reset anchor after range selection (like Ctrl+point behavior)
+    setRangeSelectionAnchor(null);
+  }, [flightPath.length]);
 
   const selectAllPoints = useCallback(() => {
     setSelectedPointIndices(new Set(flightPath.map((_, i) => i)));
@@ -4802,6 +4828,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
       });
       return valid;
+    });
+    
+    // Reset range selection anchor if it's out of bounds
+    setRangeSelectionAnchor((prev) => {
+      if (prev !== null && (prev < 0 || prev >= flightPath.length)) {
+        return null;
+      }
+      return prev;
     });
   }, [flightPath.length]);
 
@@ -5806,17 +5840,27 @@ const MapPanel: React.FC<MapPanelProps> = ({
         
         // Check for Ctrl (Windows/Linux) or Cmd (macOS) modifier
         const isModifierPressed = e.ctrlKey || e.metaKey;
+        const isShiftPressed = e.shiftKey;
         
         if (isModifierPressed) {
           // Toggle selection
           e.preventDefault();
           e.stopPropagation();
           togglePointSelection(index);
+          // Reset anchor when using Ctrl+click (like range selection behavior)
+          setRangeSelectionAnchor(null);
+        } else if (isShiftPressed && rangeSelectionAnchor !== null && rangeSelectionAnchor !== index) {
+          // Range selection: SHIFT+click with existing anchor
+          e.preventDefault();
+          e.stopPropagation();
+          selectRange(rangeSelectionAnchor, index);
         } else {
           // Single click: select only this point (clear others)
           // But don't clear if we're about to drag
           if (!isDrawing) {
             setSelectedPointIndices(new Set([index]));
+            // Set this as the new anchor for range selection
+            setRangeSelectionAnchor(index);
           }
         }
       });
@@ -5839,9 +5883,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
 
         const isModifierPressed = e.ctrlKey || e.metaKey;
+        const isShiftPressed = e.shiftKey;
 
-        // If clicking on a point while holding Ctrl/Cmd, toggle selection (add or remove)
-        if (isModifierPressed) {
+        // Handle range selection on mousedown as well (for consistency)
+        if (isShiftPressed && rangeSelectionAnchor !== null && rangeSelectionAnchor !== index) {
+          // Range selection: SHIFT+click with existing anchor
+          const anchorIdx = rangeSelectionAnchor;
+          setSelectedPointIndices((prev) => {
+            const next = new Set(prev);
+            const minIndex = Math.min(anchorIdx, index);
+            const maxIndex = Math.max(anchorIdx, index);
+            for (let i = minIndex; i <= maxIndex; i++) {
+              next.add(i);
+            }
+            return next;
+          });
+          // Reset anchor after range selection
+          setRangeSelectionAnchor(null);
+        } else if (isModifierPressed) {
+          // If clicking on a point while holding Ctrl/Cmd, toggle selection (add or remove)
           setSelectedPointIndices((prev) => {
             const next = new Set(prev);
             if (next.has(index)) {
@@ -5851,10 +5911,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
             }
             return next;
           });
+          // Reset anchor when using Ctrl+click
+          setRangeSelectionAnchor(null);
         } else {
           // No modifier: clicking a non-selected point should select ONLY that point
           if (!selectedPointIndices.has(index)) {
             setSelectedPointIndices(new Set([index]));
+            // Set this as the new anchor for range selection
+            setRangeSelectionAnchor(index);
           }
         }
 
@@ -6471,6 +6535,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         
         // Clear selection
         setSelectedPointIndices(new Set());
+        setRangeSelectionAnchor(null);
       }
     };
 
@@ -6848,9 +6913,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
   useEffect(() => {
     if (!dtmLoaded && isDrawing) {
       setIsDrawing(false);
+      setRangeSelectionAnchor(null);
     }
     if (!dtmLoaded && isParallelLineMode) {
       setIsParallelLineMode(false);
+      setRangeSelectionAnchor(null);
     }
   }, [dtmLoaded, isDrawing, isParallelLineMode]);
 
@@ -7599,6 +7666,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (window.confirm('למחוק את כל הנקודות?')) {
       // Remove climb markers immediately so both start/end markers disappear right away.
       climbMarkersRef.current.forEach(marker => marker.remove());
+      setRangeSelectionAnchor(null);
       climbMarkersRef.current = [];
 
       // Source-of-truth cleanup in App: clear climb requests and route points together.
@@ -8446,6 +8514,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
         onInsertPoints(startPointIndex + 1, uTurnPoints);
         setSelectedPointIndices(new Set());
+        setRangeSelectionAnchor(null);
         resetDialog();
       }
     }
@@ -9554,6 +9623,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       onEditPointIndexChange(null);
                     }
                     setIsParallelLineMode(false);
+                    setRangeSelectionAnchor(null);
                     if (nextIsDrawing) {
                       setIsRotateMode(false);
                       deactivateAllMeasurementModes();
@@ -9577,6 +9647,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     if (onEditPointIndexChange) {
                       onEditPointIndexChange(null);
                     }
+                    setRangeSelectionAnchor(null);
+                    deactivateAllMeasurementModes();
                   }}
                   className={`btn btn-secondary btn-icon ${isParallelLineMode ? 'active' : ''}`}
                   disabled={!dtmLoaded || flightPath.length < 2}
@@ -9655,6 +9727,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       setIsDrawing(false);
                       setIsParallelLineMode(false);
                       setEditingPointIndex(null);
+                      setRangeSelectionAnchor(null);
                       deactivateAllMeasurementModes();
                       if (onEditPointIndexChange) {
                         onEditPointIndexChange(null);

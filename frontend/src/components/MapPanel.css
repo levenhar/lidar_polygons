@@ -292,6 +292,16 @@
   outline: none;
 }
 
+.routes-panel-toggle:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.routes-panel-toggle:disabled .group-title {
+  color: #999;
+}
+
 .routes-panel.closed {
   width: auto;
   padding: 0.5rem 0.75rem;
@@ -2441,6 +2451,16 @@
 .display-settings-trigger.active {
   background: #0369a1;
   color: #ffffff;
+}
+
+.display-settings-trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.display-settings-trigger:disabled svg {
+  opacity: 0.6;
 }
 
 .display-settings-trigger svg {

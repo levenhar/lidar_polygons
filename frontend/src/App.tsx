@@ -33,6 +33,13 @@ import KmlManagerModal, { KmlImport } from './components/KmlManagerModal';
 import { calculateDistance } from './utils/geometry';
 import './App.css';
 
+/**
+ * Extract filename without extension for KML folder naming
+ */
+function getFilenameWithoutExtension(filename: string): string {
+  return filename.replace(/\.[^/.]+$/, '');
+}
+
 export interface Coordinate {
   lng: number;
   lat: number;
@@ -148,6 +155,7 @@ function AppContent() {
     fileContent: string | Blob;
     mimeType?: string;
     onSave?: (filename: string) => void; // Optional legacy callback
+    onContentWithFilename?: (filename: string) => string | Blob | Promise<string | Blob>; // Optional callback to generate content with filename
   } | null>(null);
   const [flightHeightInput, setFlightHeightInput] = useState<string>('');
   const [flightHeightError, setFlightHeightError] = useState<string | null>(null);
@@ -2257,15 +2265,18 @@ function AppContent() {
                   ? (climbRequestsByRoute[activeRoute.id] || [])
                   : (climbRequests && activeRoute.id === activeRouteId ? climbRequests : []);
                 
-                const kmlContent = generateKMLForRoute(activeRoute, routeClimbRequests, activeRoute.nominalFlightHeight);
                 const defaultFilename = `${activeRoute.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
                 
                 setSaveFileDialog({
                   isOpen: true,
                   type: 'kml',
                   defaultFilename,
-                  fileContent: kmlContent,
-                  mimeType: 'application/vnd.google-earth.kml+xml'
+                  fileContent: '', // Will be generated dynamically
+                  mimeType: 'application/vnd.google-earth.kml+xml',
+                  onContentWithFilename: (filename: string) => {
+                    const folderName = getFilenameWithoutExtension(filename);
+                    return generateKMLForRoute(activeRoute, routeClimbRequests, activeRoute.nominalFlightHeight, folderName);
+                  }
                 });
               }
             }}
@@ -2358,42 +2369,36 @@ function AppContent() {
               ? (climbRequestsByRoute[route.id] || [])
               : (climbRequests && route.id === activeRouteId ? climbRequests : []);
             
-            const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
             const defaultFilename = `${route.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
             
             setSaveFileDialog({
               isOpen: true,
               type: 'kml',
               defaultFilename,
-              fileContent: kmlContent,
-              mimeType: 'application/vnd.google-earth.kml+xml'
+              fileContent: '', // Will be generated dynamically
+              mimeType: 'application/vnd.google-earth.kml+xml',
+              onContentWithFilename: (filename: string) => {
+                const folderName = getFilenameWithoutExtension(filename);
+                return generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight, folderName);
+              }
             });
             return;
           }
           
           // Multiple routes: export as a single ZIP file
           try {
-            // Generate KML content for all routes
-            const routesWithKml = routesToExport.map(route => {
+            // Store route data for dynamic generation
+            const routeData = routesToExport.map(route => {
               const routeClimbRequests = climbRequestsByRoute 
                 ? (climbRequestsByRoute[route.id] || [])
                 : (climbRequests && route.id === activeRouteId ? climbRequests : []);
               
-              const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
-              return { route, kmlContent };
+              return { route, routeClimbRequests };
             });
 
             // Generate unique, sanitized filenames for each route
-            const routeNames = routesWithKml.map((r: { route: FlightRoute; kmlContent: string }) => r.route.name);
+            const routeNames = routeData.map((r: { route: FlightRoute; routeClimbRequests: any[] }) => r.route.name);
             const baseNames = generateUniqueFilenames(routeNames);
-            const files = routesWithKml.map((r: { route: FlightRoute; kmlContent: string }, i: number) => ({
-              filename: `${baseNames[i]}.kml`,
-              content: r.kmlContent
-            }));
-
-            // Create ZIP blob
-            const { createKmlZip } = await import('./utils/kmlZip');
-            const zipBlob = await createKmlZip(files);
 
             // Show save dialog for ZIP file (user chooses name and location)
             const defaultZipName = `routes_${new Date().toISOString().split('T')[0]}.zip`;
@@ -2401,8 +2406,24 @@ function AppContent() {
               isOpen: true,
               type: 'kml', // Use 'kml' type for styling, but it's actually a ZIP
               defaultFilename: defaultZipName,
-              fileContent: zipBlob,
-              mimeType: 'application/zip'
+              fileContent: '', // Will be generated dynamically
+              mimeType: 'application/zip',
+              onContentWithFilename: async (filename: string) => {
+                const folderName = getFilenameWithoutExtension(filename);
+                
+                // Generate KML content for all routes with the ZIP filename as folder name
+                const files = routeData.map((r: { route: FlightRoute; routeClimbRequests: any[] }, i: number) => {
+                  const kmlContent = generateKMLForRoute(r.route, r.routeClimbRequests, r.route.nominalFlightHeight, folderName);
+                  return {
+                    filename: `${baseNames[i]}.kml`,
+                    content: kmlContent
+                  };
+                });
+
+                // Create ZIP blob
+                const { createKmlZip } = await import('./utils/kmlZip');
+                return await createKmlZip(files);
+              }
             });
           } catch (error: any) {
             console.error('Error creating ZIP:', error);
@@ -2562,6 +2583,7 @@ function AppContent() {
           }
           fileContent={saveFileDialog.fileContent}
           mimeType={saveFileDialog.mimeType}
+          onContentWithFilename={saveFileDialog.onContentWithFilename}
           onClose={() => setSaveFileDialog(null)}
           onSave={async (filename: string) => {
             // If it's a ZIP file, show success notification after save

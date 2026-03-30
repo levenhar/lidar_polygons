@@ -55,9 +55,10 @@ function distanceToCoordinate(
 export function generateKMLForRoute(
   route: FlightRoute,
   routeClimbRequests: { endDistance: number; climbAmount: number }[],
-  nominalFlightHeight?: number
+  nominalFlightHeight?: number,
+  overrideFolderName?: string
 ): string {
-  const folderName = route.name;
+  const folderName = overrideFolderName || route.name;
   const folderId = escapeXml(folderName.replace(/\s+/g, '_'));
 
   // Build KML content with Folder structure
@@ -341,7 +342,7 @@ export function generateKMLForRoute(
     const colorKml = `ff${b}${g}${r}`;
 
     kmlContent += `    <Placemark>
-      <name>${escapeXml(route.name)}</name>
+      <name>${escapeXml(folderName)}</name>
       <description />
       <styleUrl>#PolylineStyle0</styleUrl>
       <ExtendedData>
@@ -349,7 +350,7 @@ export function generateKMLForRoute(
           <value>${Math.round(nominalFlightHeight)}</value>
         </Data>
         ` : ''}<Data name="name">
-          <value>${escapeXml(route.name)}</value>
+          <value>${escapeXml(folderName)}</value>
         </Data>
         <Data name="drawingmode">
           <value>Polyline</value>

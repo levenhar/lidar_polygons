@@ -843,7 +843,9 @@ function AppContent() {
 
     effectiveClimbRequests.forEach((climb) => {
       // climb.endDistance is already the anchor-derived effective distance
-      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const activeRatio = climb.climbAmount > 0 
+        ? (climb.climbRatio ?? climbConfig.climbRatio)
+        : (climb.descentRatio ?? climbConfig.descentRatio);
       const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
 
       // Try to get position from anchor points first (for anchored climbs)

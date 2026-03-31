@@ -11,7 +11,7 @@ import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import CoordinateTooltip from './CoordinateTooltip';
 import SuccessNotification from './SuccessNotification';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, generateUTurnPointsBetweenAhead, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, calculateAverageNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, generateUTurnPointsBetweenAhead, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
 import { ClimbConfig } from '../utils/climb';
@@ -1916,7 +1916,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
     
-    // Use absolute values for averaging
+    // Use absolute values for display (most recent segment instead of average)
     try {
       const offsets = selectedLineIds.map(getSuggestedDistanceForLine).map(Math.abs).filter((n) => isFinite(n));
       if (offsets.length === 0) {
@@ -1926,8 +1926,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         setParallelBatchError(null);
         return;
       }
-      const avg = offsets.reduce((sum, n) => sum + n, 0) / offsets.length;
-      setParallelBatchOffset((Math.round(avg * 10) / 10).toFixed(1));
+      // Use the most recent segment's spacing (like dashed line behavior)
+      const mostRecentOffset = offsets[offsets.length - 1];
+      setParallelBatchOffset((Math.round(mostRecentOffset * 10) / 10).toFixed(1));
       setParallelBatchError(null);
     } catch (error) {
       setParallelBatchError('DTM נדרש לחישוב מרחק קוים מקבילים. אנא טען DTM תחילה.');
@@ -2593,7 +2594,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
   const createParallelLinesBatch = useCallback(
     (lineIds: string[], distanceOverride?: number) => {
-      const offset = distanceOverride ?? parseFloat(parallelBatchOffset || '');
       const failed: string[] = [];
       const createdLineIds: string[] = [];
       const newPoints: Coordinate[] = [];
@@ -2605,7 +2605,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (segmentIndex === undefined) {
           failed.push(lineId);
         } else {
-          const result = createParallelLineForSegmentIndex(segmentIndex, offset);
+          // Use per-segment offset or override
+          const segmentOffset = distanceOverride ?? getSuggestedDistanceForLine(lineId);
+          const result = createParallelLineForSegmentIndex(segmentIndex, segmentOffset);
           if (!result.ok) {
             failed.push(`seg-${segmentIndex + 1}`);
           } else {
@@ -2614,7 +2616,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           }
         }
         return {
-          offset,
+          offset: distanceOverride ?? parseFloat(parallelBatchOffset || ''),
           createdLineIds,
           failed,
           newPoints
@@ -2631,7 +2633,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
           failed.push(lineId);
           continue;
         }
-        const result = createParallelLineForSegmentIndex(segmentIndex, offset);
+        // Use per-segment offset or override
+        const segmentOffset = distanceOverride ?? getSuggestedDistanceForLine(lineId);
+        const result = createParallelLineForSegmentIndex(segmentIndex, segmentOffset);
         if (!result.ok) {
           failed.push(`seg-${segmentIndex + 1}`);
           continue;
@@ -2648,7 +2652,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       if (segmentData.length === 0) {
         return {
-          offset,
+          offset: distanceOverride ?? 0,
           createdLineIds,
           failed,
           newPoints
@@ -2701,13 +2705,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
       newPoints.reverse();
 
       return {
-        offset,
+        offset: distanceOverride ?? 0,
         createdLineIds,
         failed,
         newPoints
       };
     },
-    [createParallelLineForSegmentIndex, parallelBatchOffset, segmentIndexById]
+    [createParallelLineForSegmentIndex, getSuggestedDistanceForLine, segmentIndexById]
   );
 
   const handleCreateParallelLinesBatch = useCallback(() => {
@@ -2725,15 +2729,19 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
     
-    // Convert to signed distance based on direction
-    const signedOffset = parallelBatchDirection === 'right' ? distance : -distance;
+    // Only use distance override if user manually entered a value
+    // Otherwise, use per-segment spacing calculations
+    const distanceOverride = isParallelBatchOffsetOverridden 
+      ? (parallelBatchDirection === 'right' ? distance : -distance)
+      : undefined;
 
-    const { createdLineIds, failed, newPoints } = createParallelLinesBatch(selectedLineIds, signedOffset);
+    const { createdLineIds, failed, newPoints } = createParallelLinesBatch(selectedLineIds, distanceOverride);
 
     if (newPoints.length > 0) {
       // Single history entry: one onAddPoints call
       onAddPoints(newPoints);
       // Remember last-used offsets (global + per-line) - store signed value
+      const signedOffset = distanceOverride || 0;
       lastParallelOffsetRef.current = signedOffset;
       createdLineIds.forEach((id) => lastParallelOffsetByLineIdRef.current.set(id, signedOffset));
     }
@@ -6686,15 +6694,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
             spacingValues.push(spacing);
           }
         }
-        // For single line use exact value, for multiple lines use average
+        // For single line use exact value, for multiple lines use most recent segment value
         if (spacingValues.length === 0) {
           averageNextLineSpacingRef.current = 50;
-        } else if (spacingValues.length === 1) {
-          averageNextLineSpacingRef.current = Math.round(spacingValues[0] * 10) / 10;
         } else {
-          const average = calculateAverageNextLineSpacing(spacingValues);
-          averageNextLineSpacingRef.current = average !== null && average > 0
-            ? Math.round(average * 10) / 10
+          // Use the most recent segment's spacing (like dashed line behavior)
+          const mostRecentSpacing = spacingValues[spacingValues.length - 1];
+          averageNextLineSpacingRef.current = mostRecentSpacing !== undefined && Number.isFinite(mostRecentSpacing)
+            ? Math.round(mostRecentSpacing * 10) / 10
             : 50;
         }
       } else if (flightPath.length >= 2 && !dtmRasterDataRef.current) {
@@ -6761,22 +6768,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
       });
     }
 
-    // Calculate and store spacing: for single line use exact value, for multiple lines use average
+    // Calculate and store spacing: for single line use exact value, for multiple lines use most recent segment value
     if (spacingValues.length === 0) {
       averageNextLineSpacingRef.current = 50;
-    } else if (spacingValues.length === 1) {
-      // For a single line, use the exact distance to the dashed suggested line
-      const singleSpacing = spacingValues[0];
-      if (singleSpacing !== undefined && Number.isFinite(singleSpacing)) {
-        averageNextLineSpacingRef.current = Math.round(singleSpacing * 10) / 10;
-      } else {
-        averageNextLineSpacingRef.current = 50;
-      }
     } else {
-      // For multiple lines, use the average of all valid spacing values
-      const average = calculateAverageNextLineSpacing(spacingValues);
-      averageNextLineSpacingRef.current = average !== null && average > 0
-        ? Math.round(average * 10) / 10
+      // Use the most recent segment's spacing (like dashed line behavior)
+      const mostRecentSpacing = spacingValues[spacingValues.length - 1];
+      averageNextLineSpacingRef.current = mostRecentSpacing !== undefined && Number.isFinite(mostRecentSpacing)
+        ? Math.round(mostRecentSpacing * 10) / 10
         : 50;
     }
 

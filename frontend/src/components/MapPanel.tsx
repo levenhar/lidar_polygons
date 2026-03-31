@@ -2593,7 +2593,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   }, [heightLimitationData, heightLimitationMode, flightPath, routes, activeRouteId]);
 
   const createParallelLinesBatch = useCallback(
-    (lineIds: string[], distanceOverride?: number) => {
+    (lineIds: string[], distanceOverride?: number, direction?: 'right' | 'left') => {
       const failed: string[] = [];
       const createdLineIds: string[] = [];
       const newPoints: Coordinate[] = [];
@@ -2605,8 +2605,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (segmentIndex === undefined) {
           failed.push(lineId);
         } else {
-          // Use per-segment offset or override
-          const segmentOffset = distanceOverride ?? getSuggestedDistanceForLine(lineId);
+          // Use per-segment offset or override, applying direction if no override
+          let segmentOffset = distanceOverride ?? getSuggestedDistanceForLine(lineId);
+          if (distanceOverride === undefined && direction === 'left') {
+            segmentOffset = -segmentOffset;
+          }
           const result = createParallelLineForSegmentIndex(segmentIndex, segmentOffset);
           if (!result.ok) {
             failed.push(`seg-${segmentIndex + 1}`);
@@ -2633,8 +2636,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
           failed.push(lineId);
           continue;
         }
-        // Use per-segment offset or override
-        const segmentOffset = distanceOverride ?? getSuggestedDistanceForLine(lineId);
+        // Use per-segment offset or override, applying direction if no override
+        let segmentOffset = distanceOverride ?? getSuggestedDistanceForLine(lineId);
+        if (distanceOverride === undefined && direction === 'left') {
+          segmentOffset = -segmentOffset;
+        }
         const result = createParallelLineForSegmentIndex(segmentIndex, segmentOffset);
         if (!result.ok) {
           failed.push(`seg-${segmentIndex + 1}`);
@@ -2729,19 +2735,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
     
-    // Only use distance override if user manually entered a value
-    // Otherwise, use per-segment spacing calculations
-    const distanceOverride = isParallelBatchOffsetOverridden 
-      ? (parallelBatchDirection === 'right' ? distance : -distance)
-      : undefined;
+    // Apply direction logic to both manual and auto-calculated distances
+    // Positive distance = right side, negative distance = left side
+    const signedDistance = parallelBatchDirection === 'right' ? distance : -distance;
+    const distanceOverride = isParallelBatchOffsetOverridden ? signedDistance : undefined;
 
-    const { createdLineIds, failed, newPoints } = createParallelLinesBatch(selectedLineIds, distanceOverride);
+    const { createdLineIds, failed, newPoints } = createParallelLinesBatch(selectedLineIds, distanceOverride, parallelBatchDirection);
 
     if (newPoints.length > 0) {
       // Single history entry: one onAddPoints call
       onAddPoints(newPoints);
       // Remember last-used offsets (global + per-line) - store signed value
-      const signedOffset = distanceOverride || 0;
+      const signedOffset = distanceOverride || signedDistance;
       lastParallelOffsetRef.current = signedOffset;
       createdLineIds.forEach((id) => lastParallelOffsetByLineIdRef.current.set(id, signedOffset));
     }

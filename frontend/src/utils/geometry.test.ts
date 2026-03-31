@@ -1,4 +1,4 @@
-import { calculateDistance, calculateBearing, calculateDestination, generateUTurnPoints, generateUTurnPointsBetween } from './geometry';
+import { calculateDistance, calculateBearing, calculateDestination, generateUTurnPoints, generateUTurnPointsBetween, calculateParallelLine } from './geometry';
 import { Coordinate } from '../App';
 
 describe('geometry', () => {
@@ -219,6 +219,77 @@ describe('geometry', () => {
       const a = generateUTurnPointsBetween(start, end, 50, 10, 'R');
       const b = generateUTurnPointsBetween(start, end, 50, 10, 'R');
       expect(a).toEqual(b);
+    });
+  });
+  
+  describe('calculateParallelLine', () => {
+    it('creates parallel line with positive offset (right side)', () => {
+      const start: Coordinate = { lng: 0, lat: 0 };
+      const end: Coordinate = { lng: 0.001, lat: 0 };
+      const offset = 100;
+      
+      const [parallelStart, parallelEnd] = calculateParallelLine(start, end, offset);
+      
+      // Check that distance between original and parallel points matches offset
+      const startDistance = calculateDistance(start, parallelStart);
+      const endDistance = calculateDistance(end, parallelEnd);
+      expect(Math.abs(startDistance - offset)).toBeLessThan(1);
+      expect(Math.abs(endDistance - offset)).toBeLessThan(1);
+      
+      // Check that parallel line is indeed parallel (same length)
+      const originalLength = calculateDistance(start, end);
+      const parallelLength = calculateDistance(parallelStart, parallelEnd);
+      expect(Math.abs(originalLength - parallelLength)).toBeLessThan(0.1);
+    });
+    
+    it('creates parallel line with negative offset (left side)', () => {
+      const start: Coordinate = { lng: 0, lat: 0 };
+      const end: Coordinate = { lng: 0.001, lat: 0 };
+      const offset = -100;
+      
+      const [parallelStart, parallelEnd] = calculateParallelLine(start, end, offset);
+      
+      // Check that distance between original and parallel points matches absolute offset
+      const startDistance = calculateDistance(start, parallelStart);
+      const endDistance = calculateDistance(end, parallelEnd);
+      expect(Math.abs(startDistance - Math.abs(offset))).toBeLessThan(1);
+      expect(Math.abs(endDistance - Math.abs(offset))).toBeLessThan(1);
+      
+      // Check that parallel line is indeed parallel (same length)
+      const originalLength = calculateDistance(start, end);
+      const parallelLength = calculateDistance(parallelStart, parallelEnd);
+      expect(Math.abs(originalLength - parallelLength)).toBeLessThan(0.1);
+    });
+    
+    it('creates different lines for positive and negative offsets', () => {
+      const start: Coordinate = { lng: 0, lat: 0 };
+      const end: Coordinate = { lng: 0.001, lat: 0 };
+      const offset = 100;
+      
+      const [rightStart, rightEnd] = calculateParallelLine(start, end, offset);
+      const [leftStart, leftEnd] = calculateParallelLine(start, end, -offset);
+      
+      // The two parallel lines should be different
+      expect(rightStart.lat).not.toBeCloseTo(leftStart.lat, 6);
+      expect(rightEnd.lat).not.toBeCloseTo(leftEnd.lat, 6);
+      
+      // But they should both be at the same distance from the original line
+      const rightStartDistance = calculateDistance(start, rightStart);
+      const leftStartDistance = calculateDistance(start, leftStart);
+      expect(Math.abs(rightStartDistance - leftStartDistance)).toBeLessThan(1);
+    });
+    
+    it('maintains same length as original line', () => {
+      const start: Coordinate = { lng: 0, lat: 0 };
+      const end: Coordinate = { lng: 0.001, lat: 0 };
+      const offset = 50;
+      
+      const [parallelStart, parallelEnd] = calculateParallelLine(start, end, offset);
+      
+      const originalLength = calculateDistance(start, end);
+      const parallelLength = calculateDistance(parallelStart, parallelEnd);
+      
+      expect(Math.abs(originalLength - parallelLength)).toBeLessThan(0.1);
     });
   });
 });

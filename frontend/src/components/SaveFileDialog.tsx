@@ -12,6 +12,7 @@ interface SaveFileDialogProps {
   mimeType?: string;
   onClose: () => void;
   onSave?: (filename: string) => void; // Optional legacy callback
+  onContentWithFilename?: (filename: string) => string | Blob | Promise<string | Blob>; // Optional callback to generate content with filename
 }
 
 const SaveFileDialog: React.FC<SaveFileDialogProps> = ({
@@ -23,7 +24,8 @@ const SaveFileDialog: React.FC<SaveFileDialogProps> = ({
   fileContent,
   mimeType,
   onClose,
-  onSave
+  onSave,
+  onContentWithFilename
 }) => {
   const [filename, setFilename] = useState(defaultFilename);
   const [error, setError] = useState<string | null>(null);
@@ -108,8 +110,15 @@ const SaveFileDialog: React.FC<SaveFileDialogProps> = ({
     }
     
     try {
+      // Use dynamic content generation if callback is provided
+      let contentToSave = fileContent;
+      if (onContentWithFilename) {
+        const result = onContentWithFilename(finalFilename);
+        contentToSave = result instanceof Promise ? await result : result;
+      }
+      
       // Use File System Access API to save with location selection
-      await saveFileWithLocation(fileContent, finalFilename, mimeType);
+      await saveFileWithLocation(contentToSave, finalFilename, mimeType);
       
       // Call legacy callback if provided (for backward compatibility)
       if (onSave) {

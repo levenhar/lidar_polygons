@@ -1097,7 +1097,7 @@ export function useFlightPath(
               const newRoute: FlightRoute = {
                 ...route,
                 name: name || route.name,
-                points: coords,
+                points: coords.map(ensurePointId),
                 nominalFlightHeight: finalHeight,
                 ...(fromFile && { entranceHeightFromFile: true })
               };
@@ -1222,7 +1222,7 @@ export function useFlightPath(
                   routes.push({
                     ...route,
                     name: name || route.name,
-                    points: coords
+                    points: coords.map(ensurePointId)
                   });
                 }
               }
@@ -1444,6 +1444,7 @@ export function useFlightPath(
       if (routesToImport.length === 0) return;
       const normalizedRoutesToImport = routesToImport.map((route) => ({
         ...route,
+        points: route.points.map(ensurePointId),
         lineWidth: sanitizeRouteLineWidth(route.lineWidth)
       }));
       

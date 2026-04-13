@@ -121,13 +121,13 @@ export interface UseFlightPathOptions {
 }
 
 export function useFlightPath(
-  initialClimbRequestsByRouteOrOptions?: Record<string, { endDistance: number; climbAmount: number }[]> | UseFlightPathOptions
+  initialClimbRequestsByRouteOrOptions?: Record<string, ClimbRequest[]> | UseFlightPathOptions
 ) {
   // Handle both old signature (just initialClimbRequestsByRoute) and new signature (options object)
-  const options: UseFlightPathOptions = 
+  const options: UseFlightPathOptions =
     initialClimbRequestsByRouteOrOptions && 'registerGlobalAction' in initialClimbRequestsByRouteOrOptions
       ? initialClimbRequestsByRouteOrOptions
-      : { initialClimbRequestsByRoute: initialClimbRequestsByRouteOrOptions as Record<string, { endDistance: number; climbAmount: number }[]> | undefined };
+      : { initialClimbRequestsByRoute: initialClimbRequestsByRouteOrOptions as Record<string, ClimbRequest[]> | undefined };
   
   const { initialClimbRequestsByRoute, registerGlobalAction } = options;
   
@@ -1404,7 +1404,7 @@ export function useFlightPath(
   );
 
   const setClimbRequestsByRoute = useCallback(
-    (updater: React.SetStateAction<Record<string, { endDistance: number; climbAmount: number }[]>>) => {
+    (updater: React.SetStateAction<Record<string, ClimbRequest[]>>) => {
       // Use functional update to ensure we have the latest state
       setState(
         (prevState) => {
@@ -1423,7 +1423,7 @@ export function useFlightPath(
   // Silent (non-undoable) variant used to keep endDistance values in sync with
   // the effective anchor-derived positions after route insertions/deletions.
   const syncClimbRequestsByRoute = useCallback(
-    (updater: React.SetStateAction<Record<string, { endDistance: number; climbAmount: number }[]>>) => {
+    (updater: React.SetStateAction<Record<string, ClimbRequest[]>>) => {
       setState(
         (prevState) => {
           const next = typeof updater === 'function' ? updater(prevState.climbRequestsByRoute) : updater;

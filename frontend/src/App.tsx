@@ -184,7 +184,7 @@ function AppContent() {
     try {
       const stored = localStorage.getItem('climbRequestsByRoute');
       if (stored) {
-        return JSON.parse(stored) as Record<string, { endDistance: number; climbAmount: number }[]>;
+        return JSON.parse(stored) as Record<string, ClimbRequest[]>;
       }
     } catch (error) {
       debug.error('Failed to load climb requests from localStorage:', error);
@@ -425,10 +425,12 @@ function AppContent() {
     return requests;
   }, [climbRequestsByRoute, activeRouteId, flightPath]);
 
-  // Silently sync the stored endDistance of each climb to the anchor-derived effective value
-  // whenever the flight path changes (e.g. after a U-turn insertion). This keeps endDistance
-  // accurate without adding a spurious undo entry, so ElevationProfile can continue to match
-  // climbs by endDistance when the user edits or deletes them.
+  // Silently sync each climb's anchor IDs (if missing) and endDistance whenever the flight
+  // path changes. Anchor IDs are assigned first so that getEffectiveEndDistance can then derive
+  // the correct endDistance from the stable anchor position rather than the raw stored value.
+  // Without this, backward-compat climbs (no anchor IDs in state) recompute their anchor on
+  // every render using the stale endDistance + new cumulative distances, which can map to the
+  // wrong segment when non-anchor points are moved, causing the climb marker to jump on the map.
   React.useEffect(() => {
     if (flightPath.length < 2) return;
     syncClimbRequestsByRoute((prev) => {
@@ -441,12 +443,29 @@ function AppContent() {
           continue;
         }
         const nextClimbs = climbs.map((c) => {
-          const effective = getEffectiveEndDistance(c, flightPath);
-          if (Math.abs(effective - c.endDistance) > 0.001) {
-            changed = true;
-            return { ...c, endDistance: effective };
+          // Step 1: assign anchor IDs for backward-compat climbs that lack them.
+          // Once persisted to state, the climbRequests memo returns the climb unchanged on
+          // subsequent renders so the map position no longer shifts when unrelated points move.
+          let climb = c;
+          if (!climb.anchorPointIdA || !climb.anchorPointIdB || climb.segmentRatio === undefined) {
+            const anchors = findAnchorPointsForClimb(climb.endDistance, flightPath);
+            if (anchors) {
+              changed = true;
+              climb = {
+                ...climb,
+                anchorPointIdA: anchors.anchorPointIdA,
+                anchorPointIdB: anchors.anchorPointIdB,
+                segmentRatio: anchors.segmentRatio
+              };
+            }
           }
-          return c;
+          // Step 2: recompute endDistance using the (now-assigned) anchor IDs + segmentRatio.
+          const effective = getEffectiveEndDistance(climb, flightPath);
+          if (Math.abs(effective - climb.endDistance) > 0.001) {
+            changed = true;
+            return { ...climb, endDistance: effective };
+          }
+          return climb;
         });
         updated[routeId] = nextClimbs;
       }

@@ -11,7 +11,7 @@ import ContextMenu from './ContextMenu';
 import Tooltip from './Tooltip';
 import CoordinateTooltip from './CoordinateTooltip';
 import SuccessNotification from './SuccessNotification';
-import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, generateUTurnPointsBetweenAhead, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, calculateAverageNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
+import { calculateParallelLine, findClosestPointOnLine, calculateDestination, generateUTurnPoints, generateUTurnPointsBetweenAhead, UTurnSide, calculateDistance, calculateBearing, calculateNextLineSpacing, samplePointsAlongLine, calculateLineIntersection } from '../utils/geometry';
 import { latLngToUTM } from '../utils/coordinates';
 import { debug } from '../utils/debug';
 import { ClimbConfig } from '../utils/climb';
@@ -1034,6 +1034,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const lastRightClickTimeRef = useRef<number>(0);
   // Multi-select state
   const [selectedPointIndices, setSelectedPointIndices] = useState<Set<number>>(new Set());
+  const [rangeSelectionAnchor, setRangeSelectionAnchor] = useState<number | null>(null);
   const dragStartPositionsRef = useRef<Map<number, Coordinate>>(new Map());
   const isGroupDraggingRef = useRef<boolean>(false);
   const isMarkerDragActiveRef = useRef<boolean>(false);
@@ -1915,7 +1916,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
     
-    // Use absolute values for averaging
+    // Use absolute values for display (most recent segment instead of average)
     try {
       const offsets = selectedLineIds.map(getSuggestedDistanceForLine).map(Math.abs).filter((n) => isFinite(n));
       if (offsets.length === 0) {
@@ -1925,8 +1926,9 @@ const MapPanel: React.FC<MapPanelProps> = ({
         setParallelBatchError(null);
         return;
       }
-      const avg = offsets.reduce((sum, n) => sum + n, 0) / offsets.length;
-      setParallelBatchOffset((Math.round(avg * 10) / 10).toFixed(1));
+      // Use the most recent segment's spacing (like dashed line behavior)
+      const mostRecentOffset = offsets[offsets.length - 1];
+      setParallelBatchOffset((Math.round(mostRecentOffset * 10) / 10).toFixed(1));
       setParallelBatchError(null);
     } catch (error) {
       setParallelBatchError('DTM נדרש לחישוב מרחק קוים מקבילים. אנא טען DTM תחילה.');
@@ -2591,8 +2593,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   }, [heightLimitationData, heightLimitationMode, flightPath, routes, activeRouteId]);
 
   const createParallelLinesBatch = useCallback(
-    (lineIds: string[], distanceOverride?: number) => {
-      const offset = distanceOverride ?? parseFloat(parallelBatchOffset || '');
+    (lineIds: string[], distanceOverride?: number, direction?: 'right' | 'left') => {
       const failed: string[] = [];
       const createdLineIds: string[] = [];
       const newPoints: Coordinate[] = [];
@@ -2604,7 +2605,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (segmentIndex === undefined) {
           failed.push(lineId);
         } else {
-          const result = createParallelLineForSegmentIndex(segmentIndex, offset);
+          // Use per-segment offset or override, applying direction if no override
+          let segmentOffset = distanceOverride ?? getSuggestedDistanceForLine(lineId);
+          if (distanceOverride === undefined && direction === 'left') {
+            segmentOffset = -segmentOffset;
+          }
+          const result = createParallelLineForSegmentIndex(segmentIndex, segmentOffset);
           if (!result.ok) {
             failed.push(`seg-${segmentIndex + 1}`);
           } else {
@@ -2613,7 +2619,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           }
         }
         return {
-          offset,
+          offset: distanceOverride ?? parseFloat(parallelBatchOffset || ''),
           createdLineIds,
           failed,
           newPoints
@@ -2630,7 +2636,12 @@ const MapPanel: React.FC<MapPanelProps> = ({
           failed.push(lineId);
           continue;
         }
-        const result = createParallelLineForSegmentIndex(segmentIndex, offset);
+        // Use per-segment offset or override, applying direction if no override
+        let segmentOffset = distanceOverride ?? getSuggestedDistanceForLine(lineId);
+        if (distanceOverride === undefined && direction === 'left') {
+          segmentOffset = -segmentOffset;
+        }
+        const result = createParallelLineForSegmentIndex(segmentIndex, segmentOffset);
         if (!result.ok) {
           failed.push(`seg-${segmentIndex + 1}`);
           continue;
@@ -2647,7 +2658,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
 
       if (segmentData.length === 0) {
         return {
-          offset,
+          offset: distanceOverride ?? 0,
           createdLineIds,
           failed,
           newPoints
@@ -2700,13 +2711,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
       newPoints.reverse();
 
       return {
-        offset,
+        offset: distanceOverride ?? 0,
         createdLineIds,
         failed,
         newPoints
       };
     },
-    [createParallelLineForSegmentIndex, parallelBatchOffset, segmentIndexById]
+    [createParallelLineForSegmentIndex, getSuggestedDistanceForLine, segmentIndexById]
   );
 
   const handleCreateParallelLinesBatch = useCallback(() => {
@@ -2724,15 +2735,18 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return;
     }
     
-    // Convert to signed distance based on direction
-    const signedOffset = parallelBatchDirection === 'right' ? distance : -distance;
+    // Apply direction logic to both manual and auto-calculated distances
+    // Positive distance = right side, negative distance = left side
+    const signedDistance = parallelBatchDirection === 'right' ? distance : -distance;
+    const distanceOverride = isParallelBatchOffsetOverridden ? signedDistance : undefined;
 
-    const { createdLineIds, failed, newPoints } = createParallelLinesBatch(selectedLineIds, signedOffset);
+    const { createdLineIds, failed, newPoints } = createParallelLinesBatch(selectedLineIds, distanceOverride, parallelBatchDirection);
 
     if (newPoints.length > 0) {
       // Single history entry: one onAddPoints call
       onAddPoints(newPoints);
       // Remember last-used offsets (global + per-line) - store signed value
+      const signedOffset = distanceOverride || signedDistance;
       lastParallelOffsetRef.current = signedOffset;
       createdLineIds.forEach((id) => lastParallelOffsetByLineIdRef.current.set(id, signedOffset));
     }
@@ -4557,6 +4571,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // BUT: In parallel line mode, don't clear point selection (different selection system)
       if (selectedPointIndices.size > 0 && !justFinishedDraggingRef.current && !isParallelLineMode) {
         setSelectedPointIndices(new Set());
+        setRangeSelectionAnchor(null);
         return;
       }
 
@@ -4603,6 +4618,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         if (!isDrawing && dtmLoaded) {
           setIsDrawing(true);
           setIsRotateMode(false);
+          setRangeSelectionAnchor(null);
         }
         lastRightClickTimeRef.current = 0; // Reset to prevent triple-click from triggering again
         return;
@@ -4622,12 +4638,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (isDrawing) {
         e.originalEvent.preventDefault();
         setIsDrawing(false);
+        setRangeSelectionAnchor(null);
       }
       
       // Exit rotate mode on right-click
       if (isRotateMode) {
         e.originalEvent.preventDefault();
         setIsRotateMode(false);
+        setRangeSelectionAnchor(null);
       }
     };
 
@@ -4677,6 +4695,27 @@ const MapPanel: React.FC<MapPanelProps> = ({
       return next;
     });
   }, []);
+
+  const selectRange = useCallback((anchorIndex: number, targetIndex: number) => {
+    if (anchorIndex < 0 || targetIndex < 0 || anchorIndex >= flightPath.length || targetIndex >= flightPath.length) {
+      return;
+    }
+
+    const minIndex = Math.min(anchorIndex, targetIndex);
+    const maxIndex = Math.max(anchorIndex, targetIndex);
+    
+    setSelectedPointIndices((prev) => {
+      const next = new Set(prev);
+      // Add all points in the range to the selection
+      for (let i = minIndex; i <= maxIndex; i++) {
+        next.add(i);
+      }
+      return next;
+    });
+    
+    // Reset anchor after range selection (like Ctrl+point behavior)
+    setRangeSelectionAnchor(null);
+  }, [flightPath.length]);
 
   const selectAllPoints = useCallback(() => {
     setSelectedPointIndices(new Set(flightPath.map((_, i) => i)));
@@ -4802,6 +4841,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
       });
       return valid;
+    });
+    
+    // Reset range selection anchor if it's out of bounds
+    setRangeSelectionAnchor((prev) => {
+      if (prev !== null && (prev < 0 || prev >= flightPath.length)) {
+        return null;
+      }
+      return prev;
     });
   }, [flightPath.length]);
 
@@ -5806,17 +5853,27 @@ const MapPanel: React.FC<MapPanelProps> = ({
         
         // Check for Ctrl (Windows/Linux) or Cmd (macOS) modifier
         const isModifierPressed = e.ctrlKey || e.metaKey;
+        const isShiftPressed = e.shiftKey;
         
         if (isModifierPressed) {
           // Toggle selection
           e.preventDefault();
           e.stopPropagation();
           togglePointSelection(index);
+          // Reset anchor when using Ctrl+click (like range selection behavior)
+          setRangeSelectionAnchor(null);
+        } else if (isShiftPressed && rangeSelectionAnchor !== null && rangeSelectionAnchor !== index) {
+          // Range selection: SHIFT+click with existing anchor
+          e.preventDefault();
+          e.stopPropagation();
+          selectRange(rangeSelectionAnchor, index);
         } else {
           // Single click: select only this point (clear others)
           // But don't clear if we're about to drag
           if (!isDrawing) {
             setSelectedPointIndices(new Set([index]));
+            // Set this as the new anchor for range selection
+            setRangeSelectionAnchor(index);
           }
         }
       });
@@ -5839,9 +5896,25 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
 
         const isModifierPressed = e.ctrlKey || e.metaKey;
+        const isShiftPressed = e.shiftKey;
 
-        // If clicking on a point while holding Ctrl/Cmd, toggle selection (add or remove)
-        if (isModifierPressed) {
+        // Handle range selection on mousedown as well (for consistency)
+        if (isShiftPressed && rangeSelectionAnchor !== null && rangeSelectionAnchor !== index) {
+          // Range selection: SHIFT+click with existing anchor
+          const anchorIdx = rangeSelectionAnchor;
+          setSelectedPointIndices((prev) => {
+            const next = new Set(prev);
+            const minIndex = Math.min(anchorIdx, index);
+            const maxIndex = Math.max(anchorIdx, index);
+            for (let i = minIndex; i <= maxIndex; i++) {
+              next.add(i);
+            }
+            return next;
+          });
+          // Reset anchor after range selection
+          setRangeSelectionAnchor(null);
+        } else if (isModifierPressed) {
+          // If clicking on a point while holding Ctrl/Cmd, toggle selection (add or remove)
           setSelectedPointIndices((prev) => {
             const next = new Set(prev);
             if (next.has(index)) {
@@ -5851,10 +5924,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
             }
             return next;
           });
+          // Reset anchor when using Ctrl+click
+          setRangeSelectionAnchor(null);
         } else {
           // No modifier: clicking a non-selected point should select ONLY that point
           if (!selectedPointIndices.has(index)) {
             setSelectedPointIndices(new Set([index]));
+            // Set this as the new anchor for range selection
+            setRangeSelectionAnchor(index);
           }
         }
 
@@ -6471,6 +6548,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         
         // Clear selection
         setSelectedPointIndices(new Set());
+        setRangeSelectionAnchor(null);
       }
     };
 
@@ -6621,15 +6699,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
             spacingValues.push(spacing);
           }
         }
-        // For single line use exact value, for multiple lines use average
+        // For single line use exact value, for multiple lines use most recent segment value
         if (spacingValues.length === 0) {
           averageNextLineSpacingRef.current = 50;
-        } else if (spacingValues.length === 1) {
-          averageNextLineSpacingRef.current = Math.round(spacingValues[0] * 10) / 10;
         } else {
-          const average = calculateAverageNextLineSpacing(spacingValues);
-          averageNextLineSpacingRef.current = average !== null && average > 0
-            ? Math.round(average * 10) / 10
+          // Use the most recent segment's spacing (like dashed line behavior)
+          const mostRecentSpacing = spacingValues[spacingValues.length - 1];
+          averageNextLineSpacingRef.current = mostRecentSpacing !== undefined && Number.isFinite(mostRecentSpacing)
+            ? Math.round(mostRecentSpacing * 10) / 10
             : 50;
         }
       } else if (flightPath.length >= 2 && !dtmRasterDataRef.current) {
@@ -6696,22 +6773,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
       });
     }
 
-    // Calculate and store spacing: for single line use exact value, for multiple lines use average
+    // Calculate and store spacing: for single line use exact value, for multiple lines use most recent segment value
     if (spacingValues.length === 0) {
       averageNextLineSpacingRef.current = 50;
-    } else if (spacingValues.length === 1) {
-      // For a single line, use the exact distance to the dashed suggested line
-      const singleSpacing = spacingValues[0];
-      if (singleSpacing !== undefined && Number.isFinite(singleSpacing)) {
-        averageNextLineSpacingRef.current = Math.round(singleSpacing * 10) / 10;
-      } else {
-        averageNextLineSpacingRef.current = 50;
-      }
     } else {
-      // For multiple lines, use the average of all valid spacing values
-      const average = calculateAverageNextLineSpacing(spacingValues);
-      averageNextLineSpacingRef.current = average !== null && average > 0
-        ? Math.round(average * 10) / 10
+      // Use the most recent segment's spacing (like dashed line behavior)
+      const mostRecentSpacing = spacingValues[spacingValues.length - 1];
+      averageNextLineSpacingRef.current = mostRecentSpacing !== undefined && Number.isFinite(mostRecentSpacing)
+        ? Math.round(mostRecentSpacing * 10) / 10
         : 50;
     }
 
@@ -6848,9 +6917,11 @@ const MapPanel: React.FC<MapPanelProps> = ({
   useEffect(() => {
     if (!dtmLoaded && isDrawing) {
       setIsDrawing(false);
+      setRangeSelectionAnchor(null);
     }
     if (!dtmLoaded && isParallelLineMode) {
       setIsParallelLineMode(false);
+      setRangeSelectionAnchor(null);
     }
   }, [dtmLoaded, isDrawing, isParallelLineMode]);
 
@@ -7599,6 +7670,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (window.confirm('למחוק את כל הנקודות?')) {
       // Remove climb markers immediately so both start/end markers disappear right away.
       climbMarkersRef.current.forEach(marker => marker.remove());
+      setRangeSelectionAnchor(null);
       climbMarkersRef.current = [];
 
       // Source-of-truth cleanup in App: clear climb requests and route points together.
@@ -8446,6 +8518,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
         }
         onInsertPoints(startPointIndex + 1, uTurnPoints);
         setSelectedPointIndices(new Set());
+        setRangeSelectionAnchor(null);
         resetDialog();
       }
     }
@@ -9554,6 +9627,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       onEditPointIndexChange(null);
                     }
                     setIsParallelLineMode(false);
+                    setRangeSelectionAnchor(null);
                     if (nextIsDrawing) {
                       setIsRotateMode(false);
                       deactivateAllMeasurementModes();
@@ -9577,6 +9651,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
                     if (onEditPointIndexChange) {
                       onEditPointIndexChange(null);
                     }
+                    setRangeSelectionAnchor(null);
+                    deactivateAllMeasurementModes();
                   }}
                   className={`btn btn-secondary btn-icon ${isParallelLineMode ? 'active' : ''}`}
                   disabled={!dtmLoaded || flightPath.length < 2}
@@ -9655,6 +9731,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                       setIsDrawing(false);
                       setIsParallelLineMode(false);
                       setEditingPointIndex(null);
+                      setRangeSelectionAnchor(null);
                       deactivateAllMeasurementModes();
                       if (onEditPointIndexChange) {
                         onEditPointIndexChange(null);
@@ -11127,149 +11204,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 {dtmOptions.length} קבצים זמינים
               </span>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* AOI Selection Overlay */}
-      {isAoiSelectionMode && (
-        <div className="aoi-selection-overlay">
-          <div className="aoi-selection-panel">
-            <div className="aoi-selection-header">
-              <Icon name="crop" />
-              <div className="aoi-selection-title">
-                <h3>בחר אזור עבודה (AOI)</h3>
-                <span className="aoi-selection-dtm">{selectedDtmId}</span>
-              </div>
-            </div>
-            
-            {/* Method Selection */}
-            {!aoiSelectionMethod && (
-              <div className="aoi-method-selection">
-                <span className="aoi-method-label">בחר שיטת בחירה:</span>
-                <div className="aoi-method-options">
-                  <button
-                    type="button"
-                    className="aoi-method-btn"
-                    onClick={() => setAoiSelectionMethod('bbox')}
-                  >
-                    <Icon name="rectangle" />
-                    <span>מלבן (שתי לחיצות)</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="aoi-method-btn"
-                    onClick={() => setAoiSelectionMethod('polygon')}
-                  >
-                    <Icon name="polygon" />
-                    <span>פוליגון (נקודות מרובות)</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="aoi-method-btn"
-                    onClick={() => setAoiSelectionMethod('kml')}
-                  >
-                    <Icon name="file" />
-                    <span>טעינה מקובץ KML</span>
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Active Method Instructions */}
-            {aoiSelectionMethod && (
-              <div className="aoi-selection-instructions">
-                {aoiSelectionMethod === 'bbox' && !aoiBounds && (
-                  <span>לחץ על המפה לקביעת הפינה הראשונה, ואז לחץ שוב לקביעת הפינה השנייה</span>
-                )}
-                {aoiSelectionMethod === 'polygon' && !aoiPolygon && (
-                  <span>לחץ על המפה להוספת נקודות. לחץ פעמיים או לחץ על הנקודה הראשונה לסגירת הפוליגון</span>
-                )}
-                {aoiSelectionMethod === 'kml' && !aoiPolygon && (
-                  <div className="aoi-kml-upload">
-                    <input
-                      ref={kmlInputRef}
-                      type="file"
-                      accept=".kml,.kmz"
-                      onChange={handleKmlFileSelect}
-                      style={{ display: 'none' }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => kmlInputRef.current?.click()}
-                    >
-                      <Icon name="upload" />
-                      בחר קובץ KML
-                    </button>
-                  </div>
-                )}
-                
-                {/* Show bounds info when bbox is selected */}
-                {aoiBounds && (
-                  <div className="aoi-bounds-info">
-                    <div>מינ' רוחב: {aoiBounds.minLat.toFixed(6)}</div>
-                    <div>מקס' רוחב: {aoiBounds.maxLat.toFixed(6)}</div>
-                    <div>מינ' אורך: {aoiBounds.minLon.toFixed(6)}</div>
-                    <div>מקס' אורך: {aoiBounds.maxLon.toFixed(6)}</div>
-                  </div>
-                )}
-                
-                {/* Show polygon info when polygon is selected */}
-                {aoiPolygon && (
-                  <div className="aoi-polygon-info">
-                    <div>מספר נקודות: {aoiPolygon.coordinates.length}</div>
-                    <div className="aoi-polygon-ready">✓ פוליגון מוכן</div>
-                  </div>
-                )}
-              </div>
-            )}
-            
-            <div className="aoi-selection-actions">
-              {aoiSelectionMethod && (aoiBounds || aoiPolygon) && (
-                <button
-                  type="button"
-                  className="btn btn-tertiary"
-                  onClick={handleResetAoiSelection}
-                  disabled={isClipping}
-                >
-                  שרטט מחדש
-                </button>
-              )}
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={handleCancelAoiSelection}
-                disabled={isClipping}
-              >
-                ביטול
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleClipDtm}
-                disabled={(!aoiBounds && !aoiPolygon) || isClipping}
-              >
-                {isClipping ? (
-                  <>
-                    <div className="loading-spinner-small" />
-                    חותך...
-                  </>
-                ) : (
-                  'טען אזור נבחר'
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Clipping Progress Overlay */}
-      {isClipping && (
-        <div className="upload-progress-overlay">
-          <div className="upload-progress-container">
-            <div className="loading-spinner" />
-            <div className="upload-progress-label">חותך DTM לאזור הנבחר...</div>
           </div>
         </div>
       )}

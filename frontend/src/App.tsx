@@ -33,6 +33,13 @@ import KmlManagerModal, { KmlImport } from './components/KmlManagerModal';
 import { calculateDistance } from './utils/geometry';
 import './App.css';
 
+/**
+ * Extract filename without extension for KML folder naming
+ */
+function getFilenameWithoutExtension(filename: string): string {
+  return filename.replace(/\.[^/.]+$/, '');
+}
+
 export interface Coordinate {
   lng: number;
   lat: number;
@@ -148,6 +155,7 @@ function AppContent() {
     fileContent: string | Blob;
     mimeType?: string;
     onSave?: (filename: string) => void; // Optional legacy callback
+    onContentWithFilename?: (filename: string) => string | Blob | Promise<string | Blob>; // Optional callback to generate content with filename
   } | null>(null);
   const [flightHeightInput, setFlightHeightInput] = useState<string>('');
   const [flightHeightError, setFlightHeightError] = useState<string | null>(null);
@@ -176,7 +184,7 @@ function AppContent() {
     try {
       const stored = localStorage.getItem('climbRequestsByRoute');
       if (stored) {
-        return JSON.parse(stored) as Record<string, { endDistance: number; climbAmount: number }[]>;
+        return JSON.parse(stored) as Record<string, ClimbRequest[]>;
       }
     } catch (error) {
       debug.error('Failed to load climb requests from localStorage:', error);
@@ -417,10 +425,12 @@ function AppContent() {
     return requests;
   }, [climbRequestsByRoute, activeRouteId, flightPath]);
 
-  // Silently sync the stored endDistance of each climb to the anchor-derived effective value
-  // whenever the flight path changes (e.g. after a U-turn insertion). This keeps endDistance
-  // accurate without adding a spurious undo entry, so ElevationProfile can continue to match
-  // climbs by endDistance when the user edits or deletes them.
+  // Silently sync each climb's anchor IDs (if missing) and endDistance whenever the flight
+  // path changes. Anchor IDs are assigned first so that getEffectiveEndDistance can then derive
+  // the correct endDistance from the stable anchor position rather than the raw stored value.
+  // Without this, backward-compat climbs (no anchor IDs in state) recompute their anchor on
+  // every render using the stale endDistance + new cumulative distances, which can map to the
+  // wrong segment when non-anchor points are moved, causing the climb marker to jump on the map.
   React.useEffect(() => {
     if (flightPath.length < 2) return;
     syncClimbRequestsByRoute((prev) => {
@@ -433,12 +443,29 @@ function AppContent() {
           continue;
         }
         const nextClimbs = climbs.map((c) => {
-          const effective = getEffectiveEndDistance(c, flightPath);
-          if (Math.abs(effective - c.endDistance) > 0.001) {
-            changed = true;
-            return { ...c, endDistance: effective };
+          // Step 1: assign anchor IDs for backward-compat climbs that lack them.
+          // Once persisted to state, the climbRequests memo returns the climb unchanged on
+          // subsequent renders so the map position no longer shifts when unrelated points move.
+          let climb = c;
+          if (!climb.anchorPointIdA || !climb.anchorPointIdB || climb.segmentRatio === undefined) {
+            const anchors = findAnchorPointsForClimb(climb.endDistance, flightPath);
+            if (anchors) {
+              changed = true;
+              climb = {
+                ...climb,
+                anchorPointIdA: anchors.anchorPointIdA,
+                anchorPointIdB: anchors.anchorPointIdB,
+                segmentRatio: anchors.segmentRatio
+              };
+            }
           }
-          return c;
+          // Step 2: recompute endDistance using the (now-assigned) anchor IDs + segmentRatio.
+          const effective = getEffectiveEndDistance(climb, flightPath);
+          if (Math.abs(effective - climb.endDistance) > 0.001) {
+            changed = true;
+            return { ...climb, endDistance: effective };
+          }
+          return climb;
         });
         updated[routeId] = nextClimbs;
       }
@@ -835,7 +862,9 @@ function AppContent() {
 
     effectiveClimbRequests.forEach((climb) => {
       // climb.endDistance is already the anchor-derived effective distance
-      const activeRatio = climb.climbAmount > 0 ? climbConfig.climbRatio : climbConfig.descentRatio;
+      const activeRatio = climb.climbAmount > 0 
+        ? (climb.climbRatio ?? climbConfig.climbRatio)
+        : (climb.descentRatio ?? climbConfig.descentRatio);
       const requiredHorizontal = Math.abs(climb.climbAmount) * activeRatio;
 
       // Try to get position from anchor points first (for anchored climbs)
@@ -2257,15 +2286,18 @@ function AppContent() {
                   ? (climbRequestsByRoute[activeRoute.id] || [])
                   : (climbRequests && activeRoute.id === activeRouteId ? climbRequests : []);
                 
-                const kmlContent = generateKMLForRoute(activeRoute, routeClimbRequests, activeRoute.nominalFlightHeight);
                 const defaultFilename = `${activeRoute.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
                 
                 setSaveFileDialog({
                   isOpen: true,
                   type: 'kml',
                   defaultFilename,
-                  fileContent: kmlContent,
-                  mimeType: 'application/vnd.google-earth.kml+xml'
+                  fileContent: '', // Will be generated dynamically
+                  mimeType: 'application/vnd.google-earth.kml+xml',
+                  onContentWithFilename: (filename: string) => {
+                    const folderName = getFilenameWithoutExtension(filename);
+                    return generateKMLForRoute(activeRoute, routeClimbRequests, activeRoute.nominalFlightHeight, folderName);
+                  }
                 });
               }
             }}
@@ -2358,42 +2390,36 @@ function AppContent() {
               ? (climbRequestsByRoute[route.id] || [])
               : (climbRequests && route.id === activeRouteId ? climbRequests : []);
             
-            const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
             const defaultFilename = `${route.name.toLowerCase().replace(/\s+/g, '-')}.kml`;
             
             setSaveFileDialog({
               isOpen: true,
               type: 'kml',
               defaultFilename,
-              fileContent: kmlContent,
-              mimeType: 'application/vnd.google-earth.kml+xml'
+              fileContent: '', // Will be generated dynamically
+              mimeType: 'application/vnd.google-earth.kml+xml',
+              onContentWithFilename: (filename: string) => {
+                const folderName = getFilenameWithoutExtension(filename);
+                return generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight, folderName);
+              }
             });
             return;
           }
           
           // Multiple routes: export as a single ZIP file
           try {
-            // Generate KML content for all routes
-            const routesWithKml = routesToExport.map(route => {
+            // Store route data for dynamic generation
+            const routeData = routesToExport.map(route => {
               const routeClimbRequests = climbRequestsByRoute 
                 ? (climbRequestsByRoute[route.id] || [])
                 : (climbRequests && route.id === activeRouteId ? climbRequests : []);
               
-              const kmlContent = generateKMLForRoute(route, routeClimbRequests, route.nominalFlightHeight);
-              return { route, kmlContent };
+              return { route, routeClimbRequests };
             });
 
             // Generate unique, sanitized filenames for each route
-            const routeNames = routesWithKml.map((r: { route: FlightRoute; kmlContent: string }) => r.route.name);
+            const routeNames = routeData.map((r: { route: FlightRoute; routeClimbRequests: any[] }) => r.route.name);
             const baseNames = generateUniqueFilenames(routeNames);
-            const files = routesWithKml.map((r: { route: FlightRoute; kmlContent: string }, i: number) => ({
-              filename: `${baseNames[i]}.kml`,
-              content: r.kmlContent
-            }));
-
-            // Create ZIP blob
-            const { createKmlZip } = await import('./utils/kmlZip');
-            const zipBlob = await createKmlZip(files);
 
             // Show save dialog for ZIP file (user chooses name and location)
             const defaultZipName = `routes_${new Date().toISOString().split('T')[0]}.zip`;
@@ -2401,8 +2427,24 @@ function AppContent() {
               isOpen: true,
               type: 'kml', // Use 'kml' type for styling, but it's actually a ZIP
               defaultFilename: defaultZipName,
-              fileContent: zipBlob,
-              mimeType: 'application/zip'
+              fileContent: '', // Will be generated dynamically
+              mimeType: 'application/zip',
+              onContentWithFilename: async (filename: string) => {
+                const folderName = getFilenameWithoutExtension(filename);
+                
+                // Generate KML content for all routes with the ZIP filename as folder name
+                const files = routeData.map((r: { route: FlightRoute; routeClimbRequests: any[] }, i: number) => {
+                  const kmlContent = generateKMLForRoute(r.route, r.routeClimbRequests, r.route.nominalFlightHeight, folderName);
+                  return {
+                    filename: `${baseNames[i]}.kml`,
+                    content: kmlContent
+                  };
+                });
+
+                // Create ZIP blob
+                const { createKmlZip } = await import('./utils/kmlZip');
+                return await createKmlZip(files);
+              }
             });
           } catch (error: any) {
             console.error('Error creating ZIP:', error);
@@ -2562,6 +2604,7 @@ function AppContent() {
           }
           fileContent={saveFileDialog.fileContent}
           mimeType={saveFileDialog.mimeType}
+          onContentWithFilename={saveFileDialog.onContentWithFilename}
           onClose={() => setSaveFileDialog(null)}
           onSave={async (filename: string) => {
             // If it's a ZIP file, show success notification after save

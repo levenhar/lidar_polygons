@@ -47,6 +47,7 @@ DEFAULT_RESOLUTION_RADIUS_METERS = 50.0  # Default resolution radius for elevati
 
 DEFAULT_SAMPLING_INTERVAL_METERS = 1.0  # Default sampling interval for viewshed
 THRESH_AZ = np.deg2rad(3)
+THRESH_AZ_DEG = 3
 ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS = 3.0  # Sampling interval for elevation profile generation
 
 # Geographic conversion constants

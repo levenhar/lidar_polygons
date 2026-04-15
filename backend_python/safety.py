@@ -178,7 +178,7 @@ def draw_path_and_points(df, vertices, idx):
     plt.title("Polyline and Generated Points")
     plt.savefig("/app/data/Cache/output"+str(idx)+".png")
 
-def find_parallel_points(df, parallel_threshold):
+def find_parallel_points(df, parallel_threshold, distance_threshold):
     """
     Vectorized version to find closest parallel points to the left and right.
 
@@ -188,6 +188,8 @@ def find_parallel_points(df, parallel_threshold):
         Must contain columns ["X", "Y", "azimuth", "line_num"]
     parallel_threshold : float
         Maximum angular difference (degrees) to consider lines parallel/perpendicular
+    distance_threshold : float
+        Maximum distance (map units) to consider points related
 
     Returns
     -------
@@ -204,6 +206,8 @@ def find_parallel_points(df, parallel_threshold):
     vecs = xy[:, np.newaxis, :] - xy[np.newaxis, :, :]  # (N,N,2)
     distances = np.linalg.norm(vecs, axis=2)  # (N,N)
 
+    distance_mask = distances <= distance_threshold
+
     # remove zero distance and same line
     nonzero_mask = distances > 0
     line_mask = lines[:, np.newaxis] != lines[np.newaxis, :]
@@ -216,13 +220,13 @@ def find_parallel_points(df, parallel_threshold):
     parallel_mask = az_diff <= parallel_threshold
 
     # perpendicular condition
-    vec_angles = (np.degrees(np.arctan2(vecs[..., 0], vecs[..., 1])) + 360) % 360
+    vec_angles = (np.degrees(np.arctan2(vecs[..., 1], vecs[..., 0])) + 360) % 360
     diff = np.abs(vec_angles - az_i) % 360
     diff = np.minimum(diff, 360 - diff)
     perp_mask = np.abs(diff - 90) <= parallel_threshold
 
     # combined valid mask
-    valid_mask = nonzero_mask & line_mask & parallel_mask & perp_mask
+    valid_mask = nonzero_mask & line_mask & parallel_mask & perp_mask & distance_mask
 
     # normal vectors for each point
     az_rad = np.radians(az)
@@ -360,7 +364,7 @@ def add_cumulative_distance(df):
 
     return df
 
-def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata):
+def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata, distance_threshold):
 
     points, epsg = latlon_array_to_utm(points[:,1], points[:,0])
 
@@ -371,7 +375,7 @@ def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata):
     points_df["maxElevation"] = max_values
 
     ## FIND PARALLELS
-    points_df=find_parallel_points(points_df, parallel_threshold)
+    points_df=find_parallel_points(points_df, parallel_threshold, distance_threshold)
 
     ## FIND LOWEST
     min_values = min_value_in_buffer(points_df, dsm, transform)
@@ -382,7 +386,5 @@ def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata):
     points_df["longitude"] = lons
 
     points_df = add_cumulative_distance(points_df)
-
-    print(points_df.head())
 
     return points_df

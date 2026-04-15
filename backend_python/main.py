@@ -832,7 +832,8 @@ async def get_elevation_profile(request: ElevationProfileRequest):
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
                 src_crs = "EPSG:32636" if is_projected else "EPSG:4326"
 
-            profile_df = safety.run(dsm, transform, np.array(request.coordinates), C.ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS, request.safetyRadiusMeters, C.THRESH_AZ, nodata)
+            profile_df = safety.run(dsm, transform, np.array(request.coordinates), C.ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS, request.safetyRadiusMeters, C.THRESH_AZ_DEG, nodata, C.MAX_DISTANCE_BETWEEN_LINES)
+            
             cols = ["distance", "elevation", "longitude", "latitude", "minElevation", "maxElevation"]
             profile = profile_df[cols].to_dict(orient="records")
                 

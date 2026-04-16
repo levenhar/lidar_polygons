@@ -7678,6 +7678,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Source-of-truth cleanup in App: clear climb requests and route points together.
       onDeleteAllPoints();
       setIsRotateMode(false);
+      setIsParallelDebugMode(false);
     }
   };
 
@@ -9792,14 +9793,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
               <Tooltip tooltip={isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג קשרי בטיחות'}>
                 <button
                   onClick={() => {
-                    const next = !isParallelDebugMode;
-                    setIsParallelDebugMode(next);
-                    if (next) {
+                    if (isParallelDebugMode) {
+                      setIsParallelDebugMode(false);
+                    } else {
                       setIsRotateMode(false);
                       setIsDrawing(false);
                       setIsParallelLineMode(false);
                       deactivateAllMeasurementModes();
-                      setIsParallelDebugMode(true); // deactivateAllMeasurementModes clears it, re-set
+                      setIsParallelDebugMode(true);
                     }
                   }}
                   className={isParallelDebugMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}

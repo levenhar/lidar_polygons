@@ -987,6 +987,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const climbMarkersRef = useRef<L.Marker[]>([]);
   const importedPointsMarkersRef = useRef<L.Marker[]>([]);
   const importedPolygonsRef = useRef<L.Polygon[]>([]);
+  const parallelDebugLayersRef = useRef<L.Layer[]>([]);
 
   // Helper function to generate icon HTML based on symbol type
   const getPointIconHtml = (symbol: 'square' | 'circle' | 'triangle' | 'star' | 'diamond' | 'cross', color: string): string => {
@@ -4024,6 +4025,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, []);
 
+  const clearParallelDebugLayers = useCallback(() => {
+    parallelDebugLayersRef.current.forEach(layer => {
+      if (map.current) map.current.removeLayer(layer);
+    });
+    parallelDebugLayersRef.current = [];
+  }, []);
+
   // Clear hover state when mouse leaves the map container
   useEffect(() => {
     if (!map.current) return;
@@ -4037,6 +4045,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (isInfoMode) {
         setCursorElevation(null);
       }
+      clearParallelDebugLayers();
     };
 
     mapContainer.addEventListener('mouseleave', handleMouseLeave);
@@ -4044,7 +4053,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return () => {
       mapContainer.removeEventListener('mouseleave', handleMouseLeave);
     };
-  }, [hoverSource, onPathPointHover, isInfoMode]);
+  }, [hoverSource, onPathPointHover, isInfoMode, clearParallelDebugLayers]);
 
   // Calculate tooltip position to keep it on screen
   useLayoutEffect(() => {
@@ -5660,6 +5669,46 @@ const MapPanel: React.FC<MapPanelProps> = ({
         currentCumulative += segmentLen;
       }
 
+      // Parallel debug overlay
+      if (isParallelDebugMode && map.current) {
+        clearParallelDebugLayers();
+
+        // Find nearest profile point by cumulative distance
+        let nearestPoint: ElevationPoint | null = null;
+        let minDiff = Infinity;
+        for (const pt of elevationProfile) {
+          const diff = Math.abs(pt.distance - hoveredDistance);
+          if (diff < minDiff) {
+            minDiff = diff;
+            nearestPoint = pt;
+          }
+        }
+
+        if (nearestPoint?.parallelPoints && nearestPoint.parallelPoints.length > 0) {
+          for (const idx of nearestPoint.parallelPoints) {
+            const parallelPt = elevationProfile[idx];
+            if (!parallelPt) continue;
+
+            // Circle marker at parallel point
+            const marker = L.circleMarker(
+              [parallelPt.latitude, parallelPt.longitude],
+              { radius: 7, color: '#f97316', fillColor: '#f97316', fillOpacity: 0.85, weight: 2 }
+            ).addTo(map.current);
+
+            // Dashed line from hovered position to parallel point
+            const line = L.polyline(
+              [
+                [bestPoint.lat, bestPoint.lng],
+                [parallelPt.latitude, parallelPt.longitude]
+              ],
+              { color: '#f97316', weight: 2, dashArray: '6 4', opacity: 0.8 }
+            ).addTo(map.current);
+
+            parallelDebugLayersRef.current.push(marker, line);
+          }
+        }
+      }
+
       setMousePos({ x: (e as any).originalEvent.clientX, y: (e as any).originalEvent.clientY });
       onPathPointHover(bestPoint, hoveredDistance);
     };
@@ -6469,7 +6518,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
     togglePointSelection,
     climbConfig,
     showVertexRadius,
-    showAzimuthDistanceLabels
+    showAzimuthDistanceLabels,
+    isParallelDebugMode,
+    elevationProfile,
+    clearParallelDebugLayers
   ]);
 
   // Update marker visual state when selection changes
@@ -8028,6 +8080,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setIsMeasureLengthMode(false);
     setIsAzimuthMode(false);
     setIsParallelDebugMode(false);
+    clearParallelDebugLayers();
     setCoordModePos(null);
     setCursorElevation(null);
     setMousePos(null);
@@ -8038,7 +8091,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (measureMarker2Ref.current) { measureMarker2Ref.current.remove(); measureMarker2Ref.current = null; }
     if (measureLabelRef.current) { measureLabelRef.current.remove(); measureLabelRef.current = null; }
     elevationCacheRef.current.clear();
-  }, []);
+  }, [clearParallelDebugLayers]);
 
   const handleViewshedButtonClick = useCallback(() => {
     if (hasViewshedResult) {

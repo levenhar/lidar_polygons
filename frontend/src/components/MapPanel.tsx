@@ -5085,7 +5085,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (!dtmSource || !dtmLoaded) {
       setIsInfoMode(false);
       setIsParallelDebugMode(false);
-      clearParallelDebugLayers();   // ← add this
+      clearParallelDebugLayers();
       setCursorElevation(null);
       setMousePos(null);
       elevationCacheRef.current.clear();
@@ -7746,7 +7746,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       onDeleteAllPoints();
       setIsRotateMode(false);
       setIsParallelDebugMode(false);
-      clearParallelDebugLayers();   // ← add this
+      clearParallelDebugLayers();
     }
   };
 
@@ -9863,8 +9863,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 <button
                   onClick={() => {
                     if (isParallelDebugMode) {
-                      setIsParallelDebugMode(false);
-                      clearParallelDebugLayers();   // ← add this
+                      deactivateAllMeasurementModes();
                     } else {
                       setIsRotateMode(false);
                       setIsDrawing(false);

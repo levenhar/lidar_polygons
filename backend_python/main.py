@@ -836,7 +836,14 @@ async def get_elevation_profile(request: ElevationProfileRequest):
             
             cols = ["distance", "elevation", "longitude", "latitude", "minElevation", "maxElevation", "parallel_points"]
             profile = profile_df[cols].to_dict(orient="records")
-                
+            # Convert numpy.int64 indices in parallel_points to plain Python int for JSON serialization
+            for pt in profile:
+                pp = pt.get("parallel_points")
+                if isinstance(pp, list):
+                    pt["parallel_points"] = [int(i) for i in pp]
+                elif pp is None:
+                    pt["parallel_points"] = []
+
             duration = time.time() - start_time
             logger.info(f"Elevation profile calculated in {duration:.3f}s, sampled {len(profile)} points")
             return {"profile": profile}

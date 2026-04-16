@@ -5085,12 +5085,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (!dtmSource || !dtmLoaded) {
       setIsInfoMode(false);
       setIsParallelDebugMode(false);
+      clearParallelDebugLayers();   // ← add this
       setCursorElevation(null);
       setMousePos(null);
       elevationCacheRef.current.clear();
       dtmRasterDataRef.current = null;
     }
-  }, [dtmSource, dtmLoaded]);
+  }, [dtmSource, dtmLoaded, clearParallelDebugLayers]);
 
   // Client-side elevation calculation function
   const calculateElevationAtPoint = useCallback((lat: number, lng: number): number | null => {
@@ -5673,14 +5674,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (isParallelDebugMode && map.current) {
         clearParallelDebugLayers();
 
-        // Find nearest profile point by cumulative distance
-        let nearestPoint: ElevationPoint | null = null;
-        let minDiff = Infinity;
-        for (const pt of elevationProfile) {
-          const diff = Math.abs(pt.distance - hoveredDistance);
-          if (diff < minDiff) {
-            minDiff = diff;
-            nearestPoint = pt;
+        // Binary search for nearest profile point by distance
+        let lo = 0, hi = elevationProfile.length - 1;
+        let nearestPoint: ElevationPoint | null = elevationProfile.length > 0 ? elevationProfile[0] : null;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (elevationProfile[mid].distance < hoveredDistance) {
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        // lo is now the insertion point; check lo and lo-1 for nearest
+        if (lo < elevationProfile.length) {
+          const candidate = elevationProfile[lo];
+          if (nearestPoint === null || Math.abs(candidate.distance - hoveredDistance) < Math.abs(nearestPoint.distance - hoveredDistance)) {
+            nearestPoint = candidate;
+          }
+        }
+        if (lo > 0) {
+          const candidate = elevationProfile[lo - 1];
+          if (nearestPoint === null || Math.abs(candidate.distance - hoveredDistance) < Math.abs(nearestPoint.distance - hoveredDistance)) {
+            nearestPoint = candidate;
           }
         }
 
@@ -7731,6 +7746,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       onDeleteAllPoints();
       setIsRotateMode(false);
       setIsParallelDebugMode(false);
+      clearParallelDebugLayers();   // ← add this
     }
   };
 
@@ -9848,6 +9864,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   onClick={() => {
                     if (isParallelDebugMode) {
                       setIsParallelDebugMode(false);
+                      clearParallelDebugLayers();   // ← add this
                     } else {
                       setIsRotateMode(false);
                       setIsDrawing(false);

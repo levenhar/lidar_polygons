@@ -1040,6 +1040,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const isMarkerDragActiveRef = useRef<boolean>(false);
   // Rotate mode state
   const [isRotateMode, setIsRotateMode] = useState<boolean>(false);
+  const [isParallelDebugMode, setIsParallelDebugMode] = useState<boolean>(false);
   const isRotatingRef = useRef<boolean>(false);
   const rotateCenterRef = useRef<{ lat: number; lng: number } | null>(null);
   const rotateCenterUtmRef = useRef<{
@@ -5074,6 +5075,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   useEffect(() => {
     if (!dtmSource || !dtmLoaded) {
       setIsInfoMode(false);
+      setIsParallelDebugMode(false);
       setCursorElevation(null);
       setMousePos(null);
       elevationCacheRef.current.clear();
@@ -8024,6 +8026,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setIsCoordMode(false);
     setIsMeasureLengthMode(false);
     setIsAzimuthMode(false);
+    setIsParallelDebugMode(false);
     setCoordModePos(null);
     setCursorElevation(null);
     setMousePos(null);
@@ -9784,6 +9787,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 >
                   <Icon name="refresh" />
                   <span className="sr-only">הפוך כיוון נקודות</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג קשרי בטיחות'}>
+                <button
+                  onClick={() => {
+                    const next = !isParallelDebugMode;
+                    setIsParallelDebugMode(next);
+                    if (next) {
+                      setIsRotateMode(false);
+                      setIsDrawing(false);
+                      setIsParallelLineMode(false);
+                      deactivateAllMeasurementModes();
+                      setIsParallelDebugMode(true); // deactivateAllMeasurementModes clears it, re-set
+                    }
+                  }}
+                  className={isParallelDebugMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  aria-label={isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג קשרי בטיחות'}
+                  type="button"
+                  disabled={!dtmLoaded || flightPath.length < 2 || elevationProfile.length === 0}
+                >
+                  <Icon name="parallel" />
+                  <span className="sr-only">{isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג קשרי בטיחות'}</span>
                 </button>
               </Tooltip>
             </div>

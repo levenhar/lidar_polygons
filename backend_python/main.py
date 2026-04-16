@@ -834,7 +834,7 @@ async def get_elevation_profile(request: ElevationProfileRequest):
 
             profile_df = safety.run(dsm, transform, np.array(request.coordinates), C.ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS, request.safetyRadiusMeters, C.THRESH_AZ_DEG, nodata, C.MAX_DISTANCE_BETWEEN_LINES)
             
-            cols = ["distance", "elevation", "longitude", "latitude", "minElevation", "maxElevation"]
+            cols = ["distance", "elevation", "longitude", "latitude", "minElevation", "maxElevation", "parallel_points"]
             profile = profile_df[cols].to_dict(orient="records")
                 
             duration = time.time() - start_time

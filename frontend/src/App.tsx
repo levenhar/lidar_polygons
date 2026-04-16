@@ -58,6 +58,7 @@ export interface ElevationPoint {
   plannedAltitude?: number;
   baseAltitude?: number;
   climbDelta?: number;
+  parallelPoints?: number[]; // indices into elevationProfile for adjacent parallel line points
 }
 
 interface DTMInfo {

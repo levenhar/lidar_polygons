@@ -195,7 +195,8 @@ export function useElevationProfile() {
           latitude: point.latitude,
           flightHeight: interpolateFlightHeight(distance),
           minElevation: point.minElevation,
-          maxElevation: point.maxElevation
+          maxElevation: point.maxElevation,
+          parallelPoints: Array.isArray(point.parallel_points) ? point.parallel_points : undefined,
         };
       });
 

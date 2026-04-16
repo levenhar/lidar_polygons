@@ -71,6 +71,27 @@ describe('useElevationProfile', () => {
     expect(result.current.profileError).toBe(null);
   });
 
+  it('calculateProfile stores parallelPoints from API response', async () => {
+    const mockProfile = [
+      { distance: 0, elevation: 100, longitude: 34.5, latitude: 31.2, minElevation: 98, maxElevation: 102, parallel_points: [1] },
+      { distance: 100, elevation: 105, longitude: 34.6, latitude: 31.2, minElevation: 103, maxElevation: 107, parallel_points: [] }
+    ];
+    vi.mocked(axios.post).mockResolvedValueOnce({ data: { ready: true, profile: mockProfile } });
+
+    const { result } = renderHook(() => useElevationProfile());
+    await act(async () => {
+      await result.current.calculateProfile(
+        [{ lng: 34.5, lat: 31.2 }, { lng: 34.6, lat: 31.2 }],
+        '/some/dtm',
+        250,
+        50
+      );
+    });
+
+    expect(result.current.elevationProfile[0].parallelPoints).toEqual([1]);
+    expect(result.current.elevationProfile[1].parallelPoints).toEqual([]);
+  });
+
   it('calculateProfile on API error sets profileError and does not set profile', async () => {
     const serverMessage = 'Profile calculation did not return complete data';
     vi.mocked(axios.post).mockRejectedValueOnce({

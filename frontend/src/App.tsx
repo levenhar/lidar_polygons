@@ -79,7 +79,7 @@ const FALLBACK_CLIMB_CONFIG: ClimbConfig = {
   descentRatio: 8.16,
   allowTurnsDuringClimb: false,
   linkRatios: false,
-  vertexProximityMeters: 30,
+  vertexProximityMeters: 50,
   minClimb: 11,
   maxClimb: 50
 };

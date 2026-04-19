@@ -309,7 +309,8 @@ type IconName =
   | 'chart'
   | 'refresh'
   | 'altitude'
-  | 'cube';
+  | 'cube'
+  | 'low-point';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
 
@@ -630,6 +631,17 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
           <path {...stroke} d="M3.27 6.96L12 12.01l8.73-5.05" />
           <path {...stroke} d="M12 22.08V12" />
+        </svg>
+      );
+    case 'low-point':
+      return (
+        <svg {...common}>
+          <line {...stroke} x1="1" y1="17" x2="23" y2="17" />
+          <path {...stroke} d="M12 17 C6 17 3 12 3 5" />
+          <path {...stroke} d="M12 17 C18 17 21 12 21 5" />
+          <line {...stroke} x1="12" y1="2" x2="12" y2="11" strokeWidth={2.5} />
+          <polygon points="9,10 15,10 12,15" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="17" r="2" fill="currentColor" stroke="none" />
         </svg>
       );
     default:
@@ -9859,7 +9871,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   <span className="sr-only">הפוך כיוון נקודות</span>
                 </button>
               </Tooltip>
-              <Tooltip tooltip={isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג קשרי בטיחות'}>
+              <Tooltip tooltip={isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג מפתח נקודה נמוכה'}>
                 <button
                   onClick={() => {
                     if (isParallelDebugMode) {
@@ -9875,10 +9887,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
                   className={isParallelDebugMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
                   aria-label={isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג קשרי בטיחות'}
                   type="button"
-                  disabled={!dtmLoaded || flightPath.length < 2 || elevationProfile.length === 0}
+                  disabled={flightPath.length < 2}
                 >
-                  <Icon name="parallel" />
-                  <span className="sr-only">{isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג קשרי בטיחות'}</span>
+                  <Icon name="low-point" />
+                  <span className="sr-only">{isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג מפתח נקודה נמוכה'}</span>
                 </button>
               </Tooltip>
             </div>

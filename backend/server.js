@@ -1230,8 +1230,8 @@ app.post('/api/elevation-profile', async (req, res) => {
       body: JSON.stringify({
         coordinates,
         dtmPath,
-        safetyRadiusMeters: safetyRadiusMeters ?? 50,
-        resolutionRadiusMeters: resolutionRadiusMeters ?? 50,
+        safetyRadiusMeters: safetyRadiusMeters ?? 60,
+        resolutionRadiusMeters: resolutionRadiusMeters ?? 60,
         ...(clippedId && { clippedId })
       })
     });

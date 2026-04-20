@@ -18,7 +18,7 @@ export function useElevationProfile() {
     flightPath: Coordinate[],
     dtmSource: string,
     nominalFlightHeight: number,
-    safetyRadius: number = 50,
+    safetyRadius: number = 60,
     resolutionRadius?: number,
     safetyHeight?: number,
     resolutionHeight?: number,
@@ -80,7 +80,7 @@ export function useElevationProfile() {
         segmentDistances.push(segmentDist);
       }
       
-      const safetyRadiusToUse = safetyRadius ?? 50;
+      const safetyRadiusToUse = safetyRadius ?? 60;
       const resolutionRadiusToUse = resolutionRadius ?? safetyRadiusToUse;
       console.log(`Calculating elevation profile with safety radius ${safetyRadiusToUse}m and resolution radius ${resolutionRadiusToUse}m`);
       

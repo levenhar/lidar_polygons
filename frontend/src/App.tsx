@@ -114,7 +114,7 @@ function AppContent() {
   const [isLoadingProject, setIsLoadingProject] = useState(false);
   const [safetyHeight, setSafetyHeight] = useState<number>(140);
   const [resolutionHeight, setResolutionHeight] = useState<number>(270);
-  const [safetySearchRadius, setSafetySearchRadius] = useState<number>(50);
+  const [safetySearchRadius, setSafetySearchRadius] = useState<number>(60);
   const resolutionSearchRadius = 50;
   const [overlapPercentage, setOverlapPercentage] = useState<number>(50);
   const [fovDegrees, setFovDegrees] = useState<number>(75);
@@ -300,8 +300,8 @@ function AppContent() {
         body: JSON.stringify({
           coordinates,
           dtmPath: dtmSource,
-          safetyRadiusMeters: 50,
-          resolutionRadiusMeters: 50,
+          safetyRadiusMeters: 60,
+          resolutionRadiusMeters: 60,
           ...(clippedId && { clippedId })
         })
       });

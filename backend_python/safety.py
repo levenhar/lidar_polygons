@@ -220,7 +220,7 @@ def find_parallel_points(df, parallel_threshold, distance_threshold):
     parallel_mask = az_diff <= parallel_threshold
 
     # perpendicular condition
-    vec_angles = (np.degrees(np.arctan2(vecs[..., 1], vecs[..., 0])) + 360) % 360
+    vec_angles = (np.degrees(np.arctan2(vecs[..., 0], vecs[..., 1])) + 360) % 360
     diff = np.abs(vec_angles - az_i) % 360
     diff = np.minimum(diff, 360 - diff)
     perp_mask = np.abs(diff - 90) <= parallel_threshold

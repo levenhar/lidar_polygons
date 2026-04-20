@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/DELL/Documents/python/00-Git-Repos/lidar_polygons/frontend/**)",
+      "Bash(npm run *)",
+      "Bash(npm test *)"
+    ]
+  }
+}

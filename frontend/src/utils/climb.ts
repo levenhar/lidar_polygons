@@ -160,7 +160,7 @@ export function computeClimbProfile(
 
   // Pre-compute vertex distances (pause climb near vertices when disabled)
   const cumulative = cumulativeDistances(pathGeometry);
-  const vertexProximity = vertexProximityMeters ?? 30; // Default 30m if not provided
+  const vertexProximity = vertexProximityMeters ?? 50; // Default 50m if not provided
 
   // Validate that climb start point is outside vertex proximity zones
   // Always check route endpoints (start and end); check intermediate turns only when turns are disabled

@@ -42,7 +42,7 @@ EPSG_UTM_36N = 'EPSG:32636'  # UTM Zone 36N (common for Israel/Palestine)
 MAX_DISPLAY_DIM = 2048  # Maximum dimension for subsampled display versions (pixels)
 
 # Default sampling and resolution parameters (meters)
-DEFAULT_SAFETY_RADIUS_METERS = 50.0  # Default safety radius for elevation profile
+DEFAULT_SAFETY_RADIUS_METERS = 60.0  # Default safety radius for elevation profile
 DEFAULT_RESOLUTION_RADIUS_METERS = 50.0  # Default resolution radius for elevation profile
 
 DEFAULT_SAMPLING_INTERVAL_METERS = 1.0  # Default sampling interval for viewshed

@@ -47,6 +47,78 @@ logger = logging.getLogger("backend_python")
 tif_footprints_cache: Dict[str, Dict[str, Any]] = {}
 tif_footprints_cache_lock = threading.Lock()
 
+# ============================================================================
+# UTM ZONE CALCULATION UTILITIES
+# ============================================================================
+
+def calculate_utm_zone_from_bounds(min_lon: float, min_lat: float, max_lon: float, max_lat: float) -> str:
+    """
+    Calculate UTM zone from bounding box coordinates.
+    
+    Args:
+        min_lon, min_lat: Minimum longitude and latitude of bounding box
+        max_lon, max_lat: Maximum longitude and latitude of bounding box
+        
+    Returns:
+        UTM zone string (e.g., "36N", "17S")
+        
+    Raises:
+        ValueError: If coordinates are out of valid range
+    """
+    # Validate coordinate ranges
+    if min_lon < -180 or max_lon > 180 or min_lat < -90 or max_lat > 90:
+        raise ValueError(f"Invalid coordinate range: lon [{min_lon}, {max_lon}], lat [{min_lat}, {max_lat}]")
+    
+    # Calculate center point of bounding box
+    center_lon = (min_lon + max_lon) / 2.0
+    center_lat = (min_lat + max_lat) / 2.0
+    
+    # Handle special zones for Svalbard and Norway (zones 31-37)
+    if center_lat >= 72.0 and center_lat <= 84.0:
+        if center_lon >= 0.0 and center_lon < 9.0:
+            zone = 31
+        elif center_lon >= 9.0 and center_lon < 21.0:
+            zone = 33
+        elif center_lon >= 21.0 and center_lon < 33.0:
+            zone = 35
+        elif center_lon >= 33.0 and center_lon < 42.0:
+            zone = 37
+        else:
+            # Normal calculation for other longitudes in this latitude range
+            zone = int((center_lon + 180) / 6) + 1
+    else:
+        # Standard UTM zone calculation
+        # Handle edge case where center_lon is exactly on a zone boundary
+        # UTM zones are 6 degrees wide, starting from -180
+        # Zone 1: -180 to -174, Zone 30: -6 to 0, Zone 31: 0 to 6, etc.
+        if center_lon % 6 == 0:
+            # If exactly on boundary, assign to the western zone (lower number)
+            zone = int((center_lon + 180) / 6)
+        else:
+            zone = int((center_lon + 180) / 6) + 1
+    
+    # Determine hemisphere
+    hemisphere = 'N' if center_lat >= 0 else 'S'
+    
+    return f"{zone}{hemisphere}"
+
+
+def calculate_utm_zone_from_point(lon: float, lat: float) -> str:
+    """
+    Calculate UTM zone from a single point coordinate.
+    
+    Args:
+        lon: Longitude in degrees
+        lat: Latitude in degrees
+        
+    Returns:
+        UTM zone string (e.g., "36N", "17S")
+        
+    Raises:
+        ValueError: If coordinates are out of valid range
+    """
+    return calculate_utm_zone_from_bounds(lon, lat, lon, lat)
+
 def build_tif_footprints_cache():
     """Scan DTM_DATA_DIR and cache TIF file footprints for fast overlap queries"""
     global tif_footprints_cache
@@ -83,6 +155,32 @@ def build_tif_footprints_cache():
                         # Average pixel size for resolution estimate
                         resolution_meters = (pixel_width + pixel_height) / 2.0
                         
+                        # Transform bounds to WGS84 for UTM zone calculation
+                        if src.crs:
+                            try:
+                                wgs84_bounds = rasterio.warp.transform_bounds(
+                                    src.crs, C.EPSG_WGS84,
+                                    bounds.left, bounds.bottom, bounds.right, bounds.top
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to transform bounds to WGS84 for {filename}: {e}")
+                                # Fallback to original bounds
+                                wgs84_bounds = (bounds.left, bounds.bottom, bounds.right, bounds.top)
+                        else:
+                            # No CRS, assume original bounds are already in WGS84
+                            wgs84_bounds = (bounds.left, bounds.bottom, bounds.right, bounds.top)
+                        
+                        # Calculate UTM zone from WGS84 bounds
+                        utm_zone = None
+                        try:
+                            utm_zone = calculate_utm_zone_from_bounds(
+                                wgs84_bounds[0], wgs84_bounds[1],  # minLon, minLat
+                                wgs84_bounds[2], wgs84_bounds[3]   # maxLon, maxLat
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to calculate UTM zone for {filename}: {e}")
+                            utm_zone = None
+                        
                         cache[filename] = {
                             "id": filename,
                             "filename": filename,
@@ -101,7 +199,8 @@ def build_tif_footprints_cache():
                             "resolutionMeters": resolution_meters,
                             "sizeMB": round(stats.st_size / (1024 * 1024), 2),
                             "sizeBytes": stats.st_size,
-                            "modifiedAt": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stats.st_mtime))
+                            "modifiedAt": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stats.st_mtime)),
+                            "utmZone": utm_zone
                         }
                         cached_count += 1
                 except Exception as e:
@@ -1211,6 +1310,18 @@ async def get_dtm_metadata(filename: str):
                     "maxY": bounds.top
                 }
             
+            # Calculate UTM zone from WGS84 bounds
+            utm_zone = None
+            try:
+                utm_zone = calculate_utm_zone_from_bounds(
+                    bounds_dict["minX"], bounds_dict["minY"],
+                    bounds_dict["maxX"], bounds_dict["maxY"]
+                )
+                logger.debug(f"Calculated UTM zone for {filename}: {utm_zone}")
+            except Exception as e:
+                logger.warning(f"Failed to calculate UTM zone for {filename}: {e}")
+                utm_zone = None
+            
             return {
                 "filename": filename,
                 "bounds": bounds_dict,
@@ -1219,7 +1330,8 @@ async def get_dtm_metadata(filename: str):
                     "height": src.height
                 },
                 "noDataValue": src.nodata,
-                "crs": src_crs.to_string() if src_crs else None
+                "crs": src_crs.to_string() if src_crs else None,
+                "utmZone": utm_zone
             }
     except Exception as e:
         logger.error(f"Error reading metadata for {filename}: {e}", exc_info=True)
@@ -1324,7 +1436,9 @@ async def upload_dtm(dtm: UploadFile = File(...)):
             "path": f"{DTM_CACHE_DIR}/{filename}",
             "size": os.path.getsize(file_path),
             "bounds": metadata["bounds"],
-            "resolution": metadata["resolution"]
+            "resolution": metadata["resolution"],
+            "utmZone": metadata.get("utmZone"),
+            "crs": metadata.get("crs")
         }
     except Exception as e:
         logger.error(f"Error uploading DTM {dtm.filename}: {e}", exc_info=True)
@@ -2133,6 +2247,18 @@ async def clip_dtm(request: ClipRequest):
             # Transform bounds to WGS84
             out_bounds = rasterio.warp.transform_bounds(src_crs, C.EPSG_WGS84, left, bottom, right, top)
             
+            # Calculate UTM zone from clipped bounds
+            utm_zone = None
+            try:
+                utm_zone = calculate_utm_zone_from_bounds(
+                    out_bounds[0], out_bounds[1],  # minLon, minLat
+                    out_bounds[2], out_bounds[3]   # maxLon, maxLat
+                )
+                logger.debug(f"Calculated UTM zone for clipped DTM {clipped_id}: {utm_zone}")
+            except Exception as e:
+                logger.warning(f"Failed to calculate UTM zone for clipped DTM {clipped_id}: {e}")
+                utm_zone = None
+            
             # Write full-resolution clipped raster (for calculations)
             with rasterio.open(clipped_file_path, "w", **out_meta) as dest:
                 dest.write(out_image)
@@ -2225,7 +2351,8 @@ async def clip_dtm(request: ClipRequest):
                     "crs": src_crs.to_string() if src_crs else None,
                     "bbox": list(out_bounds),  # [minLon, minLat, maxLon, maxLat]
                     "width": out_meta["width"],
-                    "height": out_meta["height"]
+                    "height": out_meta["height"],
+                    "utmZone": utm_zone
                 },
                 "tilesUrl": f"{base_url}/tiles/{{z}}/{{x}}/{{y}}.png",
                 "metadataUrl": f"{base_url}/metadata",
@@ -2263,6 +2390,18 @@ async def get_clipped_dtm_metadata(clipped_id: str):
             # Transform bounds to WGS84
             wgs84_bounds = rasterio.warp.transform_bounds(src.crs, C.EPSG_WGS84, *bounds)
             
+            # Calculate UTM zone from WGS84 bounds
+            utm_zone = None
+            try:
+                utm_zone = calculate_utm_zone_from_bounds(
+                    wgs84_bounds[0], wgs84_bounds[1],  # minLon, minLat
+                    wgs84_bounds[2], wgs84_bounds[3]   # maxLon, maxLat
+                )
+                logger.debug(f"Calculated UTM zone for clipped DTM {clipped_id}: {utm_zone}")
+            except Exception as e:
+                logger.warning(f"Failed to calculate UTM zone for clipped DTM {clipped_id}: {e}")
+                utm_zone = None
+            
             return {
                 "clippedId": clipped_id,
                 "filename": f"{clipped_id}.tif",
@@ -2277,7 +2416,8 @@ async def get_clipped_dtm_metadata(clipped_id: str):
                     "height": src.height
                 },
                 "noDataValue": src.nodata,
-                "crs": src.crs.to_string() if src.crs else None
+                "crs": src.crs.to_string() if src.crs else None,
+                "utmZone": utm_zone
             }
     except HTTPException:
         raise

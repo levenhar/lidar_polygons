@@ -12,6 +12,9 @@ from rasterio.features import geometry_mask
 import time
 from rasterio.transform import rowcol
 from pyproj import Transformer
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def max_value_in_buffer(dsm, transform, points_df, radius, nodata=np.nan):
@@ -51,11 +54,21 @@ def max_value_in_buffer(dsm, transform, points_df, radius, nodata=np.nan):
     radius_px_y = int(np.ceil(radius / px_size_y))
 
     for i, (r, c) in enumerate(zip(rows, cols)):
+        # Check if point is outside raster bounds
+        if r < 0 or r >= nrows or c < 0 or c >= ncols:
+            results[i] = np.nan
+            continue
+            
         # define window boundaries
         row_min = max(r - radius_px_y, 0)
         row_max = min(r + radius_px_y + 1, nrows)
         col_min = max(c - radius_px_x, 0)
         col_max = min(c + radius_px_x + 1, ncols)
+
+        # Check if window is valid
+        if row_min >= row_max or col_min >= col_max:
+            results[i] = np.nan
+            continue
 
         window = dsm[row_min:row_max, col_min:col_max]
 
@@ -74,7 +87,11 @@ def max_value_in_buffer(dsm, transform, points_df, radius, nodata=np.nan):
 
         masked_window = np.where(mask, window, np.nan if np.isnan(nodata) else nodata)
 
-        results[i] = np.nanmax(masked_window)
+        # Handle case where masked_window might be empty
+        if np.all(np.isnan(masked_window)):
+            results[i] = np.nan
+        else:
+            results[i] = np.nanmax(masked_window)
 
     return results
 
@@ -110,17 +127,26 @@ def create_points_dataframe(vertices, dsm, transform, line_res):
         dx = x2 - x1
         dy = y2 - y1
         line_length = np.hypot(dx, dy)
-        azimuth = (degrees(atan2(dx, dy)) + 360) % 360
+        
+        # Handle identical or very close points
+        if line_length < 1e-10:  # Essentially zero length
+            # For identical points, create a single point with default azimuth
+            xs = np.array([x1])
+            ys = np.array([y1])
+            azimuth = 0.0  # Default azimuth for identical points
+            distances = np.array([0.0])
+        else:
+            azimuth = (degrees(atan2(dx, dy)) + 360) % 360
 
-        distances = np.arange(0, line_length, line_res)
-        if len(distances) > 0 and line_length-distances[-1]>1e-6:
-            distances = np.append(distances, line_length)
-        elif len(distances) == 0:
-            distances = np.array([0, line_length])
-        t = distances/line_length
+            distances = np.arange(0, line_length, line_res)
+            if len(distances) > 0 and line_length-distances[-1]>1e-6:
+                distances = np.append(distances, line_length)
+            elif len(distances) == 0:
+                distances = np.array([0, line_length])
+            t = distances/line_length
 
-        xs = x1 + t * dx
-        ys = y1 + t * dy
+            xs = x1 + t * dx
+            ys = y1 + t * dy
 
         # Convert coordinates to raster row/col in bulk
         rows, cols = rasterio.transform.rowcol(transform, xs, ys)
@@ -203,6 +229,13 @@ def find_parallel_points(df, parallel_threshold, distance_threshold):
     az = df["azimuth"].to_numpy()  # (N,)
     lines = df["line_num"].to_numpy()  # (N,)
     N = len(df)
+
+    # If we have only one line segment (all points have same line_num), 
+    # no parallel points can be found
+    if len(np.unique(lines)) <= 1:
+        df = df.copy()
+        df["parallel_points"] = [[] for _ in range(N)]
+        return df
 
     # pairwise vectors and distances
     vecs = xy[:, np.newaxis, :] - xy[np.newaxis, :, :]  # (N,N,2)
@@ -367,10 +400,39 @@ def add_cumulative_distance(df):
     return df
 
 def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata, distance_threshold):
-
+    
+    # Validate input
+    if points is None or len(points) < 2:
+        raise ValueError("At least two points required for elevation profile calculation")
+    
     points, epsg = latlon_array_to_utm(points[:,1], points[:,0])
 
     points_df = create_points_dataframe(points, dsm, transform, line_res)
+    
+    # Check if we got valid points
+    if len(points_df) == 0:
+        # Fallback: create minimal DataFrame with the original points
+        logger.warning("No points generated from sampling, creating minimal profile with original points")
+        points_df = pd.DataFrame({
+            "X": points[:, 0],
+            "Y": points[:, 1],
+            "elevation": 0.0,  # Will be filled later
+            "minElevation": None,
+            "maxElevation": None,
+            "azimuth": 0.0,
+            "line_num": 0,
+            "parallel_points": [[] for _ in range(len(points))]
+        })
+        
+        # Try to get actual elevation values for the points
+        try:
+            rows, cols = rasterio.transform.rowcol(transform, points_df["X"], points_df["Y"])
+            rows = np.clip(rows, 0, dsm.shape[0] - 1)
+            cols = np.clip(cols, 0, dsm.shape[1] - 1)
+            points_df["elevation"] = dsm[rows, cols]
+        except Exception as e:
+            logger.warning(f"Could not sample elevation values: {e}")
+            points_df["elevation"] = 0.0
 
     ## FIND HEIGHEST
     max_values = max_value_in_buffer(dsm, transform, points_df, radius, nodata)

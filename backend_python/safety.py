@@ -113,8 +113,10 @@ def create_points_dataframe(vertices, dsm, transform, line_res):
         azimuth = (degrees(atan2(dx, dy)) + 360) % 360
 
         distances = np.arange(0, line_length, line_res)
-        if line_length-distances[-1]>1e-6:
+        if len(distances) > 0 and line_length-distances[-1]>1e-6:
             distances = np.append(distances, line_length)
+        elif len(distances) == 0:
+            distances = np.array([0, line_length])
         t = distances/line_length
 
         xs = x1 + t * dx

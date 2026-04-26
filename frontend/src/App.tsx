@@ -522,6 +522,7 @@ function AppContent() {
   const [autoSaveFileHandle, setAutoSaveFileHandle] = useState<FileSystemFileHandle | null>(null);
   const [autoSaveFileName, setAutoSaveFileName] = useState('');
   const autoSaveInProgressRef = React.useRef(false);
+  const autoSaveTimeoutRef = React.useRef<NodeJS.Timeout | null>(null);
 
   // State for triggering climb creation from the map right-click
   const [mapClimbTriggerDistance, setMapClimbTriggerDistance] = useState<number | null>(null);
@@ -610,6 +611,139 @@ function AppContent() {
       if (profileCalculationTimeoutRef.current) {
         clearTimeout(profileCalculationTimeoutRef.current);
         profileCalculationTimeoutRef.current = null;
+      }
+    };
+  }, []);
+
+  // Auto-save trigger: Monitor project state changes and save to file when auto-save is enabled
+  React.useEffect(() => {
+    // Only proceed if auto-save is enabled and we have a file handle
+    if (!autoSaveEnabled || !autoSaveFileHandle || autoSaveInProgressRef.current) {
+      return;
+    }
+
+    // Clear any existing auto-save timeout
+    if (autoSaveTimeoutRef.current) {
+      clearTimeout(autoSaveTimeoutRef.current);
+    }
+
+    // Debounce auto-save to avoid excessive writes during rapid changes
+    autoSaveTimeoutRef.current = setTimeout(async () => {
+      try {
+        autoSaveInProgressRef.current = true;
+
+        // Generate project data
+        const projectData: ProjectFileData = exportProject({
+          // DTM
+          dtmSource,
+          dtmInfo,
+          activeClippedId,
+          dtmSourceType,
+          localDtmFile,
+          serverDtmId,
+          serverDtmMetadata,
+          aoiGeometry,
+
+          // Routes
+          routes,
+          activeRouteId,
+          climbRequestsByRoute,
+
+          // Settings
+          general: {
+            nominalFlightHeight,
+            safetyRadius: safetySearchRadius,
+            safetyHeight,
+            outputHeight: resolutionHeight
+          },
+          mission: {
+            overlapPercentage,
+            fovDegrees
+          },
+          ascendDescend: {
+            selectedPresetId: selectedClimbPresetId,
+            climbConfig
+          },
+          display: {
+            dtmPalette: dtmDisplaySettings.palette,
+            dtmInverted: dtmDisplaySettings.inverted,
+            dtmOpacity: dtmDisplaySettings.opacity,
+            showMetadata,
+            showClimbLabels,
+            showNextLineSuggestions
+          },
+
+          // Planning area (AOI) + KML overlays
+          planningArea: aoiGeometry ?? undefined,
+          kmlImports
+        });
+
+        // Create a writable stream and write the data
+        const writable = await autoSaveFileHandle.createWritable();
+        await writable.write(JSON.stringify(projectData, null, 2));
+        await writable.close();
+
+        debug.log('Auto-save completed successfully');
+      } catch (error) {
+        debug.error('Auto-save failed:', error);
+        // If auto-save fails, disable it to prevent repeated failures
+        setAutoSaveEnabled(false);
+        setAutoSaveFileHandle(null);
+        setAutoSaveFileName('');
+        setSuccessNotification({
+          isOpen: true,
+          message: 'Auto-save failed and has been disabled. Please save manually.'
+        });
+      } finally {
+        autoSaveInProgressRef.current = false;
+        autoSaveTimeoutRef.current = null;
+      }
+    }, 1000); // 1 second debounce
+
+    // Cleanup function
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+    };
+  }, [
+    autoSaveEnabled,
+    autoSaveFileHandle,
+    // Dependencies that should trigger auto-save
+    routes,
+    activeRouteId,
+    flightPath,
+    climbRequestsByRoute,
+    dtmSource,
+    dtmInfo,
+    activeClippedId,
+    dtmSourceType,
+    localDtmFile,
+    serverDtmId,
+    serverDtmMetadata,
+    aoiGeometry,
+    nominalFlightHeight,
+    safetySearchRadius,
+    safetyHeight,
+    resolutionHeight,
+    overlapPercentage,
+    fovDegrees,
+    selectedClimbPresetId,
+    climbConfig,
+    dtmDisplaySettings,
+    showMetadata,
+    showClimbLabels,
+    showNextLineSuggestions,
+    kmlImports
+  ]);
+
+  // Cleanup effect: Clear auto-save timeout on component unmount
+  React.useEffect(() => {
+    return () => {
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
       }
     };
   }, []);
@@ -1421,6 +1555,13 @@ function AppContent() {
       // Mark state as used so `noUnusedLocals` doesn't fail the build.
       void autoSaveFileHandle;
       autoSaveInProgressRef.current = false;
+      
+      // Clear any pending auto-save timeout
+      if (autoSaveTimeoutRef.current) {
+        clearTimeout(autoSaveTimeoutRef.current);
+        autoSaveTimeoutRef.current = null;
+      }
+      
       setAutoSaveEnabled(false);
       setAutoSaveFileHandle(null);
       setAutoSaveFileName('');

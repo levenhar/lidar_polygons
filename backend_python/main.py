@@ -119,6 +119,41 @@ def calculate_utm_zone_from_point(lon: float, lat: float) -> str:
     """
     return calculate_utm_zone_from_bounds(lon, lat, lon, lat)
 
+
+def utm_zone_to_epsg(utm_zone: str) -> str:
+    """
+    Convert UTM zone string to EPSG code.
+    
+    Args:
+        utm_zone: UTM zone string (e.g., "36N", "17S")
+        
+    Returns:
+        EPSG code string (e.g., "EPSG:32636", "EPSG:32717")
+        
+    Raises:
+        ValueError: If utm_zone format is invalid
+    """
+    if not isinstance(utm_zone, str) or len(utm_zone) < 2:
+        raise ValueError(f"Invalid UTM zone format: {utm_zone}")
+    
+    hemisphere = utm_zone[-1].upper()
+    zone_part = utm_zone[:-1]
+    
+    try:
+        zone = int(zone_part)
+    except ValueError:
+        raise ValueError(f"Invalid UTM zone number: {zone_part}")
+    
+    if hemisphere not in ['N', 'S']:
+        raise ValueError(f"Invalid hemisphere: {hemisphere}")
+    
+    if zone < 1 or zone > 60:
+        raise ValueError(f"UTM zone out of range: {zone}")
+    
+    # Northern hemisphere: EPSG:326xx, Southern hemisphere: EPSG:327xx
+    epsg_base = 326 if hemisphere == 'N' else 327
+    return f"EPSG:{epsg_base + zone}"
+
 def build_tif_footprints_cache():
     """Scan DTM_DATA_DIR and cache TIF file footprints for fast overlap queries"""
     global tif_footprints_cache
@@ -568,7 +603,15 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
             src_crs_obj = src.crs  # Keep original CRS object
             if not src_crs_obj:
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs_str = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
+                if is_projected:
+                    # Calculate UTM zone from bounds
+                    utm_zone = calculate_utm_zone_from_bounds(
+                        src.bounds.left, src.bounds.bottom,
+                        src.bounds.right, src.bounds.top
+                    )
+                    src_crs_str = utm_zone_to_epsg(utm_zone)
+                else:
+                    src_crs_str = C.EPSG_WGS84
                 # Create CRS object from string for transformation
                 from rasterio.crs import CRS
                 src_crs_obj = CRS.from_string(src_crs_str)
@@ -789,7 +832,15 @@ async def get_elevation_at_point(
             if not src_crs:
                 # Heuristic fallback if CRS is missing
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
+                if is_projected:
+                    # Calculate UTM zone from bounds
+                    utm_zone = calculate_utm_zone_from_bounds(
+                        src.bounds.left, src.bounds.bottom,
+                        src.bounds.right, src.bounds.top
+                    )
+                    src_crs = utm_zone_to_epsg(utm_zone)
+                else:
+                    src_crs = C.EPSG_WGS84
             
             transformer = Transformer.from_crs(C.EPSG_WGS84, src_crs, always_xy=True)
             
@@ -2183,7 +2234,15 @@ async def clip_dtm(request: ClipRequest):
             if not src_crs:
                 # Try to infer CRS from bounds
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs_str = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
+                if is_projected:
+                    # Calculate UTM zone from bounds
+                    utm_zone = calculate_utm_zone_from_bounds(
+                        src.bounds.left, src.bounds.bottom,
+                        src.bounds.right, src.bounds.top
+                    )
+                    src_crs_str = utm_zone_to_epsg(utm_zone)
+                else:
+                    src_crs_str = C.EPSG_WGS84
                 src_crs = pyproj.CRS.from_string(src_crs_str)
             else:
                 # Ensure src_crs is a pyproj.CRS object
@@ -2244,8 +2303,26 @@ async def clip_dtm(request: ClipRequest):
             right = left + out_transform[0] * out_meta["width"]
             bottom = top + out_transform[4] * out_meta["height"]
             
+            # Validate bounds before transformation
+            bounds_values = [left, top, right, bottom]
+            if any(np.isnan(val) for val in bounds_values) or any(np.isinf(val) for val in bounds_values):
+                logger.error(f"Invalid bounds calculated from transform: left={left}, top={top}, right={right}, bottom={bottom}")
+                logger.error(f"Transform: {out_transform}")
+                logger.error(f"Meta: width={out_meta['width']}, height={out_meta['height']}")
+                raise HTTPException(status_code=500, detail="Invalid bounds calculated during clipping - check coordinate system and area of interest")
+            
             # Transform bounds to WGS84
-            out_bounds = rasterio.warp.transform_bounds(src_crs, C.EPSG_WGS84, left, bottom, right, top)
+            try:
+                out_bounds = rasterio.warp.transform_bounds(src_crs, C.EPSG_WGS84, left, bottom, right, top)
+                # Validate transformed bounds
+                if any(np.isnan(val) for val in out_bounds) or any(np.isinf(val) for val in out_bounds):
+                    logger.error(f"Invalid bounds after transformation to WGS84: {out_bounds}")
+                    logger.error(f"Source CRS: {src_crs}")
+                    raise HTTPException(status_code=500, detail="Coordinate transformation failed - invalid bounds produced")
+            except Exception as e:
+                logger.error(f"Failed to transform bounds from {src_crs} to WGS84: {e}")
+                logger.error(f"Input bounds: left={left}, bottom={bottom}, right={right}, top={top}")
+                raise HTTPException(status_code=500, detail=f"Coordinate transformation failed: {str(e)}")
             
             # Calculate UTM zone from clipped bounds
             utm_zone = None
@@ -2254,9 +2331,18 @@ async def clip_dtm(request: ClipRequest):
                     out_bounds[0], out_bounds[1],  # minLon, minLat
                     out_bounds[2], out_bounds[3]   # maxLon, maxLat
                 )
-                logger.debug(f"Calculated UTM zone for clipped DTM {clipped_id}: {utm_zone}")
+                logger.info(f"Calculated UTM zone for clipped DTM {clipped_id}: {utm_zone}")
+                logger.info(f"Clipped bounds (WGS84): [{out_bounds[0]:.6f}, {out_bounds[1]:.6f}, {out_bounds[2]:.6f}, {out_bounds[3]:.6f}]")
+                logger.info(f"Source CRS: {src_crs.to_string() if src_crs else 'Unknown'}")
+                
+                # Special logging for UTM zone 37 (Svalbard)
+                if utm_zone == "37N":
+                    logger.info(f"UTM Zone 37 detected - Svalbard region. Center: [{(out_bounds[0]+out_bounds[2])/2:.6f}, {(out_bounds[1]+out_bounds[3])/2:.6f}]")
+                    logger.info(f"This is a special UTM zone with non-standard width (9° instead of 6°)")
+                    
             except Exception as e:
                 logger.warning(f"Failed to calculate UTM zone for clipped DTM {clipped_id}: {e}")
+                logger.warning(f"Bounds used for calculation: {out_bounds}")
                 utm_zone = None
             
             # Write full-resolution clipped raster (for calculations)
@@ -2345,7 +2431,22 @@ async def clip_dtm(request: ClipRequest):
             except Exception as e:
                 logger.warning(f"Failed to register clipped DTM in lease manager: {e}")
             
-            return {
+            # Validate and clean response data to prevent JSON serialization errors
+            def validate_float_values(obj):
+                """Recursively validate and clean float values for JSON serialization"""
+                if isinstance(obj, float):
+                    if np.isnan(obj) or np.isinf(obj):
+                        logger.warning(f"Invalid float value detected and replaced: {obj} -> None")
+                        return None
+                    return obj
+                elif isinstance(obj, dict):
+                    return {k: validate_float_values(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [validate_float_values(item) for item in obj]
+                return obj
+            
+            # Build response data
+            response_data = {
                 "clippedId": clipped_id,
                 "raster": {
                     "crs": src_crs.to_string() if src_crs else None,
@@ -2358,6 +2459,20 @@ async def clip_dtm(request: ClipRequest):
                 "metadataUrl": f"{base_url}/metadata",
                 "dataUrl": f"{base_url}/raster"
             }
+            
+            # Validate and clean the response data
+            response_data = validate_float_values(response_data)
+            
+            # Additional validation for critical fields
+            if not response_data["raster"]["bbox"] or len(response_data["raster"]["bbox"]) != 4:
+                logger.error(f"Invalid bbox in response: {response_data['raster']['bbox']}")
+                raise HTTPException(status_code=500, detail="Invalid bounding box in clipped DTM response")
+            
+            if response_data["raster"]["width"] <= 0 or response_data["raster"]["height"] <= 0:
+                logger.error(f"Invalid dimensions in response: width={response_data['raster']['width']}, height={response_data['raster']['height']}")
+                raise HTTPException(status_code=500, detail="Invalid dimensions in clipped DTM response")
+            
+            return response_data
             
     except HTTPException:
         raise

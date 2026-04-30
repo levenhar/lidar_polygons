@@ -85,7 +85,14 @@ def max_value_in_buffer(dsm, transform, points_df, radius, nodata=np.nan):
         dist2 = (xs_map - points_df["X"].iloc[i]) ** 2 + (ys_map - points_df["Y"].iloc[i]) ** 2
         mask = dist2 <= (radius+(np.sqrt(px_size_x**2+px_size_y**2)/2)) ** 2
 
-        masked_window = np.where(mask, window, np.nan if np.isnan(nodata) else nodata)
+        # Handle nodata safely - could be None, np.nan, or a numeric value
+        if nodata is None:
+            fill_value = np.nan
+        elif isinstance(nodata, (int, float, np.number)) and np.isnan(nodata):
+            fill_value = np.nan
+        else:
+            fill_value = nodata
+        masked_window = np.where(mask, window, fill_value)
 
         # Handle case where masked_window might be empty
         if np.all(np.isnan(masked_window)):
@@ -399,13 +406,50 @@ def add_cumulative_distance(df):
 
     return df
 
-def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata, distance_threshold):
-    
+def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata, distance_threshold, skip_coordinate_transform=False):
+    """
+    Calculate elevation profile along a path.
+
+    Parameters
+    ----------
+    dsm : np.ndarray
+        2D DSM array
+    transform : affine.Affine
+        Raster transform of the DSM
+    points : np.ndarray
+        Array of [lon, lat] coordinates (WGS84) or [x, y] in DTM's CRS if skip_coordinate_transform=True
+    line_res : float
+        Distance between points along the line in map units
+    radius : float
+        Buffer radius for min/max elevation calculation
+    parallel_threshold : float
+        Maximum angular difference (degrees) to consider lines parallel/perpendicular
+    nodata : float
+        DSM nodata value
+    distance_threshold : float
+        Maximum distance (map units) to consider points related
+    skip_coordinate_transform : bool
+        If True, assume points are already in DTM's CRS and skip WGS84->UTM transformation.
+        If False (default), transform WGS84 coordinates to UTM based on their location.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: X, Y, elevation, longitude, latitude, distance, minElevation, maxElevation, etc.
+    """
     # Validate input
     if points is None or len(points) < 2:
         raise ValueError("At least two points required for elevation profile calculation")
-    
-    points, epsg = latlon_array_to_utm(points[:,1], points[:,0])
+
+    if skip_coordinate_transform:
+        # Points are already in DTM's CRS, no transformation needed
+        # epsg is used only for converting back to lat/lon at the end
+        # We need to determine epsg from the transform CRS or use a default
+        # Since we don't have the CRS info here, we'll use the points as-is
+        # and set epsg to None to indicate no conversion needed at the end
+        epsg = None
+    else:
+        points, epsg = latlon_array_to_utm(points[:,1], points[:,0])
 
     points_df = create_points_dataframe(points, dsm, transform, line_res)
     
@@ -445,9 +489,17 @@ def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata, di
     min_values = min_value_in_buffer(points_df, dsm, transform)
     points_df["minElevation"] = min_values
 
-    lats, lons = utm_to_latlon(points_df["X"], points_df["Y"], epsg)
-    points_df["latitude"] = lats 
-    points_df["longitude"] = lons
+    if epsg is not None:
+        # Convert back to WGS84 lat/lon for output
+        lats, lons = utm_to_latlon(points_df["X"], points_df["Y"], epsg)
+        points_df["latitude"] = lats
+        points_df["longitude"] = lons
+    else:
+        # When skip_coordinate_transform=True, X/Y are in DTM's CRS
+        # The caller is responsible for converting back to WGS84 if needed
+        # For now, just copy X/Y to latitude/longitude columns (will be overwritten by caller)
+        points_df["latitude"] = points_df["Y"]
+        points_df["longitude"] = points_df["X"]
 
     points_df = add_cumulative_distance(points_df)
 

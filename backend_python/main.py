@@ -980,10 +980,55 @@ async def get_elevation_profile(request: ElevationProfileRequest):
             if not src_crs:
                 # Heuristic fallback if CRS is missing
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs = "EPSG:32636" if is_projected else "EPSG:4326"
+                src_crs_str = "EPSG:32636" if is_projected else "EPSG:4326"
+                src_crs = pyproj.CRS.from_string(src_crs_str)
 
-            profile_df = safety.run(dsm, transform, np.array(request.coordinates), C.ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS, request.safetyRadiusMeters, C.THRESH_AZ_DEG, nodata, C.MAX_DISTANCE_BETWEEN_LINES)
-            
+            # Ensure src_crs is a pyproj.CRS object
+            if isinstance(src_crs, str):
+                src_crs = pyproj.CRS.from_string(src_crs)
+
+            # Transform input coordinates from WGS84 to DTM's CRS
+            # This ensures coordinates match the DTM's CRS for accurate row/col calculations
+            wgs84_crs = pyproj.CRS.from_string(C.EPSG_WGS84)
+            coords_array = np.array(request.coordinates)
+
+            try:
+                transformer = Transformer.from_crs(wgs84_crs, src_crs, always_xy=True)
+                transformed_coords = []
+                for lon, lat in coords_array:
+                    x, y = transformer.transform(lon, lat)
+                    transformed_coords.append([x, y])
+                transformed_coords = np.array(transformed_coords)
+                logger.info(f"Transformed {len(coords_array)} coordinates from WGS84 to {src_crs.to_string()}")
+            except Exception as transform_error:
+                logger.error(f"Failed to transform coordinates to DTM CRS: {transform_error}")
+                # Fallback: use original coordinates (may fail later but provides better error context)
+                transformed_coords = coords_array
+
+            # Run safety analysis with transformed coordinates (skip internal transformation)
+            profile_df = safety.run(
+                dsm, transform, transformed_coords,
+                C.ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS,
+                request.safetyRadiusMeters, C.THRESH_AZ_DEG, nodata,
+                C.MAX_DISTANCE_BETWEEN_LINES,
+                skip_coordinate_transform=True
+            )
+
+            # Transform output coordinates back to WGS84 for the response
+            # The X, Y columns are in DTM's CRS, need to convert to lat/lon
+            try:
+                reverse_transformer = Transformer.from_crs(src_crs, wgs84_crs, always_xy=True)
+                lons, lats = reverse_transformer.transform(
+                    profile_df["X"].to_numpy(),
+                    profile_df["Y"].to_numpy()
+                )
+                profile_df["longitude"] = lons
+                profile_df["latitude"] = lats
+                logger.info("Transformed output coordinates back to WGS84")
+            except Exception as reverse_transform_error:
+                logger.error(f"Failed to transform output coordinates back to WGS84: {reverse_transform_error}")
+                # Keep the placeholder values from safety.run() if transformation fails
+
             cols = ["distance", "elevation", "longitude", "latitude", "minElevation", "maxElevation", "parallel_points"]
             profile = profile_df[cols].to_dict(orient="records")
             # Convert numpy.int64 indices in parallel_points to plain Python int for JSON serialization

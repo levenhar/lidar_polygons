@@ -1336,22 +1336,76 @@ async def get_dtm_metadata(filename: str):
             bounds = src.bounds
             src_crs = src.crs
             
-            # Transform bounds to WGS84 if CRS is available
+            # Transform bounds to WGS84 with cross-zone handling
             if src_crs:
-                wgs84_bounds = rasterio.warp.transform_bounds(
-                    src_crs,
-                    C.EPSG_WGS84,
-                    bounds.left,
-                    bounds.bottom,
-                    bounds.right,
-                    bounds.top
+                # Try direct transformation first
+                wgs84_crs = pyproj.CRS.from_string(C.EPSG_WGS84)
+                success, wgs84_bounds, error = safe_transform_bounds(
+                    src_crs, wgs84_crs,
+                    bounds.left, bounds.bottom, bounds.right, bounds.top
                 )
-                bounds_dict = {
-                    "minX": wgs84_bounds[0],
-                    "minY": wgs84_bounds[1],
-                    "maxX": wgs84_bounds[2],
-                    "maxY": wgs84_bounds[3]
-                }
+                
+                if success:
+                    bounds_dict = {
+                        "minX": wgs84_bounds[0],
+                        "minY": wgs84_bounds[1],
+                        "maxX": wgs84_bounds[2],
+                        "maxY": wgs84_bounds[3]
+                    }
+                    logger.debug(f"Direct bounds transformation succeeded for {filename}")
+                else:
+                    logger.warning(f"Direct bounds transformation failed for {filename}: {error}")
+                    
+                    # Fallback: try transforming via center point
+                    try:
+                        logger.info(f"Attempting fallback bounds transformation via center point for {filename}")
+                        
+                        # Calculate center point
+                        center_x = (bounds.left + bounds.right) / 2
+                        center_y = (bounds.top + bounds.bottom) / 2
+                        
+                        # Transform center point
+                        transformer = Transformer.from_crs(src_crs, wgs84_crs, always_xy=True)
+                        center_success, transformed_center, center_error = safe_transform_coordinates(
+                            transformer, [(center_x, center_y)]
+                        )
+                        
+                        if center_success and len(transformed_center) > 0:
+                            center_lon, center_lat = transformed_center[0]
+                            
+                            # Calculate approximate width and height in degrees
+                            # This is a rough approximation for fallback
+                            if src_crs.is_projected:
+                                # For projected CRS, estimate degree conversion
+                                approx_deg_width = abs(bounds.right - bounds.left) / 111000  # rough meters to degrees
+                                approx_deg_height = abs(bounds.top - bounds.bottom) / 111000
+                            else:
+                                # For geographic CRS, use original bounds
+                                approx_deg_width = abs(bounds.right - bounds.left)
+                                approx_deg_height = abs(bounds.top - bounds.bottom)
+                            
+                            bounds_dict = {
+                                "minX": center_lon - approx_deg_width / 2,
+                                "minY": center_lat - approx_deg_height / 2,
+                                "maxX": center_lon + approx_deg_width / 2,
+                                "maxY": center_lat + approx_deg_height / 2
+                            }
+                            
+                            logger.info(f"Fallback bounds transformation via center point succeeded for {filename}")
+                        else:
+                            raise Exception(f"Center point transformation failed: {center_error}")
+                            
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback bounds transformation also failed for {filename}: {fallback_error}")
+                        
+                        # Final fallback: use original bounds (may be in original CRS)
+                        logger.warning(f"Using original bounds as final fallback for {filename}")
+                        bounds_dict = {
+                            "minX": bounds.left,
+                            "minY": bounds.bottom,
+                            "maxX": bounds.right,
+                            "maxY": bounds.top
+                        }
             else:
                 # Fallback: use original bounds if no CRS
                 bounds_dict = {
@@ -2191,6 +2245,79 @@ async def get_dtm_raster(filename: str):
         logger.error(f"Error reading raster {filename}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+def detect_utm_zone_mismatch(aoi_crs: pyproj.CRS, src_crs: pyproj.CRS) -> tuple[bool, str]:
+    """Detect if AOI is in a different UTM zone than the source DTM."""
+    try:
+        if not (aoi_crs.is_projected and src_crs.is_projected):
+            return False, ""
+        
+        aoi_epsg = aoi_crs.to_epsg()
+        src_epsg = src_crs.to_epsg()
+        
+        if not aoi_epsg or not src_epsg:
+            return False, ""
+        
+        aoi_zone = epsg_to_utm_zone(aoi_epsg)
+        src_zone = epsg_to_utm_zone(src_epsg)
+        
+        if aoi_zone != src_zone:
+            return True, f"AOI UTM zone {aoi_zone} differs from DTM UTM zone {src_zone}"
+        
+        return False, ""
+    except Exception as e:
+        logger.warning(f"Error detecting UTM zone mismatch: {e}")
+        return False, ""
+
+def epsg_to_utm_zone(epsg_code: int) -> str:
+    """Convert EPSG code to UTM zone string."""
+    if 32600 <= epsg_code <= 32660:
+        zone = epsg_code - 32600
+        return f"{zone}N"
+    elif 32700 <= epsg_code <= 32760:
+        zone = epsg_code - 32700
+        return f"{zone}S"
+    else:
+        return "Unknown"
+
+def safe_transform_coordinates(transformer: Transformer, coords: list) -> tuple[bool, list, str]:
+    """Safely transform coordinates with error handling for cross-zone issues."""
+    try:
+        transformed = []
+        for lon, lat in coords:
+            try:
+                x, y = transformer.transform(lon, lat)
+                if not (np.isfinite(x) and np.isfinite(y)):
+                    return False, [], f"Invalid transformed coordinates: ({x}, {y})"
+                transformed.append([x, y])
+            except Exception as e:
+                return False, [], f"Transformation failed for point ({lon}, {lat}): {str(e)}"
+        
+        return True, transformed, ""
+    except Exception as e:
+        return False, [], f"Coordinate transformation failed: {str(e)}"
+
+def safe_transform_bounds(src_crs: pyproj.CRS, dst_crs: pyproj.CRS, 
+                        left: float, bottom: float, right: float, top: float) -> tuple[bool, tuple, str]:
+    """Safely transform bounds with error handling for cross-zone issues."""
+    try:
+        wgs84_bounds = rasterio.warp.transform_bounds(
+            src_crs,
+            dst_crs,
+            left,
+            bottom,
+            right,
+            top
+        )
+        
+        # Validate transformed bounds
+        if any(np.isnan(val) for val in wgs84_bounds) or any(np.isinf(val) for val in wgs84_bounds):
+            return False, (), f"Invalid transformed bounds: {wgs84_bounds}"
+        
+        return True, wgs84_bounds, ""
+        
+    except Exception as e:
+        return False, (), f"Bounds transformation failed: {str(e)}"
+
 @app.post("/api/dtm/clip")
 async def clip_dtm(request: ClipRequest):
     """Clip a DTM file to an area of interest (AOI)"""
@@ -2249,40 +2376,104 @@ async def clip_dtm(request: ClipRequest):
                 if not isinstance(src_crs, pyproj.CRS):
                     src_crs = pyproj.CRS.from_string(str(src_crs))
             
-            # Convert AOI to source CRS
+            # Convert AOI to source CRS with cross-zone handling
             aoi_crs = pyproj.CRS.from_string(request.aoi.crs)
-            transformer = Transformer.from_crs(aoi_crs, src_crs, always_xy=True)
-            
-            # Create geometry from AOI (convert to shapely geometry via rasterio.features)
-            if request.aoi.type == "bbox" and request.aoi.bbox:
-                min_lon, min_lat, max_lon, max_lat = request.aoi.bbox
-                # Transform bbox coordinates
-                min_x, min_y = transformer.transform(min_lon, min_lat)
-                max_x, max_y = transformer.transform(max_lon, max_lat)
-                # Create polygon geometry as GeoJSON-like dict
-                geom_dict = {
-                    "type": "Polygon",
-                    "coordinates": [[
-                        [min_x, min_y],
-                        [max_x, min_y],
-                        [max_x, max_y],
-                        [min_x, max_y],
-                        [min_x, min_y]
-                    ]]
-                }
-            elif request.aoi.type == "polygon" and request.aoi.coordinates:
-                # Transform polygon coordinates
-                transformed_coords = [list(transformer.transform(lon, lat)) for lon, lat in request.aoi.coordinates]
-                # Ensure polygon is closed
-                if transformed_coords[0] != transformed_coords[-1]:
-                    transformed_coords.append(transformed_coords[0])
-                # Create polygon geometry as GeoJSON-like dict
-                geom_dict = {
-                    "type": "Polygon",
-                    "coordinates": [transformed_coords]
-                }
-            else:
-                raise HTTPException(status_code=400, detail="Invalid AOI: must have bbox for bbox type or coordinates for polygon type")
+
+            # Detect UTM zone mismatch
+            has_mismatch, mismatch_details = detect_utm_zone_mismatch(aoi_crs, src_crs)
+            if has_mismatch:
+                logger.warning(f"UTM zone mismatch detected: {mismatch_details}")
+
+            # Try direct transformation first
+            try:
+                transformer = Transformer.from_crs(aoi_crs, src_crs, always_xy=True)
+                
+                if request.aoi.type == "bbox" and request.aoi.bbox:
+                    min_lon, min_lat, max_lon, max_lat = request.aoi.bbox
+                    coords = [(min_lon, min_lat), (max_lon, min_lat), 
+                             (max_lon, max_lat), (min_lon, max_lat), (min_lon, min_lat)]
+                    
+                    success, transformed_coords, error = safe_transform_coordinates(transformer, coords)
+                    if not success:
+                        raise Exception(f"Direct transformation failed: {error}")
+                    
+                    geom_dict = {
+                        "type": "Polygon",
+                        "coordinates": [transformed_coords]
+                    }
+                    
+                elif request.aoi.type == "polygon" and request.aoi.coordinates:
+                    coords = request.aoi.coordinates + [request.aoi.coordinates[0]]
+                    
+                    success, transformed_coords, error = safe_transform_coordinates(transformer, coords)
+                    if not success:
+                        raise Exception(f"Direct transformation failed: {error}")
+                    
+                    geom_dict = {
+                        "type": "Polygon", 
+                        "coordinates": [transformed_coords]
+                    }
+                else:
+                    raise HTTPException(status_code=400, detail="Invalid AOI: must have bbox for bbox type or coordinates for polygon type")
+
+            except Exception as transform_error:
+                logger.error(f"Direct AOI transformation failed: {transform_error}")
+                
+                # Fallback: transform via WGS84
+                try:
+                    logger.info("Attempting fallback transformation via WGS84")
+                    wgs84_crs = pyproj.CRS.from_string(C.EPSG_WGS84)
+                    
+                    if request.aoi.type == "bbox" and request.aoi.bbox:
+                        min_lon, min_lat, max_lon, max_lat = request.aoi.bbox
+                        
+                        # AOI -> WGS84
+                        transformer1 = Transformer.from_crs(aoi_crs, wgs84_crs, always_xy=True)
+                        min_wgs_x, min_wgs_y = transformer1.transform(min_lon, min_lat)
+                        max_wgs_x, max_wgs_y = transformer1.transform(max_lon, max_lat)
+                        
+                        # WGS84 -> Source CRS
+                        transformer2 = Transformer.from_crs(wgs84_crs, src_crs, always_xy=True)
+                        min_x, min_y = transformer2.transform(min_wgs_x, min_wgs_y)
+                        max_x, max_y = transformer2.transform(max_wgs_x, max_wgs_y)
+                        
+                        geom_dict = {
+                            "type": "Polygon",
+                            "coordinates": [[
+                                [min_x, min_y],
+                                [max_x, min_y], 
+                                [max_x, max_y],
+                                [min_x, max_y],
+                                [min_x, min_y]
+                            ]]
+                        }
+                        
+                    elif request.aoi.type == "polygon" and request.aoi.coordinates:
+                        transformed_coords = []
+                        transformer1 = Transformer.from_crs(aoi_crs, wgs84_crs, always_xy=True)
+                        transformer2 = Transformer.from_crs(wgs84_crs, src_crs, always_xy=True)
+                        
+                        for lon, lat in request.aoi.coordinates:
+                            wgs_x, wgs_y = transformer1.transform(lon, lat)
+                            src_x, src_y = transformer2.transform(wgs_x, wgs_y)
+                            transformed_coords.append([src_x, src_y])
+                        
+                        if transformed_coords[0] != transformed_coords[-1]:
+                            transformed_coords.append(transformed_coords[0])
+                            
+                        geom_dict = {
+                            "type": "Polygon",
+                            "coordinates": [transformed_coords]
+                        }
+                        
+                    logger.info("Fallback transformation via WGS84 succeeded")
+                    
+                except Exception as fallback_error:
+                    logger.error(f"Fallback transformation also failed: {fallback_error}")
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Coordinate transformation failed. AOI CRS ({request.aoi.crs}) and DTM CRS may be incompatible across UTM zones. Direct error: {transform_error}. Fallback error: {fallback_error}"
+                    )
             
             # Clip the raster (rasterio.mask.mask accepts GeoJSON-like dicts directly)
             out_image, out_transform = rasterio.mask.mask(src, [geom_dict], crop=True)

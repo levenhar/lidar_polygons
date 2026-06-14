@@ -47,6 +47,113 @@ logger = logging.getLogger("backend_python")
 tif_footprints_cache: Dict[str, Dict[str, Any]] = {}
 tif_footprints_cache_lock = threading.Lock()
 
+# ============================================================================
+# UTM ZONE CALCULATION UTILITIES
+# ============================================================================
+
+def calculate_utm_zone_from_bounds(min_lon: float, min_lat: float, max_lon: float, max_lat: float) -> str:
+    """
+    Calculate UTM zone from bounding box coordinates.
+    
+    Args:
+        min_lon, min_lat: Minimum longitude and latitude of bounding box
+        max_lon, max_lat: Maximum longitude and latitude of bounding box
+        
+    Returns:
+        UTM zone string (e.g., "36N", "17S")
+        
+    Raises:
+        ValueError: If coordinates are out of valid range
+    """
+    # Validate coordinate ranges
+    if min_lon < -180 or max_lon > 180 or min_lat < -90 or max_lat > 90:
+        raise ValueError(f"Invalid coordinate range: lon [{min_lon}, {max_lon}], lat [{min_lat}, {max_lat}]")
+    
+    # Calculate center point of bounding box
+    center_lon = (min_lon + max_lon) / 2.0
+    center_lat = (min_lat + max_lat) / 2.0
+    
+    # Handle special zones for Svalbard and Norway (zones 31-37)
+    if center_lat >= 72.0 and center_lat <= 84.0:
+        if center_lon >= 0.0 and center_lon < 9.0:
+            zone = 31
+        elif center_lon >= 9.0 and center_lon < 21.0:
+            zone = 33
+        elif center_lon >= 21.0 and center_lon < 33.0:
+            zone = 35
+        elif center_lon >= 33.0 and center_lon < 42.0:
+            zone = 37
+        else:
+            # Normal calculation for other longitudes in this latitude range
+            zone = int((center_lon + 180) / 6) + 1
+    else:
+        # Standard UTM zone calculation
+        # Handle edge case where center_lon is exactly on a zone boundary
+        # UTM zones are 6 degrees wide, starting from -180
+        # Zone 1: -180 to -174, Zone 30: -6 to 0, Zone 31: 0 to 6, etc.
+        if center_lon % 6 == 0:
+            # If exactly on boundary, assign to the western zone (lower number)
+            zone = int((center_lon + 180) / 6)
+        else:
+            zone = int((center_lon + 180) / 6) + 1
+    
+    # Determine hemisphere
+    hemisphere = 'N' if center_lat >= 0 else 'S'
+    
+    return f"{zone}{hemisphere}"
+
+
+def calculate_utm_zone_from_point(lon: float, lat: float) -> str:
+    """
+    Calculate UTM zone from a single point coordinate.
+    
+    Args:
+        lon: Longitude in degrees
+        lat: Latitude in degrees
+        
+    Returns:
+        UTM zone string (e.g., "36N", "17S")
+        
+    Raises:
+        ValueError: If coordinates are out of valid range
+    """
+    return calculate_utm_zone_from_bounds(lon, lat, lon, lat)
+
+
+def utm_zone_to_epsg(utm_zone: str) -> str:
+    """
+    Convert UTM zone string to EPSG code.
+    
+    Args:
+        utm_zone: UTM zone string (e.g., "36N", "17S")
+        
+    Returns:
+        EPSG code string (e.g., "EPSG:32636", "EPSG:32717")
+        
+    Raises:
+        ValueError: If utm_zone format is invalid
+    """
+    if not isinstance(utm_zone, str) or len(utm_zone) < 2:
+        raise ValueError(f"Invalid UTM zone format: {utm_zone}")
+    
+    hemisphere = utm_zone[-1].upper()
+    zone_part = utm_zone[:-1]
+    
+    try:
+        zone = int(zone_part)
+    except ValueError:
+        raise ValueError(f"Invalid UTM zone number: {zone_part}")
+    
+    if hemisphere not in ['N', 'S']:
+        raise ValueError(f"Invalid hemisphere: {hemisphere}")
+    
+    if zone < 1 or zone > 60:
+        raise ValueError(f"UTM zone out of range: {zone}")
+    
+    # Northern hemisphere: EPSG:326xx, Southern hemisphere: EPSG:327xx
+    epsg_base = 326 if hemisphere == 'N' else 327
+    return f"EPSG:{epsg_base + zone}"
+
 def build_tif_footprints_cache():
     """Scan DTM_DATA_DIR and cache TIF file footprints for fast overlap queries"""
     global tif_footprints_cache
@@ -83,6 +190,32 @@ def build_tif_footprints_cache():
                         # Average pixel size for resolution estimate
                         resolution_meters = (pixel_width + pixel_height) / 2.0
                         
+                        # Transform bounds to WGS84 for UTM zone calculation
+                        if src.crs:
+                            try:
+                                wgs84_bounds = rasterio.warp.transform_bounds(
+                                    src.crs, C.EPSG_WGS84,
+                                    bounds.left, bounds.bottom, bounds.right, bounds.top
+                                )
+                            except Exception as e:
+                                logger.warning(f"Failed to transform bounds to WGS84 for {filename}: {e}")
+                                # Fallback to original bounds
+                                wgs84_bounds = (bounds.left, bounds.bottom, bounds.right, bounds.top)
+                        else:
+                            # No CRS, assume original bounds are already in WGS84
+                            wgs84_bounds = (bounds.left, bounds.bottom, bounds.right, bounds.top)
+                        
+                        # Calculate UTM zone from WGS84 bounds
+                        utm_zone = None
+                        try:
+                            utm_zone = calculate_utm_zone_from_bounds(
+                                wgs84_bounds[0], wgs84_bounds[1],  # minLon, minLat
+                                wgs84_bounds[2], wgs84_bounds[3]   # maxLon, maxLat
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to calculate UTM zone for {filename}: {e}")
+                            utm_zone = None
+                        
                         cache[filename] = {
                             "id": filename,
                             "filename": filename,
@@ -101,7 +234,8 @@ def build_tif_footprints_cache():
                             "resolutionMeters": resolution_meters,
                             "sizeMB": round(stats.st_size / (1024 * 1024), 2),
                             "sizeBytes": stats.st_size,
-                            "modifiedAt": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stats.st_mtime))
+                            "modifiedAt": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(stats.st_mtime)),
+                            "utmZone": utm_zone
                         }
                         cached_count += 1
                 except Exception as e:
@@ -469,7 +603,15 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
             src_crs_obj = src.crs  # Keep original CRS object
             if not src_crs_obj:
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs_str = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
+                if is_projected:
+                    # Calculate UTM zone from bounds
+                    utm_zone = calculate_utm_zone_from_bounds(
+                        src.bounds.left, src.bounds.bottom,
+                        src.bounds.right, src.bounds.top
+                    )
+                    src_crs_str = utm_zone_to_epsg(utm_zone)
+                else:
+                    src_crs_str = C.EPSG_WGS84
                 # Create CRS object from string for transformation
                 from rasterio.crs import CRS
                 src_crs_obj = CRS.from_string(src_crs_str)
@@ -690,7 +832,15 @@ async def get_elevation_at_point(
             if not src_crs:
                 # Heuristic fallback if CRS is missing
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
+                if is_projected:
+                    # Calculate UTM zone from bounds
+                    utm_zone = calculate_utm_zone_from_bounds(
+                        src.bounds.left, src.bounds.bottom,
+                        src.bounds.right, src.bounds.top
+                    )
+                    src_crs = utm_zone_to_epsg(utm_zone)
+                else:
+                    src_crs = C.EPSG_WGS84
             
             transformer = Transformer.from_crs(C.EPSG_WGS84, src_crs, always_xy=True)
             
@@ -830,10 +980,55 @@ async def get_elevation_profile(request: ElevationProfileRequest):
             if not src_crs:
                 # Heuristic fallback if CRS is missing
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs = "EPSG:32636" if is_projected else "EPSG:4326"
+                src_crs_str = "EPSG:32636" if is_projected else "EPSG:4326"
+                src_crs = pyproj.CRS.from_string(src_crs_str)
 
-            profile_df = safety.run(dsm, transform, np.array(request.coordinates), C.ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS, request.safetyRadiusMeters, C.THRESH_AZ_DEG, nodata, C.MAX_DISTANCE_BETWEEN_LINES)
-            
+            # Ensure src_crs is a pyproj.CRS object
+            if isinstance(src_crs, str):
+                src_crs = pyproj.CRS.from_string(src_crs)
+
+            # Transform input coordinates from WGS84 to DTM's CRS
+            # This ensures coordinates match the DTM's CRS for accurate row/col calculations
+            wgs84_crs = pyproj.CRS.from_string(C.EPSG_WGS84)
+            coords_array = np.array(request.coordinates)
+
+            try:
+                transformer = Transformer.from_crs(wgs84_crs, src_crs, always_xy=True)
+                transformed_coords = []
+                for lon, lat in coords_array:
+                    x, y = transformer.transform(lon, lat)
+                    transformed_coords.append([x, y])
+                transformed_coords = np.array(transformed_coords)
+                logger.info(f"Transformed {len(coords_array)} coordinates from WGS84 to {src_crs.to_string()}")
+            except Exception as transform_error:
+                logger.error(f"Failed to transform coordinates to DTM CRS: {transform_error}")
+                # Fallback: use original coordinates (may fail later but provides better error context)
+                transformed_coords = coords_array
+
+            # Run safety analysis with transformed coordinates (skip internal transformation)
+            profile_df = safety.run(
+                dsm, transform, transformed_coords,
+                C.ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS,
+                request.safetyRadiusMeters, C.THRESH_AZ_DEG, nodata,
+                C.MAX_DISTANCE_BETWEEN_LINES,
+                skip_coordinate_transform=True
+            )
+
+            # Transform output coordinates back to WGS84 for the response
+            # The X, Y columns are in DTM's CRS, need to convert to lat/lon
+            try:
+                reverse_transformer = Transformer.from_crs(src_crs, wgs84_crs, always_xy=True)
+                lons, lats = reverse_transformer.transform(
+                    profile_df["X"].to_numpy(),
+                    profile_df["Y"].to_numpy()
+                )
+                profile_df["longitude"] = lons
+                profile_df["latitude"] = lats
+                logger.info("Transformed output coordinates back to WGS84")
+            except Exception as reverse_transform_error:
+                logger.error(f"Failed to transform output coordinates back to WGS84: {reverse_transform_error}")
+                # Keep the placeholder values from safety.run() if transformation fails
+
             cols = ["distance", "elevation", "longitude", "latitude", "minElevation", "maxElevation", "parallel_points"]
             profile = profile_df[cols].to_dict(orient="records")
             # Convert numpy.int64 indices in parallel_points to plain Python int for JSON serialization
@@ -1186,22 +1381,76 @@ async def get_dtm_metadata(filename: str):
             bounds = src.bounds
             src_crs = src.crs
             
-            # Transform bounds to WGS84 if CRS is available
+            # Transform bounds to WGS84 with cross-zone handling
             if src_crs:
-                wgs84_bounds = rasterio.warp.transform_bounds(
-                    src_crs,
-                    C.EPSG_WGS84,
-                    bounds.left,
-                    bounds.bottom,
-                    bounds.right,
-                    bounds.top
+                # Try direct transformation first
+                wgs84_crs = pyproj.CRS.from_string(C.EPSG_WGS84)
+                success, wgs84_bounds, error = safe_transform_bounds(
+                    src_crs, wgs84_crs,
+                    bounds.left, bounds.bottom, bounds.right, bounds.top
                 )
-                bounds_dict = {
-                    "minX": wgs84_bounds[0],
-                    "minY": wgs84_bounds[1],
-                    "maxX": wgs84_bounds[2],
-                    "maxY": wgs84_bounds[3]
-                }
+                
+                if success:
+                    bounds_dict = {
+                        "minX": wgs84_bounds[0],
+                        "minY": wgs84_bounds[1],
+                        "maxX": wgs84_bounds[2],
+                        "maxY": wgs84_bounds[3]
+                    }
+                    logger.debug(f"Direct bounds transformation succeeded for {filename}")
+                else:
+                    logger.warning(f"Direct bounds transformation failed for {filename}: {error}")
+                    
+                    # Fallback: try transforming via center point
+                    try:
+                        logger.info(f"Attempting fallback bounds transformation via center point for {filename}")
+                        
+                        # Calculate center point
+                        center_x = (bounds.left + bounds.right) / 2
+                        center_y = (bounds.top + bounds.bottom) / 2
+                        
+                        # Transform center point
+                        transformer = Transformer.from_crs(src_crs, wgs84_crs, always_xy=True)
+                        center_success, transformed_center, center_error = safe_transform_coordinates(
+                            transformer, [(center_x, center_y)]
+                        )
+                        
+                        if center_success and len(transformed_center) > 0:
+                            center_lon, center_lat = transformed_center[0]
+                            
+                            # Calculate approximate width and height in degrees
+                            # This is a rough approximation for fallback
+                            if src_crs.is_projected:
+                                # For projected CRS, estimate degree conversion
+                                approx_deg_width = abs(bounds.right - bounds.left) / 111000  # rough meters to degrees
+                                approx_deg_height = abs(bounds.top - bounds.bottom) / 111000
+                            else:
+                                # For geographic CRS, use original bounds
+                                approx_deg_width = abs(bounds.right - bounds.left)
+                                approx_deg_height = abs(bounds.top - bounds.bottom)
+                            
+                            bounds_dict = {
+                                "minX": center_lon - approx_deg_width / 2,
+                                "minY": center_lat - approx_deg_height / 2,
+                                "maxX": center_lon + approx_deg_width / 2,
+                                "maxY": center_lat + approx_deg_height / 2
+                            }
+                            
+                            logger.info(f"Fallback bounds transformation via center point succeeded for {filename}")
+                        else:
+                            raise Exception(f"Center point transformation failed: {center_error}")
+                            
+                    except Exception as fallback_error:
+                        logger.error(f"Fallback bounds transformation also failed for {filename}: {fallback_error}")
+                        
+                        # Final fallback: use original bounds (may be in original CRS)
+                        logger.warning(f"Using original bounds as final fallback for {filename}")
+                        bounds_dict = {
+                            "minX": bounds.left,
+                            "minY": bounds.bottom,
+                            "maxX": bounds.right,
+                            "maxY": bounds.top
+                        }
             else:
                 # Fallback: use original bounds if no CRS
                 bounds_dict = {
@@ -1211,6 +1460,18 @@ async def get_dtm_metadata(filename: str):
                     "maxY": bounds.top
                 }
             
+            # Calculate UTM zone from WGS84 bounds
+            utm_zone = None
+            try:
+                utm_zone = calculate_utm_zone_from_bounds(
+                    bounds_dict["minX"], bounds_dict["minY"],
+                    bounds_dict["maxX"], bounds_dict["maxY"]
+                )
+                logger.debug(f"Calculated UTM zone for {filename}: {utm_zone}")
+            except Exception as e:
+                logger.warning(f"Failed to calculate UTM zone for {filename}: {e}")
+                utm_zone = None
+            
             return {
                 "filename": filename,
                 "bounds": bounds_dict,
@@ -1219,7 +1480,8 @@ async def get_dtm_metadata(filename: str):
                     "height": src.height
                 },
                 "noDataValue": src.nodata,
-                "crs": src_crs.to_string() if src_crs else None
+                "crs": src_crs.to_string() if src_crs else None,
+                "utmZone": utm_zone
             }
     except Exception as e:
         logger.error(f"Error reading metadata for {filename}: {e}", exc_info=True)
@@ -1324,7 +1586,9 @@ async def upload_dtm(dtm: UploadFile = File(...)):
             "path": f"{DTM_CACHE_DIR}/{filename}",
             "size": os.path.getsize(file_path),
             "bounds": metadata["bounds"],
-            "resolution": metadata["resolution"]
+            "resolution": metadata["resolution"],
+            "utmZone": metadata.get("utmZone"),
+            "crs": metadata.get("crs")
         }
     except Exception as e:
         logger.error(f"Error uploading DTM {dtm.filename}: {e}", exc_info=True)
@@ -2026,6 +2290,79 @@ async def get_dtm_raster(filename: str):
         logger.error(f"Error reading raster {filename}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+def detect_utm_zone_mismatch(aoi_crs: pyproj.CRS, src_crs: pyproj.CRS) -> tuple[bool, str]:
+    """Detect if AOI is in a different UTM zone than the source DTM."""
+    try:
+        if not (aoi_crs.is_projected and src_crs.is_projected):
+            return False, ""
+        
+        aoi_epsg = aoi_crs.to_epsg()
+        src_epsg = src_crs.to_epsg()
+        
+        if not aoi_epsg or not src_epsg:
+            return False, ""
+        
+        aoi_zone = epsg_to_utm_zone(aoi_epsg)
+        src_zone = epsg_to_utm_zone(src_epsg)
+        
+        if aoi_zone != src_zone:
+            return True, f"AOI UTM zone {aoi_zone} differs from DTM UTM zone {src_zone}"
+        
+        return False, ""
+    except Exception as e:
+        logger.warning(f"Error detecting UTM zone mismatch: {e}")
+        return False, ""
+
+def epsg_to_utm_zone(epsg_code: int) -> str:
+    """Convert EPSG code to UTM zone string."""
+    if 32600 <= epsg_code <= 32660:
+        zone = epsg_code - 32600
+        return f"{zone}N"
+    elif 32700 <= epsg_code <= 32760:
+        zone = epsg_code - 32700
+        return f"{zone}S"
+    else:
+        return "Unknown"
+
+def safe_transform_coordinates(transformer: Transformer, coords: list) -> tuple[bool, list, str]:
+    """Safely transform coordinates with error handling for cross-zone issues."""
+    try:
+        transformed = []
+        for lon, lat in coords:
+            try:
+                x, y = transformer.transform(lon, lat)
+                if not (np.isfinite(x) and np.isfinite(y)):
+                    return False, [], f"Invalid transformed coordinates: ({x}, {y})"
+                transformed.append([x, y])
+            except Exception as e:
+                return False, [], f"Transformation failed for point ({lon}, {lat}): {str(e)}"
+        
+        return True, transformed, ""
+    except Exception as e:
+        return False, [], f"Coordinate transformation failed: {str(e)}"
+
+def safe_transform_bounds(src_crs: pyproj.CRS, dst_crs: pyproj.CRS, 
+                        left: float, bottom: float, right: float, top: float) -> tuple[bool, tuple, str]:
+    """Safely transform bounds with error handling for cross-zone issues."""
+    try:
+        wgs84_bounds = rasterio.warp.transform_bounds(
+            src_crs,
+            dst_crs,
+            left,
+            bottom,
+            right,
+            top
+        )
+        
+        # Validate transformed bounds
+        if any(np.isnan(val) for val in wgs84_bounds) or any(np.isinf(val) for val in wgs84_bounds):
+            return False, (), f"Invalid transformed bounds: {wgs84_bounds}"
+        
+        return True, wgs84_bounds, ""
+        
+    except Exception as e:
+        return False, (), f"Bounds transformation failed: {str(e)}"
+
 @app.post("/api/dtm/clip")
 async def clip_dtm(request: ClipRequest):
     """Clip a DTM file to an area of interest (AOI)"""
@@ -2069,47 +2406,119 @@ async def clip_dtm(request: ClipRequest):
             if not src_crs:
                 # Try to infer CRS from bounds
                 is_projected = abs(src.bounds.left) > 180 or abs(src.bounds.bottom) > 90
-                src_crs_str = C.EPSG_UTM_36N if is_projected else C.EPSG_WGS84
+                if is_projected:
+                    # Calculate UTM zone from bounds
+                    utm_zone = calculate_utm_zone_from_bounds(
+                        src.bounds.left, src.bounds.bottom,
+                        src.bounds.right, src.bounds.top
+                    )
+                    src_crs_str = utm_zone_to_epsg(utm_zone)
+                else:
+                    src_crs_str = C.EPSG_WGS84
                 src_crs = pyproj.CRS.from_string(src_crs_str)
             else:
                 # Ensure src_crs is a pyproj.CRS object
                 if not isinstance(src_crs, pyproj.CRS):
                     src_crs = pyproj.CRS.from_string(str(src_crs))
             
-            # Convert AOI to source CRS
+            # Convert AOI to source CRS with cross-zone handling
             aoi_crs = pyproj.CRS.from_string(request.aoi.crs)
-            transformer = Transformer.from_crs(aoi_crs, src_crs, always_xy=True)
-            
-            # Create geometry from AOI (convert to shapely geometry via rasterio.features)
-            if request.aoi.type == "bbox" and request.aoi.bbox:
-                min_lon, min_lat, max_lon, max_lat = request.aoi.bbox
-                # Transform bbox coordinates
-                min_x, min_y = transformer.transform(min_lon, min_lat)
-                max_x, max_y = transformer.transform(max_lon, max_lat)
-                # Create polygon geometry as GeoJSON-like dict
-                geom_dict = {
-                    "type": "Polygon",
-                    "coordinates": [[
-                        [min_x, min_y],
-                        [max_x, min_y],
-                        [max_x, max_y],
-                        [min_x, max_y],
-                        [min_x, min_y]
-                    ]]
-                }
-            elif request.aoi.type == "polygon" and request.aoi.coordinates:
-                # Transform polygon coordinates
-                transformed_coords = [list(transformer.transform(lon, lat)) for lon, lat in request.aoi.coordinates]
-                # Ensure polygon is closed
-                if transformed_coords[0] != transformed_coords[-1]:
-                    transformed_coords.append(transformed_coords[0])
-                # Create polygon geometry as GeoJSON-like dict
-                geom_dict = {
-                    "type": "Polygon",
-                    "coordinates": [transformed_coords]
-                }
-            else:
-                raise HTTPException(status_code=400, detail="Invalid AOI: must have bbox for bbox type or coordinates for polygon type")
+
+            # Detect UTM zone mismatch
+            has_mismatch, mismatch_details = detect_utm_zone_mismatch(aoi_crs, src_crs)
+            if has_mismatch:
+                logger.warning(f"UTM zone mismatch detected: {mismatch_details}")
+
+            # Try direct transformation first
+            try:
+                transformer = Transformer.from_crs(aoi_crs, src_crs, always_xy=True)
+                
+                if request.aoi.type == "bbox" and request.aoi.bbox:
+                    min_lon, min_lat, max_lon, max_lat = request.aoi.bbox
+                    coords = [(min_lon, min_lat), (max_lon, min_lat), 
+                             (max_lon, max_lat), (min_lon, max_lat), (min_lon, min_lat)]
+                    
+                    success, transformed_coords, error = safe_transform_coordinates(transformer, coords)
+                    if not success:
+                        raise Exception(f"Direct transformation failed: {error}")
+                    
+                    geom_dict = {
+                        "type": "Polygon",
+                        "coordinates": [transformed_coords]
+                    }
+                    
+                elif request.aoi.type == "polygon" and request.aoi.coordinates:
+                    coords = request.aoi.coordinates + [request.aoi.coordinates[0]]
+                    
+                    success, transformed_coords, error = safe_transform_coordinates(transformer, coords)
+                    if not success:
+                        raise Exception(f"Direct transformation failed: {error}")
+                    
+                    geom_dict = {
+                        "type": "Polygon", 
+                        "coordinates": [transformed_coords]
+                    }
+                else:
+                    raise HTTPException(status_code=400, detail="Invalid AOI: must have bbox for bbox type or coordinates for polygon type")
+
+            except Exception as transform_error:
+                logger.error(f"Direct AOI transformation failed: {transform_error}")
+                
+                # Fallback: transform via WGS84
+                try:
+                    logger.info("Attempting fallback transformation via WGS84")
+                    wgs84_crs = pyproj.CRS.from_string(C.EPSG_WGS84)
+                    
+                    if request.aoi.type == "bbox" and request.aoi.bbox:
+                        min_lon, min_lat, max_lon, max_lat = request.aoi.bbox
+                        
+                        # AOI -> WGS84
+                        transformer1 = Transformer.from_crs(aoi_crs, wgs84_crs, always_xy=True)
+                        min_wgs_x, min_wgs_y = transformer1.transform(min_lon, min_lat)
+                        max_wgs_x, max_wgs_y = transformer1.transform(max_lon, max_lat)
+                        
+                        # WGS84 -> Source CRS
+                        transformer2 = Transformer.from_crs(wgs84_crs, src_crs, always_xy=True)
+                        min_x, min_y = transformer2.transform(min_wgs_x, min_wgs_y)
+                        max_x, max_y = transformer2.transform(max_wgs_x, max_wgs_y)
+                        
+                        geom_dict = {
+                            "type": "Polygon",
+                            "coordinates": [[
+                                [min_x, min_y],
+                                [max_x, min_y], 
+                                [max_x, max_y],
+                                [min_x, max_y],
+                                [min_x, min_y]
+                            ]]
+                        }
+                        
+                    elif request.aoi.type == "polygon" and request.aoi.coordinates:
+                        transformed_coords = []
+                        transformer1 = Transformer.from_crs(aoi_crs, wgs84_crs, always_xy=True)
+                        transformer2 = Transformer.from_crs(wgs84_crs, src_crs, always_xy=True)
+                        
+                        for lon, lat in request.aoi.coordinates:
+                            wgs_x, wgs_y = transformer1.transform(lon, lat)
+                            src_x, src_y = transformer2.transform(wgs_x, wgs_y)
+                            transformed_coords.append([src_x, src_y])
+                        
+                        if transformed_coords[0] != transformed_coords[-1]:
+                            transformed_coords.append(transformed_coords[0])
+                            
+                        geom_dict = {
+                            "type": "Polygon",
+                            "coordinates": [transformed_coords]
+                        }
+                        
+                    logger.info("Fallback transformation via WGS84 succeeded")
+                    
+                except Exception as fallback_error:
+                    logger.error(f"Fallback transformation also failed: {fallback_error}")
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Coordinate transformation failed. AOI CRS ({request.aoi.crs}) and DTM CRS may be incompatible across UTM zones. Direct error: {transform_error}. Fallback error: {fallback_error}"
+                    )
             
             # Clip the raster (rasterio.mask.mask accepts GeoJSON-like dicts directly)
             out_image, out_transform = rasterio.mask.mask(src, [geom_dict], crop=True)
@@ -2130,8 +2539,47 @@ async def clip_dtm(request: ClipRequest):
             right = left + out_transform[0] * out_meta["width"]
             bottom = top + out_transform[4] * out_meta["height"]
             
+            # Validate bounds before transformation
+            bounds_values = [left, top, right, bottom]
+            if any(np.isnan(val) for val in bounds_values) or any(np.isinf(val) for val in bounds_values):
+                logger.error(f"Invalid bounds calculated from transform: left={left}, top={top}, right={right}, bottom={bottom}")
+                logger.error(f"Transform: {out_transform}")
+                logger.error(f"Meta: width={out_meta['width']}, height={out_meta['height']}")
+                raise HTTPException(status_code=500, detail="Invalid bounds calculated during clipping - check coordinate system and area of interest")
+            
             # Transform bounds to WGS84
-            out_bounds = rasterio.warp.transform_bounds(src_crs, C.EPSG_WGS84, left, bottom, right, top)
+            try:
+                out_bounds = rasterio.warp.transform_bounds(src_crs, C.EPSG_WGS84, left, bottom, right, top)
+                # Validate transformed bounds
+                if any(np.isnan(val) for val in out_bounds) or any(np.isinf(val) for val in out_bounds):
+                    logger.error(f"Invalid bounds after transformation to WGS84: {out_bounds}")
+                    logger.error(f"Source CRS: {src_crs}")
+                    raise HTTPException(status_code=500, detail="Coordinate transformation failed - invalid bounds produced")
+            except Exception as e:
+                logger.error(f"Failed to transform bounds from {src_crs} to WGS84: {e}")
+                logger.error(f"Input bounds: left={left}, bottom={bottom}, right={right}, top={top}")
+                raise HTTPException(status_code=500, detail=f"Coordinate transformation failed: {str(e)}")
+            
+            # Calculate UTM zone from clipped bounds
+            utm_zone = None
+            try:
+                utm_zone = calculate_utm_zone_from_bounds(
+                    out_bounds[0], out_bounds[1],  # minLon, minLat
+                    out_bounds[2], out_bounds[3]   # maxLon, maxLat
+                )
+                logger.info(f"Calculated UTM zone for clipped DTM {clipped_id}: {utm_zone}")
+                logger.info(f"Clipped bounds (WGS84): [{out_bounds[0]:.6f}, {out_bounds[1]:.6f}, {out_bounds[2]:.6f}, {out_bounds[3]:.6f}]")
+                logger.info(f"Source CRS: {src_crs.to_string() if src_crs else 'Unknown'}")
+                
+                # Special logging for UTM zone 37 (Svalbard)
+                if utm_zone == "37N":
+                    logger.info(f"UTM Zone 37 detected - Svalbard region. Center: [{(out_bounds[0]+out_bounds[2])/2:.6f}, {(out_bounds[1]+out_bounds[3])/2:.6f}]")
+                    logger.info(f"This is a special UTM zone with non-standard width (9° instead of 6°)")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to calculate UTM zone for clipped DTM {clipped_id}: {e}")
+                logger.warning(f"Bounds used for calculation: {out_bounds}")
+                utm_zone = None
             
             # Write full-resolution clipped raster (for calculations)
             with rasterio.open(clipped_file_path, "w", **out_meta) as dest:
@@ -2219,18 +2667,48 @@ async def clip_dtm(request: ClipRequest):
             except Exception as e:
                 logger.warning(f"Failed to register clipped DTM in lease manager: {e}")
             
-            return {
+            # Validate and clean response data to prevent JSON serialization errors
+            def validate_float_values(obj):
+                """Recursively validate and clean float values for JSON serialization"""
+                if isinstance(obj, float):
+                    if np.isnan(obj) or np.isinf(obj):
+                        logger.warning(f"Invalid float value detected and replaced: {obj} -> None")
+                        return None
+                    return obj
+                elif isinstance(obj, dict):
+                    return {k: validate_float_values(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [validate_float_values(item) for item in obj]
+                return obj
+            
+            # Build response data
+            response_data = {
                 "clippedId": clipped_id,
                 "raster": {
                     "crs": src_crs.to_string() if src_crs else None,
                     "bbox": list(out_bounds),  # [minLon, minLat, maxLon, maxLat]
                     "width": out_meta["width"],
-                    "height": out_meta["height"]
+                    "height": out_meta["height"],
+                    "utmZone": utm_zone
                 },
                 "tilesUrl": f"{base_url}/tiles/{{z}}/{{x}}/{{y}}.png",
                 "metadataUrl": f"{base_url}/metadata",
                 "dataUrl": f"{base_url}/raster"
             }
+            
+            # Validate and clean the response data
+            response_data = validate_float_values(response_data)
+            
+            # Additional validation for critical fields
+            if not response_data["raster"]["bbox"] or len(response_data["raster"]["bbox"]) != 4:
+                logger.error(f"Invalid bbox in response: {response_data['raster']['bbox']}")
+                raise HTTPException(status_code=500, detail="Invalid bounding box in clipped DTM response")
+            
+            if response_data["raster"]["width"] <= 0 or response_data["raster"]["height"] <= 0:
+                logger.error(f"Invalid dimensions in response: width={response_data['raster']['width']}, height={response_data['raster']['height']}")
+                raise HTTPException(status_code=500, detail="Invalid dimensions in clipped DTM response")
+            
+            return response_data
             
     except HTTPException:
         raise
@@ -2263,6 +2741,18 @@ async def get_clipped_dtm_metadata(clipped_id: str):
             # Transform bounds to WGS84
             wgs84_bounds = rasterio.warp.transform_bounds(src.crs, C.EPSG_WGS84, *bounds)
             
+            # Calculate UTM zone from WGS84 bounds
+            utm_zone = None
+            try:
+                utm_zone = calculate_utm_zone_from_bounds(
+                    wgs84_bounds[0], wgs84_bounds[1],  # minLon, minLat
+                    wgs84_bounds[2], wgs84_bounds[3]   # maxLon, maxLat
+                )
+                logger.debug(f"Calculated UTM zone for clipped DTM {clipped_id}: {utm_zone}")
+            except Exception as e:
+                logger.warning(f"Failed to calculate UTM zone for clipped DTM {clipped_id}: {e}")
+                utm_zone = None
+            
             return {
                 "clippedId": clipped_id,
                 "filename": f"{clipped_id}.tif",
@@ -2277,7 +2767,8 @@ async def get_clipped_dtm_metadata(clipped_id: str):
                     "height": src.height
                 },
                 "noDataValue": src.nodata,
-                "crs": src.crs.to_string() if src.crs else None
+                "crs": src.crs.to_string() if src.crs else None,
+                "utmZone": utm_zone
             }
     except HTTPException:
         raise

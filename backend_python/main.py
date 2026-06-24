@@ -7,6 +7,7 @@ import rasterio
 import rasterio.features
 import rasterio.warp
 import rasterio.mask
+from rasterio.transform import rowcol
 from affine import Affine
 import numpy as np
 from typing import Optional, List, Dict, Any
@@ -32,6 +33,10 @@ from dtm_lease_manager import (
     DtmLeaseManager,
     DEFAULT_LEASE_DURATION_SECONDS
 )
+
+import base64
+import io
+from viewshed import *
 
 # Load environment variables from .env file
 load_dotenv()
@@ -667,22 +672,21 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                         point_distances.append(cumulative_dist)
                 segment_boundaries = list(range(len(trajectory) + 1))
 
-            # Client test mode: return constant TIFF of 1 (same dimensions and geo as DTM)
-            viewshed = np.ones((src.height, src.width), dtype=np.int32)
-            viewshed[np.isnan(data)] = C.VIEWSHED_NODATA_VALUE
-            with viewshed_jobs_lock:
-                if job_id in viewshed_jobs:
-                    viewshed_jobs[job_id]["progress"] = 100
+            # find lines and convert to xy
+            trajectory_xy, az, line_num = convert_trajectory_units(trajectory, transformer)
+            # calculate viewshed
+            viewshed, viewshed_lines = calc_viewshed(trajectory_xy, viewshed_jobs, job_id, az, line_num, data, src.transform, request.fovDegrees, request.outputHeight, C.VIEWSHED_NODATA_VALUE)
 
-            # Reproject viewshed to WGS84 for consistent coordinate system
+
+            # Reproject viewshed to destination CRS (Viewshed CRS, default WGS84)
             output_name = f"viewshed_{int(time.time() * 1000)}.tif"
             output_path = os.path.join(VIEWSHED_CACHE_DIR, output_name)
             
-            # Determine destination CRS (WGS84)
-            dst_crs = C.EPSG_WGS84
+            # Determine destination CRS
+            dst_crs = C.MAPS_CRS
             
-            # If source CRS is already WGS84, just write directly
-            if src_crs_obj and src_crs_obj.to_string() == C.EPSG_WGS84:
+            # If source CRS is already the destination CRS, just write directly
+            if src_crs_obj and src_crs_obj.to_string() == dst_crs:
                 out_meta = src.meta.copy()
                 out_meta.update({
                     "driver": C.RASTER_DRIVER_GTIFF,
@@ -697,7 +701,7 @@ def compute_viewshed(job_id: str, request: ViewshedRequest):
                 with rasterio.open(output_path, "w", **out_meta) as dest:
                     dest.write(viewshed, 1)
             else:
-                # Reproject to WGS84
+                # Reproject to destination CRS
                 logger.info(f"[{job_id}] Reprojecting viewshed from {src_crs_str} to {dst_crs}")
                 out_meta = src.meta.copy()
                 out_meta.update({
@@ -1114,6 +1118,61 @@ async def get_elevation_at_point(request: ElevationAtPointRequest):
         logger.error(f"Error getting elevation at point: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/viewshed/start")
+async def start_viewshed(request: ViewshedRequest):
+    job_id = str(uuid.uuid4())
+    with viewshed_jobs_lock:
+        viewshed_jobs[job_id] = {
+            "status": "running",
+            "progress": 0,
+            "result_path": None,
+            "error": None,
+            "cancel": False
+        }
+    thread = threading.Thread(target=compute_viewshed, args=(job_id, request), daemon=True)
+    thread.start()
+    return {"jobId": job_id}
+
+@app.get("/api/viewshed/status/{job_id}")
+async def viewshed_status(job_id: str):
+    with viewshed_jobs_lock:
+        job = viewshed_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        payload = {
+            "jobId": job_id,
+            "status": job.get("status"),
+            "progress": job.get("progress", 0),
+            "error": job.get("error"),
+        }
+        if job.get("status") == "done":
+            if job.get("overlap_by_point") is not None:
+                payload["overlapByPoint"] = job["overlap_by_point"]
+            if job.get("point_distances") is not None:
+                payload["pointDistances"] = job["point_distances"]
+        return payload
+
+@app.post("/api/viewshed/cancel/{job_id}")
+async def cancel_viewshed(job_id: str):
+    with viewshed_jobs_lock:
+        job = viewshed_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        job["cancel"] = True
+    return {"jobId": job_id, "status": "cancelling"}
+
+@app.get("/api/viewshed/result/{job_id}")
+async def viewshed_result(job_id: str):
+    with viewshed_jobs_lock:
+        job = viewshed_jobs.get(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if job.get("status") != "done" or not job.get("result_path"):
+            raise HTTPException(status_code=400, detail="Result not ready")
+        result_path = job.get("result_path")
+    if not os.path.exists(result_path):
+        raise HTTPException(status_code=404, detail="Result file not found")
+    return FileResponse(result_path, media_type="image/tiff", filename=os.path.basename(result_path))
 
 def _compute_overlap_by_leg_pairs(
     trajectory: List[Dict[str, Any]],

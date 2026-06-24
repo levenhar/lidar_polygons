@@ -1,4 +1,13 @@
 import numpy as np
+import os
+from dotenv import load_dotenv
+# Load environment variables from .env file
+if os.path.exists(".env"):
+    load_dotenv()
+elif os.path.exists("../backend/.env"):
+    load_dotenv("../backend/.env")
+else:
+    load_dotenv() # Fallback to default search
 """
 Constants module for the lidar_polygons backend.
 
@@ -32,7 +41,12 @@ SUFFIX_SUBSAMPLE = '_subsample'
 
 # EPSG codes
 EPSG_WGS84 = 'EPSG:4326'  # WGS84 geographic coordinate system
+EPSG_3857 = 'EPSG:3857'   # Web Mercator
 EPSG_UTM_36N = 'EPSG:32636'  # UTM Zone 36N (common for Israel/Palestine)
+
+# Default CRS settings (can be overridden by environment variables)
+import os
+MAPS_CRS = os.environ.get('MAPS_CRS', EPSG_3857)  # Default to Web Mercator if not set in .env
 
 # ============================================================================
 # NUMERIC ALGORITHM CONSTANTS

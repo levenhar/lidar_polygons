@@ -2019,6 +2019,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [isParallelLineMode]);
 
+  // Helper function to check if a point is within DTM bounds
+  const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
+    if (!dtmBounds || dtmBounds.length !== 4) {
+      return false;
+    }
+    const [minLng, minLat, maxLng, maxLat] = dtmBounds;
+    const safetyRadiusMeters = Math.max(0, Number.isFinite(safetyRadius) ? safetyRadius : 0);
+
+    if (safetyRadiusMeters <= 0) {
+      return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
+    }
+
+    const centerLat = (minLat + maxLat) / 2;
+    const centerLng = (minLng + maxLng) / 2;
+
+    // Convert safety radius in meters into inner-bound offsets on each axis.
+    const innerSouth = calculateDestination({ lng: centerLng, lat: minLat }, 0, safetyRadiusMeters).lat;
+    const innerNorth = calculateDestination({ lng: centerLng, lat: maxLat }, Math.PI, safetyRadiusMeters).lat;
+    const innerWest = calculateDestination({ lng: minLng, lat: centerLat }, Math.PI / 2, safetyRadiusMeters).lng;
+    const innerEast = calculateDestination({ lng: maxLng, lat: centerLat }, -Math.PI / 2, safetyRadiusMeters).lng;
+
+    // Safety buffer covers the whole area (too small DTM for configured radius).
+    if (innerWest > innerEast || innerSouth > innerNorth) {
+      return false;
+    }
+
+    return lng >= innerWest && lng <= innerEast && lat >= innerSouth && lat <= innerNorth;
+  }, [dtmBounds, safetyRadius]);
+
   const createParallelLineForSegmentIndex = useCallback(
     (segmentIndex: number, offset: number): { ok: true; points: Coordinate[] } | { ok: false; error: string } => {
       if (segmentIndex < 0 || segmentIndex >= flightPath.length - 1) {
@@ -2042,8 +2071,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
       return { ok: false, error: 'היסט יוצא מ-DTM.' };
     },
-    // NOTE: isPointWithinBounds is declared later in this file; omit from deps to avoid TDZ issues.
-    [flightPath]
+    [flightPath, isPointWithinBounds]
   );
 
   const clearSelectedLines = useCallback(() => {
@@ -3798,35 +3826,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
     return `${meters.toFixed(1)} m`;
   };
-
-  // Helper function to check if a point is within DTM bounds
-  const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
-    if (!dtmBounds || dtmBounds.length !== 4) {
-      return false;
-    }
-    const [minLng, minLat, maxLng, maxLat] = dtmBounds;
-    const safetyRadiusMeters = Math.max(0, Number.isFinite(safetyRadius) ? safetyRadius : 0);
-
-    if (safetyRadiusMeters <= 0) {
-      return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
-    }
-
-    const centerLat = (minLat + maxLat) / 2;
-    const centerLng = (minLng + maxLng) / 2;
-
-    // Convert safety radius in meters into inner-bound offsets on each axis.
-    const innerSouth = calculateDestination({ lng: centerLng, lat: minLat }, 0, safetyRadiusMeters).lat;
-    const innerNorth = calculateDestination({ lng: centerLng, lat: maxLat }, Math.PI, safetyRadiusMeters).lat;
-    const innerWest = calculateDestination({ lng: minLng, lat: centerLat }, Math.PI / 2, safetyRadiusMeters).lng;
-    const innerEast = calculateDestination({ lng: maxLng, lat: centerLat }, -Math.PI / 2, safetyRadiusMeters).lng;
-
-    // Safety buffer covers the whole area (too small DTM for configured radius).
-    if (innerWest > innerEast || innerSouth > innerNorth) {
-      return false;
-    }
-
-    return lng >= innerWest && lng <= innerEast && lat >= innerSouth && lat <= innerNorth;
-  }, [dtmBounds, safetyRadius]);
 
   // Helper to read numeric preview values per basemap from backend-provided config
   const getPreviewNumericValue = useCallback((baseMapId: string, key: 'ZOOM' | 'X' | 'Y'): number => {

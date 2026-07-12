@@ -12,6 +12,9 @@ from rasterio.features import geometry_mask
 import time
 from rasterio.transform import rowcol
 from pyproj import Transformer
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def max_value_in_buffer(dsm, transform, points_df, radius, nodata=np.nan):
@@ -51,11 +54,21 @@ def max_value_in_buffer(dsm, transform, points_df, radius, nodata=np.nan):
     radius_px_y = int(np.ceil(radius / px_size_y))
 
     for i, (r, c) in enumerate(zip(rows, cols)):
+        # Check if point is outside raster bounds
+        if r < 0 or r >= nrows or c < 0 or c >= ncols:
+            results[i] = np.nan
+            continue
+            
         # define window boundaries
         row_min = max(r - radius_px_y, 0)
         row_max = min(r + radius_px_y + 1, nrows)
         col_min = max(c - radius_px_x, 0)
         col_max = min(c + radius_px_x + 1, ncols)
+
+        # Check if window is valid
+        if row_min >= row_max or col_min >= col_max:
+            results[i] = np.nan
+            continue
 
         window = dsm[row_min:row_max, col_min:col_max]
 
@@ -72,9 +85,20 @@ def max_value_in_buffer(dsm, transform, points_df, radius, nodata=np.nan):
         dist2 = (xs_map - points_df["X"].iloc[i]) ** 2 + (ys_map - points_df["Y"].iloc[i]) ** 2
         mask = dist2 <= (radius+(np.sqrt(px_size_x**2+px_size_y**2)/2)) ** 2
 
-        masked_window = np.where(mask, window, np.nan if np.isnan(nodata) else nodata)
+        # Handle nodata safely - could be None, np.nan, or a numeric value
+        if nodata is None:
+            fill_value = np.nan
+        elif isinstance(nodata, (int, float, np.number)) and np.isnan(nodata):
+            fill_value = np.nan
+        else:
+            fill_value = nodata
+        masked_window = np.where(mask, window, fill_value)
 
-        results[i] = np.nanmax(masked_window)
+        # Handle case where masked_window might be empty
+        if np.all(np.isnan(masked_window)):
+            results[i] = np.nan
+        else:
+            results[i] = np.nanmax(masked_window)
 
     return results
 
@@ -110,15 +134,26 @@ def create_points_dataframe(vertices, dsm, transform, line_res):
         dx = x2 - x1
         dy = y2 - y1
         line_length = np.hypot(dx, dy)
-        azimuth = (degrees(atan2(dx, dy)) + 360) % 360
+        
+        # Handle identical or very close points
+        if line_length < 1e-10:  # Essentially zero length
+            # For identical points, create a single point with default azimuth
+            xs = np.array([x1])
+            ys = np.array([y1])
+            azimuth = 0.0  # Default azimuth for identical points
+            distances = np.array([0.0])
+        else:
+            azimuth = (degrees(atan2(dx, dy)) + 360) % 360
 
-        distances = np.arange(0, line_length, line_res)
-        if line_length-distances[-1]>1e-6:
-            distances = np.append(distances, line_length)
-        t = distances/line_length
+            distances = np.arange(0, line_length, line_res)
+            if len(distances) > 0 and line_length-distances[-1]>1e-6:
+                distances = np.append(distances, line_length)
+            elif len(distances) == 0:
+                distances = np.array([0, line_length])
+            t = distances/line_length
 
-        xs = x1 + t * dx
-        ys = y1 + t * dy
+            xs = x1 + t * dx
+            ys = y1 + t * dy
 
         # Convert coordinates to raster row/col in bulk
         rows, cols = rasterio.transform.rowcol(transform, xs, ys)
@@ -201,6 +236,13 @@ def find_parallel_points(df, parallel_threshold, distance_threshold):
     az = df["azimuth"].to_numpy()  # (N,)
     lines = df["line_num"].to_numpy()  # (N,)
     N = len(df)
+
+    # If we have only one line segment (all points have same line_num), 
+    # no parallel points can be found
+    if len(np.unique(lines)) <= 1:
+        df = df.copy()
+        df["parallel_points"] = [[] for _ in range(N)]
+        return df
 
     # pairwise vectors and distances
     vecs = xy[:, np.newaxis, :] - xy[np.newaxis, :, :]  # (N,N,2)
@@ -364,11 +406,77 @@ def add_cumulative_distance(df):
 
     return df
 
-def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata, distance_threshold):
+def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata, distance_threshold, skip_coordinate_transform=False):
+    """
+    Calculate elevation profile along a path.
 
-    points, epsg = latlon_array_to_utm(points[:,1], points[:,0])
+    Parameters
+    ----------
+    dsm : np.ndarray
+        2D DSM array
+    transform : affine.Affine
+        Raster transform of the DSM
+    points : np.ndarray
+        Array of [lon, lat] coordinates (WGS84) or [x, y] in DTM's CRS if skip_coordinate_transform=True
+    line_res : float
+        Distance between points along the line in map units
+    radius : float
+        Buffer radius for min/max elevation calculation
+    parallel_threshold : float
+        Maximum angular difference (degrees) to consider lines parallel/perpendicular
+    nodata : float
+        DSM nodata value
+    distance_threshold : float
+        Maximum distance (map units) to consider points related
+    skip_coordinate_transform : bool
+        If True, assume points are already in DTM's CRS and skip WGS84->UTM transformation.
+        If False (default), transform WGS84 coordinates to UTM based on their location.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns: X, Y, elevation, longitude, latitude, distance, minElevation, maxElevation, etc.
+    """
+    # Validate input
+    if points is None or len(points) < 2:
+        raise ValueError("At least two points required for elevation profile calculation")
+
+    if skip_coordinate_transform:
+        # Points are already in DTM's CRS, no transformation needed
+        # epsg is used only for converting back to lat/lon at the end
+        # We need to determine epsg from the transform CRS or use a default
+        # Since we don't have the CRS info here, we'll use the points as-is
+        # and set epsg to None to indicate no conversion needed at the end
+        epsg = None
+    else:
+        points, epsg = latlon_array_to_utm(points[:,1], points[:,0])
 
     points_df = create_points_dataframe(points, dsm, transform, line_res)
+    
+    # Check if we got valid points
+    if len(points_df) == 0:
+        # Fallback: create minimal DataFrame with the original points
+        logger.warning("No points generated from sampling, creating minimal profile with original points")
+        points_df = pd.DataFrame({
+            "X": points[:, 0],
+            "Y": points[:, 1],
+            "elevation": 0.0,  # Will be filled later
+            "minElevation": None,
+            "maxElevation": None,
+            "azimuth": 0.0,
+            "line_num": 0,
+            "parallel_points": [[] for _ in range(len(points))]
+        })
+        
+        # Try to get actual elevation values for the points
+        try:
+            rows, cols = rasterio.transform.rowcol(transform, points_df["X"], points_df["Y"])
+            rows = np.clip(rows, 0, dsm.shape[0] - 1)
+            cols = np.clip(cols, 0, dsm.shape[1] - 1)
+            points_df["elevation"] = dsm[rows, cols]
+        except Exception as e:
+            logger.warning(f"Could not sample elevation values: {e}")
+            points_df["elevation"] = 0.0
 
     ## FIND HEIGHEST
     max_values = max_value_in_buffer(dsm, transform, points_df, radius, nodata)
@@ -381,9 +489,17 @@ def run(dsm, transform, points, line_res, radius, parallel_threshold, nodata, di
     min_values = min_value_in_buffer(points_df, dsm, transform)
     points_df["minElevation"] = min_values
 
-    lats, lons = utm_to_latlon(points_df["X"], points_df["Y"], epsg)
-    points_df["latitude"] = lats 
-    points_df["longitude"] = lons
+    if epsg is not None:
+        # Convert back to WGS84 lat/lon for output
+        lats, lons = utm_to_latlon(points_df["X"], points_df["Y"], epsg)
+        points_df["latitude"] = lats
+        points_df["longitude"] = lons
+    else:
+        # When skip_coordinate_transform=True, X/Y are in DTM's CRS
+        # The caller is responsible for converting back to WGS84 if needed
+        # For now, just copy X/Y to latitude/longitude columns (will be overwritten by caller)
+        points_df["latitude"] = points_df["Y"]
+        points_df["longitude"] = points_df["X"]
 
     points_df = add_cumulative_distance(points_df)
 

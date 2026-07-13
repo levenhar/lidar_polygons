@@ -9,6 +9,7 @@ import { fromFile } from 'geotiff';
 import proj4 from 'proj4';
 import dotenv from 'dotenv';
 import { Agent } from 'undici';
+import morgan from 'morgan';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -62,6 +63,8 @@ app.use((req, res, next) => {
   console.log(`${req.protocol}://${req.get('host')}${req.originalUrl}`);
   next();
 })
+
+app.use(morgan(':method :url :status :res[content-length] - :response-time ms'));
 
 // Middleware
 app.use(cors());

@@ -309,7 +309,8 @@ type IconName =
   | 'chart'
   | 'refresh'
   | 'altitude'
-  | 'cube';
+  | 'cube'
+  | 'low-point';
 
 type RouteVisibilityMode = 'all' | 'active' | 'custom';
 
@@ -630,6 +631,17 @@ const Icon: React.FC<{ name: IconName }> = ({ name }) => {
           <path {...stroke} d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
           <path {...stroke} d="M3.27 6.96L12 12.01l8.73-5.05" />
           <path {...stroke} d="M12 22.08V12" />
+        </svg>
+      );
+    case 'low-point':
+      return (
+        <svg {...common}>
+          <line {...stroke} x1="1" y1="17" x2="23" y2="17" />
+          <path {...stroke} d="M12 17 C6 17 3 12 3 5" />
+          <path {...stroke} d="M12 17 C18 17 21 12 21 5" />
+          <line {...stroke} x1="12" y1="2" x2="12" y2="11" strokeWidth={2.5} />
+          <polygon points="9,10 15,10 12,15" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="17" r="2" fill="currentColor" stroke="none" />
         </svg>
       );
     default:
@@ -987,6 +999,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const climbMarkersRef = useRef<L.Marker[]>([]);
   const importedPointsMarkersRef = useRef<L.Marker[]>([]);
   const importedPolygonsRef = useRef<L.Polygon[]>([]);
+  const parallelDebugLayersRef = useRef<L.Layer[]>([]);
 
   // Helper function to generate icon HTML based on symbol type
   const getPointIconHtml = (symbol: 'square' | 'circle' | 'triangle' | 'star' | 'diamond' | 'cross', color: string): string => {
@@ -1040,6 +1053,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
   const isMarkerDragActiveRef = useRef<boolean>(false);
   // Rotate mode state
   const [isRotateMode, setIsRotateMode] = useState<boolean>(false);
+  const [isParallelDebugMode, setIsParallelDebugMode] = useState<boolean>(false);
   const isRotatingRef = useRef<boolean>(false);
   const rotateCenterRef = useRef<{ lat: number; lng: number } | null>(null);
   const rotateCenterUtmRef = useRef<{
@@ -2005,6 +2019,35 @@ const MapPanel: React.FC<MapPanelProps> = ({
     }
   }, [isParallelLineMode]);
 
+  // Helper function to check if a point is within DTM bounds
+  const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
+    if (!dtmBounds || dtmBounds.length !== 4) {
+      return false;
+    }
+    const [minLng, minLat, maxLng, maxLat] = dtmBounds;
+    const safetyRadiusMeters = Math.max(0, Number.isFinite(safetyRadius) ? safetyRadius : 0);
+
+    if (safetyRadiusMeters <= 0) {
+      return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
+    }
+
+    const centerLat = (minLat + maxLat) / 2;
+    const centerLng = (minLng + maxLng) / 2;
+
+    // Convert safety radius in meters into inner-bound offsets on each axis.
+    const innerSouth = calculateDestination({ lng: centerLng, lat: minLat }, 0, safetyRadiusMeters).lat;
+    const innerNorth = calculateDestination({ lng: centerLng, lat: maxLat }, Math.PI, safetyRadiusMeters).lat;
+    const innerWest = calculateDestination({ lng: minLng, lat: centerLat }, Math.PI / 2, safetyRadiusMeters).lng;
+    const innerEast = calculateDestination({ lng: maxLng, lat: centerLat }, -Math.PI / 2, safetyRadiusMeters).lng;
+
+    // Safety buffer covers the whole area (too small DTM for configured radius).
+    if (innerWest > innerEast || innerSouth > innerNorth) {
+      return false;
+    }
+
+    return lng >= innerWest && lng <= innerEast && lat >= innerSouth && lat <= innerNorth;
+  }, [dtmBounds, safetyRadius]);
+
   const createParallelLineForSegmentIndex = useCallback(
     (segmentIndex: number, offset: number): { ok: true; points: Coordinate[] } | { ok: false; error: string } => {
       if (segmentIndex < 0 || segmentIndex >= flightPath.length - 1) {
@@ -2028,8 +2071,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       }
       return { ok: false, error: 'היסט יוצא מ-DTM.' };
     },
-    // NOTE: isPointWithinBounds is declared later in this file; omit from deps to avoid TDZ issues.
-    [flightPath]
+    [flightPath, isPointWithinBounds]
   );
 
   const clearSelectedLines = useCallback(() => {
@@ -3785,35 +3827,6 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return `${meters.toFixed(1)} m`;
   };
 
-  // Helper function to check if a point is within DTM bounds
-  const isPointWithinBounds = useCallback((lng: number, lat: number): boolean => {
-    if (!dtmBounds || dtmBounds.length !== 4) {
-      return false;
-    }
-    const [minLng, minLat, maxLng, maxLat] = dtmBounds;
-    const safetyRadiusMeters = Math.max(0, Number.isFinite(safetyRadius) ? safetyRadius : 0);
-
-    if (safetyRadiusMeters <= 0) {
-      return lng >= minLng && lng <= maxLng && lat >= minLat && lat <= maxLat;
-    }
-
-    const centerLat = (minLat + maxLat) / 2;
-    const centerLng = (minLng + maxLng) / 2;
-
-    // Convert safety radius in meters into inner-bound offsets on each axis.
-    const innerSouth = calculateDestination({ lng: centerLng, lat: minLat }, 0, safetyRadiusMeters).lat;
-    const innerNorth = calculateDestination({ lng: centerLng, lat: maxLat }, Math.PI, safetyRadiusMeters).lat;
-    const innerWest = calculateDestination({ lng: minLng, lat: centerLat }, Math.PI / 2, safetyRadiusMeters).lng;
-    const innerEast = calculateDestination({ lng: maxLng, lat: centerLat }, -Math.PI / 2, safetyRadiusMeters).lng;
-
-    // Safety buffer covers the whole area (too small DTM for configured radius).
-    if (innerWest > innerEast || innerSouth > innerNorth) {
-      return false;
-    }
-
-    return lng >= innerWest && lng <= innerEast && lat >= innerSouth && lat <= innerNorth;
-  }, [dtmBounds, safetyRadius]);
-
   // Helper to read numeric preview values per basemap from backend-provided config
   const getPreviewNumericValue = useCallback((baseMapId: string, key: 'ZOOM' | 'X' | 'Y'): number => {
     const keyLower = key.toLowerCase() as 'zoom' | 'x' | 'y';
@@ -4023,6 +4036,13 @@ const MapPanel: React.FC<MapPanelProps> = ({
     };
   }, []);
 
+  const clearParallelDebugLayers = useCallback(() => {
+    parallelDebugLayersRef.current.forEach(layer => {
+      if (map.current) map.current.removeLayer(layer);
+    });
+    parallelDebugLayersRef.current = [];
+  }, []);
+
   // Clear hover state when mouse leaves the map container
   useEffect(() => {
     if (!map.current) return;
@@ -4036,6 +4056,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
       if (isInfoMode) {
         setCursorElevation(null);
       }
+      clearParallelDebugLayers();
     };
 
     mapContainer.addEventListener('mouseleave', handleMouseLeave);
@@ -4043,7 +4064,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     return () => {
       mapContainer.removeEventListener('mouseleave', handleMouseLeave);
     };
-  }, [hoverSource, onPathPointHover, isInfoMode]);
+  }, [hoverSource, onPathPointHover, isInfoMode, clearParallelDebugLayers]);
 
   // Calculate tooltip position to keep it on screen
   useLayoutEffect(() => {
@@ -5074,12 +5095,14 @@ const MapPanel: React.FC<MapPanelProps> = ({
   useEffect(() => {
     if (!dtmSource || !dtmLoaded) {
       setIsInfoMode(false);
+      setIsParallelDebugMode(false);
+      clearParallelDebugLayers();
       setCursorElevation(null);
       setMousePos(null);
       elevationCacheRef.current.clear();
       dtmRasterDataRef.current = null;
     }
-  }, [dtmSource, dtmLoaded]);
+  }, [dtmSource, dtmLoaded, clearParallelDebugLayers]);
 
   // Client-side elevation calculation function
   const calculateElevationAtPoint = useCallback((lat: number, lng: number): number | null => {
@@ -5656,6 +5679,60 @@ const MapPanel: React.FC<MapPanelProps> = ({
           };
         }
         currentCumulative += segmentLen;
+      }
+
+      // Parallel debug overlay
+      if (isParallelDebugMode && map.current) {
+        clearParallelDebugLayers();
+
+        // Binary search for nearest profile point by distance
+        let lo = 0, hi = elevationProfile.length - 1;
+        let nearestPoint: ElevationPoint | null = elevationProfile.length > 0 ? elevationProfile[0] : null;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (elevationProfile[mid].distance < hoveredDistance) {
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        // lo is now the insertion point; check lo and lo-1 for nearest
+        if (lo < elevationProfile.length) {
+          const candidate = elevationProfile[lo];
+          if (nearestPoint === null || Math.abs(candidate.distance - hoveredDistance) < Math.abs(nearestPoint.distance - hoveredDistance)) {
+            nearestPoint = candidate;
+          }
+        }
+        if (lo > 0) {
+          const candidate = elevationProfile[lo - 1];
+          if (nearestPoint === null || Math.abs(candidate.distance - hoveredDistance) < Math.abs(nearestPoint.distance - hoveredDistance)) {
+            nearestPoint = candidate;
+          }
+        }
+
+        if (nearestPoint?.parallelPoints && nearestPoint.parallelPoints.length > 0) {
+          for (const idx of nearestPoint.parallelPoints) {
+            const parallelPt = elevationProfile[idx];
+            if (!parallelPt) continue;
+
+            // Circle marker at parallel point
+            const marker = L.circleMarker(
+              [parallelPt.latitude, parallelPt.longitude],
+              { radius: 7, color: '#f97316', fillColor: '#f97316', fillOpacity: 0.85, weight: 2 }
+            ).addTo(map.current);
+
+            // Dashed line from hovered position to parallel point
+            const line = L.polyline(
+              [
+                [bestPoint.lat, bestPoint.lng],
+                [parallelPt.latitude, parallelPt.longitude]
+              ],
+              { color: '#f97316', weight: 2, dashArray: '6 4', opacity: 0.8 }
+            ).addTo(map.current);
+
+            parallelDebugLayersRef.current.push(marker, line);
+          }
+        }
       }
 
       setMousePos({ x: (e as any).originalEvent.clientX, y: (e as any).originalEvent.clientY });
@@ -6467,7 +6544,10 @@ const MapPanel: React.FC<MapPanelProps> = ({
     togglePointSelection,
     climbConfig,
     showVertexRadius,
-    showAzimuthDistanceLabels
+    showAzimuthDistanceLabels,
+    isParallelDebugMode,
+    elevationProfile,
+    clearParallelDebugLayers
   ]);
 
   // Update marker visual state when selection changes
@@ -7676,6 +7756,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
       // Source-of-truth cleanup in App: clear climb requests and route points together.
       onDeleteAllPoints();
       setIsRotateMode(false);
+      setIsParallelDebugMode(false);
+      clearParallelDebugLayers();
     }
   };
 
@@ -8024,6 +8106,8 @@ const MapPanel: React.FC<MapPanelProps> = ({
     setIsCoordMode(false);
     setIsMeasureLengthMode(false);
     setIsAzimuthMode(false);
+    setIsParallelDebugMode(false);
+    clearParallelDebugLayers();
     setCoordModePos(null);
     setCursorElevation(null);
     setMousePos(null);
@@ -8034,7 +8118,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
     if (measureMarker2Ref.current) { measureMarker2Ref.current.remove(); measureMarker2Ref.current = null; }
     if (measureLabelRef.current) { measureLabelRef.current.remove(); measureLabelRef.current = null; }
     elevationCacheRef.current.clear();
-  }, []);
+  }, [clearParallelDebugLayers]);
 
   const handleViewshedButtonClick = useCallback(() => {
     if (hasViewshedResult) {
@@ -9784,6 +9868,28 @@ const MapPanel: React.FC<MapPanelProps> = ({
                 >
                   <Icon name="refresh" />
                   <span className="sr-only">הפוך כיוון נקודות</span>
+                </button>
+              </Tooltip>
+              <Tooltip tooltip={isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג מפתח נקודה נמוכה'}>
+                <button
+                  onClick={() => {
+                    if (isParallelDebugMode) {
+                      deactivateAllMeasurementModes();
+                    } else {
+                      setIsRotateMode(false);
+                      setIsDrawing(false);
+                      setIsParallelLineMode(false);
+                      deactivateAllMeasurementModes();
+                      setIsParallelDebugMode(true);
+                    }
+                  }}
+                  className={isParallelDebugMode ? 'btn btn-primary btn-icon' : 'btn btn-tertiary btn-icon'}
+                  aria-label={isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג קשרי בטיחות'}
+                  type="button"
+                  disabled={flightPath.length < 2}
+                >
+                  <Icon name="low-point" />
+                  <span className="sr-only">{isParallelDebugMode ? 'כבה קשרי בטיחות' : 'הצג מפתח נקודה נמוכה'}</span>
                 </button>
               </Tooltip>
             </div>

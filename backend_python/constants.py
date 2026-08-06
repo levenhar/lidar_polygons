@@ -1,4 +1,13 @@
 import numpy as np
+import os
+from dotenv import load_dotenv
+# Load environment variables from .env file
+if os.path.exists(".env"):
+    load_dotenv()
+elif os.path.exists("../backend/.env"):
+    load_dotenv("../backend/.env")
+else:
+    load_dotenv() # Fallback to default search
 """
 Constants module for the lidar_polygons backend.
 
@@ -32,7 +41,12 @@ SUFFIX_SUBSAMPLE = '_subsample'
 
 # EPSG codes
 EPSG_WGS84 = 'EPSG:4326'  # WGS84 geographic coordinate system
+EPSG_3857 = 'EPSG:3857'   # Web Mercator
 EPSG_UTM_36N = 'EPSG:32636'  # UTM Zone 36N (common for Israel/Palestine)
+
+# Default CRS settings (can be overridden by environment variables)
+import os
+MAPS_CRS = os.environ.get('MAPS_CRS', EPSG_3857)  # Default to Web Mercator if not set in .env
 
 # ============================================================================
 # NUMERIC ALGORITHM CONSTANTS
@@ -42,11 +56,12 @@ EPSG_UTM_36N = 'EPSG:32636'  # UTM Zone 36N (common for Israel/Palestine)
 MAX_DISPLAY_DIM = 2048  # Maximum dimension for subsampled display versions (pixels)
 
 # Default sampling and resolution parameters (meters)
-DEFAULT_SAFETY_RADIUS_METERS = 50.0  # Default safety radius for elevation profile
+DEFAULT_SAFETY_RADIUS_METERS = 60.0  # Default safety radius for elevation profile
 DEFAULT_RESOLUTION_RADIUS_METERS = 50.0  # Default resolution radius for elevation profile
 
 DEFAULT_SAMPLING_INTERVAL_METERS = 1.0  # Default sampling interval for viewshed
 THRESH_AZ = np.deg2rad(3)
+THRESH_AZ_DEG = 3
 ELEVATION_PROFILE_SAMPLING_INTERVAL_METERS = 3.0  # Sampling interval for elevation profile generation
 
 # Geographic conversion constants

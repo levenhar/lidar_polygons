@@ -1,51 +1,38 @@
 [
   {
-    "id": "standard-mapping",
-    "name": "מיפוי סטנדרטי",
-    "description": "טיפוס מאוזן (4.08) עם ירידה שמרנית (8.16) ומרווח פנייה 30 מ'.",
+    "id": "pluto",
+    "name": "עייט",
+    "description": "עייט",
     "climbRatio": 4.08,
     "descentRatio": 8.16,
     "allowTurnsDuringClimb": false,
     "linkRatios": false,
-    "vertexProximityMeters": 30,
+    "vertexProximityMeters": 50,
     "minClimb": 11,
     "maxClimb": 50
   },
   {
-    "id": "gentle-linked",
-    "name": "מתון מקושר",
-    "description": "שיפוע מתון עם מקדמים מקושרים ופניות מותרות; מרווח קודקוד מצומצם 25 מ'.",
-    "climbRatio": 6,
-    "descentRatio": 6,
+    "id": "barak",
+    "name": "ברק",
+    "description": "ברק",
+    "climbRatio": 20,
+    "descentRatio": 14,
     "allowTurnsDuringClimb": true,
-    "linkRatios": true,
-    "vertexProximityMeters": 25,
-    "minClimb": 11,
-    "maxClimb": 50
+    "linkRatios": false,
+    "vertexProximityMeters": 0,
+    "minClimb": 0,
+    "maxClimb": 10000
   },
   {
-    "id": "aggressive-short",
-    "name": "אגרסיבי למקטעים קצרים",
-    "description": "טיפוס/ירידה חדים יותר למסלולים קצרים; פניות מופסקות עם מרווח 20 מ'.",
-    "climbRatio": 3,
-    "descentRatio": 3.5,
-    "allowTurnsDuringClimb": false,
+    "id": "barak-extra",
+    "name": "ברק - מוחרג",
+    "description": "ברק - מוחרג",
+    "climbRatio": 16,
+    "descentRatio": 10,
+    "allowTurnsDuringClimb": true,
     "linkRatios": false,
-    "vertexProximityMeters": 20,
-    "minClimb": 11,
-    "maxClimb": 50
-  },
-  {
-    "id": "wide-turn-buffer",
-    "name": "מרווח פנייה רחב",
-    "description": "מקדמים סטנדרטיים עם אזור ללא טיפוס גדול יותר של 60 מ' סביב פניות.",
-    "climbRatio": 4.08,
-    "descentRatio": 8.16,
-    "allowTurnsDuringClimb": false,
-    "linkRatios": false,
-    "vertexProximityMeters": 60,
-    "minClimb": 11,
-    "maxClimb": 50
+    "vertexProximityMeters": 0,
+    "minClimb": 0,
+    "maxClimb": 10000
   }
 ]
-

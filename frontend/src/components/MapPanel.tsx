@@ -11335,6 +11335,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
           routes={routes.map(r => ({ id: r.id, name: r.name, points: r.points, color: r.color, visible: r.visible }))}
           activeRouteId={activeRouteId}
           elevationProfile={elevationProfile}
+          hoveredElevationPoint={hoveredElevationPoint}
           onBaseMapCycle={handleCycle3DBaseMap}
           viewshedRaster={viewshedRaster}
           viewshedVisible={viewshedVisible}
@@ -11393,6 +11394,7 @@ const MapPanel: React.FC<MapPanelProps> = ({
               routes={routes.map(r => ({ id: r.id, name: r.name, points: r.points, color: r.color, visible: r.visible }))}
               activeRouteId={activeRouteId}
               elevationProfile={elevationProfile}
+              hoveredElevationPoint={hoveredElevationPoint}
               onBaseMapCycle={handleCycle3DBaseMap}
               viewshedRaster={viewshedRaster}
               viewshedVisible={viewshedVisible}

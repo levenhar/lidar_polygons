@@ -54,6 +54,8 @@ interface ElevationPoint3D {
   longitude: number;
   latitude: number;
   plannedAltitude?: number;
+  elevation?: number;
+  flightHeight?: number;
 }
 
 interface ViewshedRasterData {
@@ -76,6 +78,7 @@ export interface ThreeDViewProps {
   routes: RouteData[];
   activeRouteId: string;
   elevationProfile: ElevationPoint3D[];
+  hoveredElevationPoint?: ElevationPoint3D | null;
   onBaseMapCycle: () => void;
   viewshedRaster: ViewshedRasterData | null;
   viewshedVisible: boolean;
@@ -106,6 +109,7 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
   routes,
   activeRouteId,
   elevationProfile,
+  hoveredElevationPoint,
   onBaseMapCycle,
   viewshedRaster,
   viewshedVisible,
@@ -122,7 +126,8 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
   const animFrameRef = useRef<number>(0);
   const terrainMeshRef = useRef<THREE.Mesh | null>(null);
   const routeGroupRef = useRef<THREE.Group | null>(null);
-  const [terrainMetrics, setTerrainMetrics] = useState<{ widthMeters: number; heightMeters: number; bounds: GeoBounds; minElev: number; maxElev: number } | null>(null);
+  const hoverMarkerMeshRef = useRef<THREE.Mesh | null>(null);
+  const [terrainMetrics, setTerrainMetrics] = useState<{ widthMeters: number; heightMeters: number; bounds: GeoBounds; minElev: number; maxElev: number; centerEasting: number; centerNorthing: number; utmProjDef: string; } | null>(null);
   const elevDataRef = useRef<Float32Array | null>(null);
   const elevColsRef = useRef(0);
   const elevRowsRef = useRef(0);
@@ -140,6 +145,15 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
   useEffect(() => { viewshedClassColorsRef.current = viewshedClassColors; }, [viewshedClassColors]);
   useEffect(() => { viewshedOpacityRef.current = viewshedOpacity; }, [viewshedOpacity]);
   useEffect(() => { getViewshedClassColorRef.current = getViewshedClassColor; }, [getViewshedClassColor]);
+
+  // Fetch CRS from backend
+  const [crs, setCrs] = useState<string | null>(null);
+  useEffect(() => {
+    fetch('/api/crs')
+      .then(res => res.json())
+      .then(data => setCrs(data.crs))
+      .catch(() => setCrs(null));
+  }, []);
 
   // ── Build terrain mesh ────────────────────────────────────────────
 
@@ -183,7 +197,7 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
     }
     if (!Number.isFinite(minElev)) { minElev = 0; maxElev = 100; }
 
-    setTerrainMetrics({ widthMeters: metrics.widthMeters, heightMeters: metrics.heightMeters, bounds, minElev, maxElev });
+    setTerrainMetrics({ widthMeters: metrics.widthMeters, heightMeters: metrics.heightMeters, centerEasting: metrics.centerEasting, centerNorthing: metrics.centerNorthing, utmProjDef: metrics.utmProjDef, bounds, minElev, maxElev });
 
     // Remove old mesh
     if (terrainMeshRef.current) {
@@ -251,15 +265,15 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
 
     // Load map tiles asynchronously
     loadMapTileTexture(bounds);
-  }, [rasterData]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [rasterData, crs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Load map tile texture ─────────────────────────────────────────
 
   const loadMapTileTexture = useCallback((bounds: GeoBounds) => {
     const activeMap = baseMaps.find(b => b.id === activeBaseMapId) ?? baseMaps[0];
-    if (!activeMap || !terrainMeshRef.current) return;
+    if (!activeMap || !terrainMeshRef.current || !crs) return;
 
-    const { zoom, minTile, maxTile, cols: tileCols, rows: tileRows } = computeTileRange(bounds);
+    const { zoom, minTile, maxTile, cols: tileCols, rows: tileRows } = computeTileRange(bounds, 6, crs);
 
     const canvas = document.createElement('canvas');
     canvas.width = TEXTURE_SIZE;
@@ -342,10 +356,10 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
         img.crossOrigin = 'anonymous';
         img.onload = () => {
           const [minLng, minLat, maxLng, maxLat] = bounds;
-          const tileLngMin = tileToLng(tx, zoom);
-          const tileLngMax = tileToLng(tx + 1, zoom);
-          const tileLatMax = tileToLat(ty, zoom);       // north edge (ty increases southward)
-          const tileLatMin = tileToLat(ty + 1, zoom);   // south edge
+          const tileLngMin = tileToLng(tx, zoom, crs);
+          const tileLngMax = tileToLng(tx + 1, zoom, crs);
+          const tileLatMax = tileToLat(ty, zoom, crs);       // north edge (ty increases southward)
+          const tileLatMin = tileToLat(ty + 1, zoom, crs);   // south edge
           const px = (tileLngMin - minLng) / (maxLng - minLng) * TEXTURE_SIZE;
           const py = (maxLat - tileLatMax) / (maxLat - minLat) * TEXTURE_SIZE;
           const pw = (tileLngMax - tileLngMin) / (maxLng - minLng) * TEXTURE_SIZE;
@@ -362,7 +376,7 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
         img.src = tileUrl;
       }
     }
-  }, [baseMaps, activeBaseMapId, mapToken]);
+  }, [baseMaps, activeBaseMapId, mapToken, crs]);
 
   // ── Rebuild texture on basemap change ─────────────────────────────
 
@@ -406,7 +420,7 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
         if (profilePoints.length >= 2) {
           const positions: number[] = [];
           for (const ep of profilePoints) {
-            const local = geoToLocal(ep.longitude, ep.latitude, m.bounds, m.widthMeters, m.heightMeters);
+            const local = geoToLocal(ep.longitude, ep.latitude, m.utmProjDef, m.centerEasting, m.centerNorthing);
             const z = (ep.plannedAltitude! * VERTICAL_EXAGGERATION) + ROUTE_OFFSET_ABOVE_TERRAIN;
             positions.push(local.x, local.y, z);
           }
@@ -417,7 +431,7 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
 
           // Waypoint markers at actual waypoint positions
           for (const pt of route.points) {
-            const local = geoToLocal(pt.lng, pt.lat, m.bounds, m.widthMeters, m.heightMeters);
+            const local = geoToLocal(pt.lng, pt.lat, m.utmProjDef, m.centerEasting, m.centerNorthing);
             const z = ((pt.height ?? m.minElev) * VERTICAL_EXAGGERATION) + ROUTE_OFFSET_ABOVE_TERRAIN;
             const sphere = new THREE.Mesh(
               new THREE.SphereGeometry(m.widthMeters * 0.005, 8, 8),
@@ -433,7 +447,7 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
       // Fallback: render from waypoint heights (non-active routes or no profile)
       const positions: number[] = [];
       for (const pt of route.points) {
-        const local = geoToLocal(pt.lng, pt.lat, m.bounds, m.widthMeters, m.heightMeters);
+        const local = geoToLocal(pt.lng, pt.lat, m.utmProjDef, m.centerEasting, m.centerNorthing);
         const z = ((pt.height ?? m.minElev) * VERTICAL_EXAGGERATION) + ROUTE_OFFSET_ABOVE_TERRAIN;
         positions.push(local.x, local.y, z);
       }
@@ -445,6 +459,29 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
     sceneRef.current.add(group);
   }, [routes, activeRouteId, elevationProfile, terrainMetrics]);
 
+  // ── Hover marker (purple dot on route) ────────────────────────────
+
+  useEffect(() => {
+    if (!sceneRef.current || !terrainMetrics || !hoveredElevationPoint) {
+      if (hoverMarkerMeshRef.current) hoverMarkerMeshRef.current.visible = false;
+      return;
+    }
+    const m = terrainMetrics;
+    const alt = hoveredElevationPoint.plannedAltitude ?? hoveredElevationPoint.elevation ?? m.minElev;
+    const local = geoToLocal(hoveredElevationPoint.longitude, hoveredElevationPoint.latitude, m.utmProjDef, m.centerEasting, m.centerNorthing);
+    const z = (alt * VERTICAL_EXAGGERATION) + ROUTE_OFFSET_ABOVE_TERRAIN;
+
+    if (!hoverMarkerMeshRef.current) {
+      const geom = new THREE.SphereGeometry(m.widthMeters * 0.007, 12, 12);
+      const mat = new THREE.MeshStandardMaterial({ color: 0x9B59B6 });
+      const mesh = new THREE.Mesh(geom, mat);
+      sceneRef.current.add(mesh);
+      hoverMarkerMeshRef.current = mesh;
+    }
+    hoverMarkerMeshRef.current.position.set(local.x, local.y, z);
+    hoverMarkerMeshRef.current.visible = true;
+  }, [hoveredElevationPoint, terrainMetrics]);
+
   // ── Recomposite terrain texture when viewshed state changes ──────
 
   useEffect(() => {
@@ -452,6 +489,23 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
       loadMapTileTexture(terrainMetrics.bounds);
     }
   }, [viewshedRaster, viewshedVisible, viewshedClassColors, viewshedOpacity, loadMapTileTexture, terrainMetrics]);
+
+  // ── Reset Camera to North ─────────────────────────────────────────
+
+  const resetToNorth = useCallback(() => {
+    if (!terrainMetrics || !cameraRef.current || !controlsRef.current) return;
+    const maxDim = Math.max(terrainMetrics.widthMeters, terrainMetrics.heightMeters);
+    const elevRange = (terrainMetrics.maxElev - terrainMetrics.minElev) * VERTICAL_EXAGGERATION;
+    const camDist = maxDim * 0.8;
+    const targetZ = (terrainMetrics.minElev + terrainMetrics.maxElev) / 2 * VERTICAL_EXAGGERATION;
+
+    cameraRef.current.position.set(0, -maxDim * 0.5, elevRange + camDist * 0.5);
+    cameraRef.current.up.set(0, 0, 1);
+    cameraRef.current.far = maxDim * 5;
+    cameraRef.current.updateProjectionMatrix();
+    controlsRef.current.target.set(0, 0, targetZ);
+    controlsRef.current.update();
+  }, [terrainMetrics]);
 
   // ── Initialize Three.js scene ─────────────────────────────────────
 
@@ -553,6 +607,7 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
       rendererRef.current = null;
       terrainMeshRef.current = null;
       routeGroupRef.current = null;
+      hoverMarkerMeshRef.current = null;
       elevDataRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -589,6 +644,24 @@ const ThreeDView: React.FC<ThreeDViewProps> = ({
       <div className="three-d-view-banner">
         תצוגה בלבד — לעריכה חזור ל-2D
       </div>
+      {/* Return to Initial / North Button */}
+      <button
+        type="button"
+        className="three-d-north-btn"
+        onClick={resetToNorth}
+        title="החזר למצב ההתחלתי"
+        aria-label="החזר למצב ההתחלתי"
+      >
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
+          {/* North needle (Red, pointing North) */}
+          <polygon points="12,2 16,12 12,9.5 8,12" fill="#ef4444" />
+          {/* South needle (Slate, pointing South) */}
+          <polygon points="12,22 16,12 12,14.5 8,12" fill="#94a3b8" />
+          {/* Center pivot pin */}
+          <circle cx="12" cy="12" r="2" fill="#334155" />
+          <circle cx="12" cy="12" r="0.8" fill="#ffffff" />
+        </svg>
+      </button>
       {nextBaseMap && nextBaseMapPreviewUrl && (
         <button
           type="button"

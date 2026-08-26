@@ -179,6 +179,21 @@ describe('ThreeDView', () => {
     });
   });
 
+  describe('north button', () => {
+    it('renders the return to north button with compass icon', () => {
+      const { container } = render(<ThreeDView {...defaultProps} />);
+      const btn = container.querySelector('.three-d-north-btn');
+      expect(btn).not.toBeNull();
+      expect(screen.getByTitle('החזר למצב ההתחלתי')).toBeInTheDocument();
+    });
+
+    it('clicking the north button does not throw error', () => {
+      const { container } = render(<ThreeDView {...defaultProps} />);
+      const btn = container.querySelector('.three-d-north-btn');
+      expect(() => fireEvent.click(btn!)).not.toThrow();
+    });
+  });
+
   describe('viewshed legend', () => {
     it('does not show the legend when viewshedRaster is null', () => {
       const { container } = render(

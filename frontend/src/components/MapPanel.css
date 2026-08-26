@@ -3285,6 +3285,43 @@
   /* Inherits .basemap-toggle visual styles */
 }
 
+/* Return to North button inside 3D view — positioned near the 3D toggle button */
+.three-d-north-btn {
+  position: absolute;
+  bottom: 32px;
+  right: 130px;
+  z-index: 510;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: all 0.15s ease;
+}
+
+.three-d-north-btn:hover {
+  background: #f1f5f9;
+  color: #0369a1;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+}
+
+.three-d-north-btn:active {
+  transform: translateY(0);
+}
+
+[dir="rtl"] .three-d-north-btn,
+.map-panel[dir="rtl"] .three-d-north-btn,
+[dir="rtl"] .three-d-view-container .three-d-north-btn {
+  right: auto;
+  left: 50px;
+}
+
 /* ── 3D Float Window ────────────────────────────────────────────── */
 
 .three-d-float-window {
